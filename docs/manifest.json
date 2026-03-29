@@ -2,6 +2,7 @@
   "name": "ESP32-S3 SSH Server",
   "version": "1.0.0",
   "new_install_prompt_erase": true,
+  "new_install_improv_wifi": true,
   "builds": [
     {
       "chipFamily": "ESP32-S3",
