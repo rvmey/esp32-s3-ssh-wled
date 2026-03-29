@@ -226,8 +226,9 @@ static esp_err_t post_handler(httpd_req_t *req)
 esp_err_t http_config_start(void)
 {
     httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
-    cfg.server_port    = 80;
+    cfg.server_port      = 80;
     cfg.lru_purge_enable = true;
+    cfg.max_open_sockets = 3; /* stay within LWIP_MAX_SOCKETS budget */
 
     httpd_handle_t server = NULL;
     esp_err_t err = httpd_start(&server, &cfg);
