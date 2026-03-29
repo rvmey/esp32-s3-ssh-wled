@@ -84,7 +84,11 @@ static int form_get_value(const char *body, const char *key,
 
 static int valid_pubkey_line(const char *s)
 {
-    if (strncmp(s, "ssh-", 4) != 0 && strncmp(s, "ecdsa-", 6) != 0)
+    /* Only accept key types supported by this wolfSSH build (RSA is disabled) */
+    if (strncmp(s, "ssh-ed25519 ",    12) != 0 &&
+        strncmp(s, "ecdsa-sha2-nistp256 ", 20) != 0 &&
+        strncmp(s, "ecdsa-sha2-nistp384 ", 20) != 0 &&
+        strncmp(s, "ecdsa-sha2-nistp521 ", 20) != 0)
         return 0;
     const char *sp = strchr(s, ' ');
     if (!sp || sp == s || !*(sp + 1)) return 0;
@@ -153,8 +157,10 @@ static const char s_key_form[] =
     "<label for='pk'>Authorized key</label>"
     "<textarea id='pk' name='pubkey' spellcheck='false'"
         " placeholder='ssh-ed25519 AAAAC3... user@host'></textarea>"
-    "<p class='hint'>Paste one line in authorized_keys format (ssh-ed25519, "
-    "ecdsa-sha2-nistp256, ssh-rsa). Leave empty to clear the stored key.</p>"
+    "<p class='hint'>Paste one line in authorized_keys format.<br>"
+    "Supported types: <code>ssh-ed25519</code>, <code>ecdsa-sha2-nistp256/384/521</code>.<br>"
+    "<strong>ssh-rsa is not supported</strong> &#8212; use <code>ssh-keygen -t ed25519</code> to generate a compatible key.<br>"
+    "Leave empty to clear the stored key.</p>"
     "<button type='submit'>Save Public Key</button>"
     "</form>";
 
@@ -164,7 +170,7 @@ static const char s_ok_key[]       = "<p class='ok'>&#10003; Public key saved &#
 static const char s_ok_cleared[]   = "<p class='ok'>&#10003; Public key cleared.</p>";
 static const char s_err_mismatch[] = "<p class='err'>&#10007; Passwords do not match.</p>";
 static const char s_err_short[]    = "<p class='err'>&#10007; Password too short (minimum 4 characters).</p>";
-static const char s_err_key[]      = "<p class='err'>&#10007; Invalid key &#8211; expected authorized_keys format.</p>";
+static const char s_err_key[]      = "<p class='err'>&#10007; Unsupported key type. Use ssh-ed25519 or ecdsa-sha2-nistp256/384/521 (not ssh-rsa).</p>";
 static const char s_err_nvs[]      = "<p class='err'>&#10007; Save failed (storage error).</p>";
 
 /* ── Page helper ─────────────────────────────────────────────────────────── */
