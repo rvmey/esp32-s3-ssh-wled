@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ESP32-S3 SSH Server – Installer</title>
+  <script
+    type="module"
+    src="https://unpkg.com/esp-web-tools@10/dist/web/install-button.js?module"
+  ></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      background: #0f1117;
+      color: #e2e8f0;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 1.5rem;
+    }
+
+    .card {
+      background: #1e2130;
+      border: 1px solid #2d3148;
+      border-radius: 1rem;
+      padding: 2.5rem 2rem;
+      max-width: 520px;
+      width: 100%;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+    }
+
+    h1 {
+      font-size: 1.6rem;
+      font-weight: 700;
+      color: #a5b4fc;
+      margin-bottom: 0.4rem;
+    }
+
+    .subtitle {
+      font-size: 0.9rem;
+      color: #94a3b8;
+      margin-bottom: 1.8rem;
+    }
+
+    .steps {
+      list-style: none;
+      counter-reset: steps;
+      margin-bottom: 2rem;
+    }
+
+    .steps li {
+      counter-increment: steps;
+      display: flex;
+      gap: 0.85rem;
+      align-items: flex-start;
+      margin-bottom: 1rem;
+      font-size: 0.95rem;
+      color: #cbd5e1;
+    }
+
+    .steps li::before {
+      content: counter(steps);
+      background: #4f46e5;
+      color: #fff;
+      border-radius: 50%;
+      min-width: 1.6rem;
+      height: 1.6rem;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 0.8rem;
+      font-weight: 700;
+      flex-shrink: 0;
+    }
+
+    .steps li strong { color: #e2e8f0; }
+
+    .install-row {
+      display: flex;
+      justify-content: center;
+      margin-bottom: 1.5rem;
+    }
+
+    /* Style the ESP Web Tools button */
+    esp-web-install-button::part(button) {
+      background: #4f46e5;
+      color: #fff;
+      border: none;
+      border-radius: 0.6rem;
+      padding: 0.75rem 2rem;
+      font-size: 1rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+    esp-web-install-button::part(button):hover {
+      background: #4338ca;
+    }
+
+    .note {
+      font-size: 0.82rem;
+      color: #64748b;
+      text-align: center;
+      line-height: 1.5;
+    }
+
+    .note a { color: #818cf8; text-decoration: none; }
+    .note a:hover { text-decoration: underline; }
+
+    .badge {
+      display: inline-block;
+      background: #1e3a5f;
+      color: #93c5fd;
+      border-radius: 0.3rem;
+      padding: 0.1rem 0.45rem;
+      font-size: 0.78rem;
+      font-family: monospace;
+    }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>ESP32-S3 SSH Server</h1>
+    <p class="subtitle">Browser-based firmware installer &amp; WiFi setup</p>
+
+    <ol class="steps">
+      <li>
+        <div>
+          <strong>Connect your ESP32-S3 via USB.</strong><br />
+          Use the USB cable connected to the <span class="badge">USB-UART</span>
+          (not the native USB) port if your board has both.
+        </div>
+      </li>
+      <li>
+        <div>
+          <strong>Click Install below.</strong><br />
+          Your browser will ask you to select the serial port.  The firmware
+          will be flashed automatically.
+        </div>
+      </li>
+      <li>
+        <div>
+          <strong>Enter your WiFi credentials when prompted.</strong><br />
+          After the flash completes the page will ask for your
+          <span class="badge">SSID</span> and
+          <span class="badge">password</span>.  The device will connect and
+          report its IP address.
+        </div>
+      </li>
+      <li>
+        <div>
+          <strong>Connect via SSH.</strong><br />
+          Once the LED turns solid green run:<br />
+          <span class="badge">ssh admin@&lt;device-ip&gt;</span>
+          (default password: <span class="badge">esp32led</span>)
+        </div>
+      </li>
+    </ol>
+
+    <div class="install-row">
+      <esp-web-install-button manifest="manifest.json"></esp-web-install-button>
+    </div>
+
+    <p class="note">
+      Requires a Chromium-based browser (Chrome, Edge, Opera) with
+      <a href="https://developer.mozilla.org/en-US/docs/Web/API/Web_Serial_API"
+         target="_blank" rel="noopener">Web Serial API</a> support.<br />
+      Credentials are sent directly to the device over USB – they are never
+      transmitted to any server.
+    </p>
+  </div>
+</body>
+</html>

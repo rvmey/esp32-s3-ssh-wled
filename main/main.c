@@ -6,6 +6,7 @@
 #include "esp_log.h"
 
 #include "wifi_manager.h"
+#include "improv_wifi.h"
 #include "led_control.h"
 #include "ssh_server.h"
 
@@ -25,17 +26,27 @@ void app_main(void)
     /* Initialise the WS2812 RGB LED on GPIO 48 */
     led_init();
 
-    /* Brief blue blink to confirm the LED driver is alive */
-    led_set_color(0, 0, 64);
-    vTaskDelay(pdMS_TO_TICKS(300));
-    led_off();
+    if (!wifi_has_stored_credentials()) {
+        /* No saved credentials – wait for the web installer to provision us */
+        ESP_LOGI(TAG, "No WiFi credentials stored. "
+                      "Open the installer page to configure WiFi.");
+        led_set_color(0, 0, 64); /* blue = waiting for provisioning */
+        if (improv_wifi_start() != ESP_OK) {
+            led_set_color(64, 0, 0);
+            ESP_LOGE(TAG, "Provisioning failed. Halting.");
+            vTaskSuspend(NULL);
+        }
+    } else {
+        /* Brief blue blink then connect with stored (or Kconfig) credentials */
+        led_set_color(0, 0, 64);
+        vTaskDelay(pdMS_TO_TICKS(300));
+        led_off();
 
-    /* Connect to Wi-Fi */
-    if (wifi_connect() != ESP_OK) {
-        /* Solid red → Wi-Fi failed */
-        led_set_color(64, 0, 0);
-        ESP_LOGE(TAG, "Wi-Fi connection failed. Halting.");
-        vTaskSuspend(NULL);
+        if (wifi_connect() != ESP_OK) {
+            led_set_color(64, 0, 0);
+            ESP_LOGE(TAG, "Wi-Fi connection failed. Halting.");
+            vTaskSuspend(NULL);
+        }
     }
 
     /* Solid green → Wi-Fi connected */
@@ -55,3 +66,4 @@ void app_main(void)
     ESP_LOGI(TAG, "  ssh %s@<device-ip> -p %d",
              CONFIG_SSH_USERNAME, CONFIG_SSH_PORT);
 }
+
