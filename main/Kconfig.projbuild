@@ -1,0 +1,34 @@
+menu "ESP32 SSH LED Configuration"
+
+    config WIFI_SSID
+        string "WiFi SSID"
+        default "MyWifi"
+        help
+            SSID of the Wi-Fi network to connect to.
+
+    config WIFI_PASSWORD
+        string "WiFi Password"
+        default ""
+        help
+            Password for the Wi-Fi network.
+
+    config SSH_PORT
+        int "SSH Server Port"
+        default 22
+        range 1 65535
+        help
+            TCP port on which the SSH server listens.
+
+    config SSH_USERNAME
+        string "SSH Username"
+        default "admin"
+        help
+            Username accepted by the SSH server.
+
+    config SSH_PASSWORD
+        string "SSH Password"
+        default "esp32led"
+        help
+            Password accepted by the SSH server.
+
+endmenu

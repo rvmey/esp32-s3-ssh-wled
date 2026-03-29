@@ -1,0 +1,13 @@
+## IDF Component Manager manifest
+## wolfSSH pulls in wolfSSL automatically as a dependency.
+## led_strip is the official Espressif WS2812 driver.
+
+dependencies:
+  wolfssl/wolfssl:
+    version: ">=5.7.0"
+  wolfssl/wolfssh:
+    version: ">=1.4.17"
+  espressif/led_strip:
+    version: ">=2.5.0"
+  idf:
+    version: ">=5.0.0"
