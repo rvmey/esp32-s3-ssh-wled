@@ -39,8 +39,9 @@ static const uint8_t IMPROV_HEADER[6] = {'I','M','P','R','O','V'};
 #define ERR_UNKNOWN_CMD       0x02
 #define ERR_UNABLE_TO_CONNECT 0x03
 
-#define CMD_SEND_WIFI_SETTINGS 0x01
-#define CMD_IDENTIFY           0x02
+#define CMD_SEND_WIFI_SETTINGS    0x01
+#define CMD_REQUEST_CURRENT_STATE  0x02
+#define CMD_REQUEST_DEVICE_INFO    0x03
 
 /* ── USB-Serial-JTAG I/O ─────────────────────────────────────────────────── */
 
@@ -109,6 +110,34 @@ static void send_rpc_result(uint8_t cmd, const char *url)
     send_packet(TYPE_RPC_RESULT, data, (uint8_t)idx);
 }
 
+/* RPC result for CMD_REQUEST_DEVICE_INFO – four required strings */
+static void send_device_info(void)
+{
+    static const char * const strings[4] = {
+        "ESP32-SSH-LED",        /* firmware name    */
+        "1.0.0",               /* firmware version */
+        "ESP32-S3",            /* chip/variant     */
+        "ESP32-S3 SSH Server", /* device name      */
+    };
+
+    uint8_t data[256];
+    size_t  idx = 0;
+
+    data[idx++] = CMD_REQUEST_DEVICE_INFO; /* command echo */
+    size_t body_len_pos = idx++;           /* placeholder */
+    size_t body_start   = idx;
+
+    for (int i = 0; i < 4; i++) {
+        uint8_t slen = (uint8_t)strlen(strings[i]);
+        data[idx++] = slen;
+        memcpy(data + idx, strings[i], slen);
+        idx += slen;
+    }
+    data[body_len_pos] = (uint8_t)(idx - body_start);
+
+    send_packet(TYPE_RPC_RESULT, data, (uint8_t)idx);
+}
+
 /* ── Public API ──────────────────────────────────────────────────────────── */
 
 esp_err_t improv_wifi_start(void)
@@ -134,10 +163,10 @@ esp_err_t improv_wifi_start(void)
         /* Beacon: announce we are waiting for credentials */
         send_state(STATE_AUTHORIZED);
 
-        /* Wait up to 1 s for incoming bytes */
+        /* Wait up to 100 ms for incoming bytes (shorter = faster beacon rate) */
         int n = usb_serial_jtag_read_bytes(buf + buf_pos,
                                            sizeof(buf) - buf_pos - 1,
-                                           pdMS_TO_TICKS(1000));
+                                           pdMS_TO_TICKS(100));
         if (n <= 0) continue;
         buf_pos += (size_t)n;
 
@@ -198,9 +227,12 @@ esp_err_t improv_wifi_start(void)
             uint8_t        rpc_data_len = data[1];
             const uint8_t *rpc          = data + 2;
 
-            if (cmd == CMD_IDENTIFY) {
-                /* Nothing useful to do without LED coupling; just ACK */
-                ESP_LOGI(TAG, "Identify command received");
+            if (cmd == CMD_REQUEST_CURRENT_STATE) {
+                /* Immediately echo our state so the browser doesn't time out */
+                send_state(STATE_AUTHORIZED);
+
+            } else if (cmd == CMD_REQUEST_DEVICE_INFO) {
+                send_device_info();
 
             } else if (cmd == CMD_SEND_WIFI_SETTINGS) {
                 /* rpc: ssid_len(1) | ssid | pass_len(1) | pass */
