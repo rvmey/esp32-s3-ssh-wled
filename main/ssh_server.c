@@ -68,6 +68,8 @@ static const char *TAG = "ssh_srv";
 #define HIST_MAX         20
 #define NVS_NS           "ssh"
 #define NVS_KEY_HOSTKEY  "hostkey"
+#define NVS_CFG_NS       "ssh_cfg"
+#define NVS_CFG_KEY_PASS "password"
 
 /* ANSI helpers sent to the terminal */
 #define CRLF    "\r\n"
@@ -106,7 +108,23 @@ static int user_auth_cb(byte authType,
     }
 
     const char *want_user = CONFIG_SSH_USERNAME;
-    const char *want_pass = CONFIG_SSH_PASSWORD;
+
+    /* Prefer password stored in NVS (set via web UI), fall back to Kconfig */
+    char stored_pass[65] = {0};
+    const char *want_pass;
+    nvs_handle_t nvs_h;
+    if (nvs_open(NVS_CFG_NS, NVS_READONLY, &nvs_h) == ESP_OK) {
+        size_t len = sizeof(stored_pass);
+        if (nvs_get_str(nvs_h, NVS_CFG_KEY_PASS, stored_pass, &len) == ESP_OK
+                && stored_pass[0] != '\0') {
+            want_pass = stored_pass;
+        } else {
+            want_pass = CONFIG_SSH_PASSWORD;
+        }
+        nvs_close(nvs_h);
+    } else {
+        want_pass = CONFIG_SSH_PASSWORD;
+    }
 
     int user_ok = (authData->usernameSz == (word32)strlen(want_user)) &&
                   (memcmp(authData->username, want_user,

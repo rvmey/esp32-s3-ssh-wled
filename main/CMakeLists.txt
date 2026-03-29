@@ -5,6 +5,7 @@ idf_component_register(
         "improv_wifi.c"
         "led_control.c"
         "ssh_server.c"
+        "http_config.c"
     INCLUDE_DIRS
         "."
 )

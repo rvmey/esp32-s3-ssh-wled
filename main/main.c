@@ -9,6 +9,7 @@
 #include "improv_wifi.h"
 #include "led_control.h"
 #include "ssh_server.h"
+#include "http_config.h"
 
 static const char *TAG = "main";
 
@@ -53,6 +54,9 @@ void app_main(void)
     led_set_color(0, 32, 0);
     vTaskDelay(pdMS_TO_TICKS(500));
     led_off();
+
+    /* Start the HTTP config server so the user can set the SSH password */
+    http_config_start();
 
     /* Start the SSH server */
     if (ssh_server_start() != ESP_OK) {
