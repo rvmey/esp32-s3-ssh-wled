@@ -626,30 +626,52 @@ static int handle_command(WOLFSSH *ssh, const char *line)
 }
 
 /* ------------------------------------------------------------------ */
+/* Per-connection state passed from listener_task to session_task      */
+/* ------------------------------------------------------------------ */
+
+typedef struct {
+    WOLFSSH *ssh;
+    char     exec_cmd[LINE_BUF_SZ]; /* non-empty when exec request arrived */
+} ssh_session_t;
+
+/* Called by wolfSSH inside wolfSSH_accept() when an exec channel
+ * request is received.  Runs in listener_task context — no
+ * cross-task memory ordering concerns. */
+static int exec_req_cb(WOLFSSH_CHANNEL *channel, void *ctx)
+{
+    ssh_session_t *s = (ssh_session_t *)ctx;
+    if (s) {
+        const char *cmd = wolfSSH_ChannelGetSessionCommand(channel);
+        if (cmd && cmd[0] != '\0') {
+            strncpy(s->exec_cmd, cmd, LINE_BUF_SZ - 1);
+            s->exec_cmd[LINE_BUF_SZ - 1] = '\0';
+        }
+    }
+    return 0;  /* 0 = accept */
+}
+
+/* ------------------------------------------------------------------ */
 /* Per-connection task                                                 */
 /* ------------------------------------------------------------------ */
 
 static void session_task(void *pvParam)
 {
-    WOLFSSH *ssh = (WOLFSSH *)pvParam;
+    ssh_session_t *s   = (ssh_session_t *)pvParam;
+    WOLFSSH       *ssh = s->ssh;
 
     /* ---- Non-interactive exec: ssh host 'command' ---- */
-    if (wolfSSH_GetSessionType(ssh) == WOLFSSH_SESSION_EXEC) {
-        const char *cmd = wolfSSH_GetSessionCommand(ssh);
-        if (cmd && *cmd != '\0') {
-            char tmp[LINE_BUF_SZ];
-            strncpy(tmp, cmd, sizeof(tmp) - 1);
-            tmp[sizeof(tmp) - 1] = '\0';
-            handle_command(ssh, tmp);
-        }
+    if (s->exec_cmd[0] != '\0') {
+        handle_command(ssh, s->exec_cmd);
         wolfSSH_stream_exit(ssh, 0);
         int fd = wolfSSH_get_fd(ssh);
+        free(s);
         wolfSSH_free(ssh);
         close(fd);
         ESP_LOGI(TAG, "Exec session closed");
         vTaskDelete(NULL);
         return;
     }
+    free(s);
 
     /* ---- Interactive shell ---- */
     char   line[LINE_BUF_SZ];
@@ -714,6 +736,7 @@ static void listener_task(void *pvParam)
 
     wolfSSH_SetUserAuth(s_ctx, user_auth_cb);
     wolfSSH_CTX_SetBanner(s_ctx, "");  /* We send our own banner per session */
+    wolfSSH_CTX_SetChannelReqExecCb(s_ctx, exec_req_cb);
 
     int rc = wolfSSH_CTX_UsePrivateKey_buffer(s_ctx,
                                               s_hostkey, (word32)hk_sz,
@@ -787,7 +810,19 @@ static void listener_task(void *pvParam)
 
         wolfSSH_set_fd(ssh, client_fd);
 
-        /* SSH handshake */
+        /* Allocate per-session state; the exec callback will fill exec_cmd */
+        ssh_session_t *sess = (ssh_session_t *)malloc(sizeof(ssh_session_t));
+        if (!sess) {
+            ESP_LOGE(TAG, "malloc session state failed");
+            wolfSSH_free(ssh);
+            close(client_fd);
+            continue;
+        }
+        sess->ssh = ssh;
+        sess->exec_cmd[0] = '\0';
+        wolfSSH_SetChannelReqCtx(ssh, sess);
+
+        /* SSH handshake (exec_req_cb fires here if client sends exec) */
         int error;
         do {
             rc    = wolfSSH_accept(ssh);
@@ -796,6 +831,7 @@ static void listener_task(void *pvParam)
 
         if (rc != WS_SUCCESS) {
             ESP_LOGW(TAG, "wolfSSH_accept failed: %d", rc);
+            free(sess);
             wolfSSH_free(ssh);
             close(client_fd);
             continue;
@@ -803,7 +839,7 @@ static void listener_task(void *pvParam)
 
         /* Spawn a task for this session so we can accept the next connection */
         xTaskCreate(session_task, "ssh_sess",
-                    SSH_TASK_STACK, ssh,
+                    SSH_TASK_STACK, sess,
                     SSH_TASK_PRIO, NULL);
     }
 
