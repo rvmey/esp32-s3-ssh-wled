@@ -632,8 +632,28 @@ static int handle_command(WOLFSSH *ssh, const char *line)
 static void session_task(void *pvParam)
 {
     WOLFSSH *ssh = (WOLFSSH *)pvParam;
-    char     line[LINE_BUF_SZ];
-    hist_t   hist;
+
+    /* ---- Non-interactive exec: ssh host 'command' ---- */
+    if (wolfSSH_GetSessionType(ssh) == WOLFSSH_SESSION_EXEC) {
+        const char *cmd = wolfSSH_GetSessionCommand(ssh);
+        if (cmd && *cmd != '\0') {
+            char tmp[LINE_BUF_SZ];
+            strncpy(tmp, cmd, sizeof(tmp) - 1);
+            tmp[sizeof(tmp) - 1] = '\0';
+            handle_command(ssh, tmp);
+        }
+        wolfSSH_stream_exit(ssh, 0);
+        int fd = wolfSSH_get_fd(ssh);
+        wolfSSH_free(ssh);
+        close(fd);
+        ESP_LOGI(TAG, "Exec session closed");
+        vTaskDelete(NULL);
+        return;
+    }
+
+    /* ---- Interactive shell ---- */
+    char   line[LINE_BUF_SZ];
+    hist_t hist;
     memset(&hist, 0, sizeof(hist));
 
     /* Send banner and initial prompt */
