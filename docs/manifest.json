@@ -1,16 +1,16 @@
 {
   "name": "ESP32-S3 SSH Server",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "new_install_prompt_erase": true,
   "new_install_improv_wifi": true,
   "builds": [
     {
       "chipFamily": "ESP32-S3",
       "parts": [
-        { "path": "firmware/bootloader.bin",       "offset": 0     },
-        { "path": "firmware/partition-table.bin",  "offset": 32768 },
-        { "path": "firmware/nvs_blank.bin",        "offset": 36864 },
-        { "path": "firmware/esp32_ssh_led_v1.2.bin",    "offset": 65536 }
+        { "path": "firmware/bootloader.bin",           "offset": 0     },
+        { "path": "firmware/partition-table.bin",      "offset": 32768 },
+        { "path": "firmware/nvs_blank.bin",            "offset": 36864 },
+        { "path": "firmware/esp32_ssh_led_v1.3.bin",   "offset": 65536 }
       ]
     }
   ]
