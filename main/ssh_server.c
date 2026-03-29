@@ -192,26 +192,24 @@ static int user_auth_cb(byte authType,
 
     /* ── Password auth ────────────────────────────────────────────── */
     if (authType == WOLFSSH_USERAUTH_PASSWORD) {
-        /* Prefer NVS-stored password (set via web UI), fall back to Kconfig */
+        /* Only accept an explicitly-set NVS password (no hardcoded fallback).
+         * User must visit the web UI at http://<device-ip>/ to set one. */
         char stored_pass[65] = {0};
-        const char *want_pass;
         nvs_handle_t nvs_h;
+        int have_pass = 0;
         if (nvs_open(NVS_CFG_NS, NVS_READONLY, &nvs_h) == ESP_OK) {
             size_t len = sizeof(stored_pass);
-            if (nvs_get_str(nvs_h, NVS_CFG_KEY_PASS, stored_pass, &len) == ESP_OK
-                    && stored_pass[0] != '\0') {
-                want_pass = stored_pass;
-            } else {
-                want_pass = CONFIG_SSH_PASSWORD;
-            }
+            have_pass = (nvs_get_str(nvs_h, NVS_CFG_KEY_PASS, stored_pass, &len) == ESP_OK
+                         && stored_pass[0] != '\0');
             nvs_close(nvs_h);
-        } else {
-            want_pass = CONFIG_SSH_PASSWORD;
         }
-
+        if (!have_pass) {
+            ESP_LOGW(TAG, "Password auth denied: no password set (use web UI at http://<device-ip>/)");
+            return WOLFSSH_USERAUTH_FAILURE;
+        }
         int pass_ok =
-            (authData->sf.password.passwordSz == (word32)strlen(want_pass)) &&
-            (memcmp(authData->sf.password.password, want_pass,
+            (authData->sf.password.passwordSz == (word32)strlen(stored_pass)) &&
+            (memcmp(authData->sf.password.password, stored_pass,
                     authData->sf.password.passwordSz) == 0);
         if (pass_ok) {
             ESP_LOGI(TAG, "Password auth OK for '%s'", want_user);
