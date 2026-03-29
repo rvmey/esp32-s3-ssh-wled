@@ -13,7 +13,7 @@
 #include "wifi_manager.h"
 
 #include <string.h>
-#include "driver/uart.h"
+#include "driver/usb_serial_jtag.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -42,11 +42,10 @@ static const uint8_t IMPROV_HEADER[6] = {'I','M','P','R','O','V'};
 #define CMD_SEND_WIFI_SETTINGS 0x01
 #define CMD_IDENTIFY           0x02
 
-/* ── UART setup ──────────────────────────────────────────────────────────── */
+/* ── USB-Serial-JTAG I/O ─────────────────────────────────────────────────── */
 
-#define IMPROV_UART      UART_NUM_0
-#define IMPROV_BAUD      115200
 #define IMPROV_RX_BUF    512
+#define IMPROV_IO_TIMEOUT_MS  200
 
 /* ── Helpers ─────────────────────────────────────────────────────────────── */
 
@@ -75,8 +74,7 @@ static void send_packet(uint8_t type, const uint8_t *data, uint8_t data_len)
     pkt[idx] = pkt_checksum(pkt, idx);
     idx++;
 
-    uart_write_bytes(IMPROV_UART, (const char *)pkt, idx);
-    uart_wait_tx_done(IMPROV_UART, pdMS_TO_TICKS(200));
+    usb_serial_jtag_write_bytes(pkt, idx, pdMS_TO_TICKS(IMPROV_IO_TIMEOUT_MS));
 }
 
 static void send_state(uint8_t state)
@@ -115,22 +113,13 @@ static void send_rpc_result(uint8_t cmd, const char *url)
 
 esp_err_t improv_wifi_start(void)
 {
-    /* Install the UART driver so we can read RX data.
-     * If it is already installed (e.g. from a previous boot stage) ignore the
-     * error and continue – TX still works via uart_write_bytes. */
-    uart_config_t uart_cfg = {
-        .baud_rate  = IMPROV_BAUD,
-        .data_bits  = UART_DATA_8_BITS,
-        .parity     = UART_PARITY_DISABLE,
-        .stop_bits  = UART_STOP_BITS_1,
-        .flow_ctrl  = UART_HW_FLOWCTRL_DISABLE,
-        .source_clk = UART_SCLK_DEFAULT,
-    };
-    uart_param_config(IMPROV_UART, &uart_cfg);
-    esp_err_t install_ret = uart_driver_install(
-        IMPROV_UART, IMPROV_RX_BUF * 2, 0, 0, NULL, 0);
+    /* The USB-Serial-JTAG driver is installed by the IDF console init when
+     * CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y.  If for some reason it is not yet
+     * installed (e.g. a non-standard build), install it now. */
+    usb_serial_jtag_driver_config_t usj_cfg = USB_SERIAL_JTAG_DRIVER_CONFIG_DEFAULT();
+    esp_err_t install_ret = usb_serial_jtag_driver_install(&usj_cfg);
     if (install_ret != ESP_OK && install_ret != ESP_ERR_INVALID_STATE) {
-        ESP_LOGE(TAG, "uart_driver_install failed: %s",
+        ESP_LOGE(TAG, "usb_serial_jtag_driver_install failed: %s",
                  esp_err_to_name(install_ret));
         return install_ret;
     }
@@ -146,10 +135,9 @@ esp_err_t improv_wifi_start(void)
         send_state(STATE_AUTHORIZED);
 
         /* Wait up to 1 s for incoming bytes */
-        int n = uart_read_bytes(IMPROV_UART,
-                                buf + buf_pos,
-                                sizeof(buf) - buf_pos - 1,
-                                pdMS_TO_TICKS(1000));
+        int n = usb_serial_jtag_read_bytes(buf + buf_pos,
+                                           sizeof(buf) - buf_pos - 1,
+                                           pdMS_TO_TICKS(1000));
         if (n <= 0) continue;
         buf_pos += (size_t)n;
 
@@ -256,7 +244,6 @@ esp_err_t improv_wifi_start(void)
                     send_rpc_result(CMD_SEND_WIFI_SETTINGS, url);
 
                     ESP_LOGI(TAG, "Provisioning complete – IP: %s", ip);
-                    uart_driver_delete(IMPROV_UART);
                     return ESP_OK;
                 } else {
                     ESP_LOGW(TAG, "WiFi connection failed");
