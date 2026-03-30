@@ -153,6 +153,18 @@ esp_err_t improv_wifi_start(void)
         return install_ret;
     }
 
+    /* Wait for the host to complete USB reenumeration after driver install.
+     * usb_serial_jtag_driver_install() configures the USB peripheral and sets
+     * up interrupt-driven FIFOs, which causes the host to reenumerate the USB
+     * device.  On Windows this takes up to ~3 s.  esp-web-tools calls
+     * port.open() 100 ms after flash and immediately starts the Improv
+     * detection sequence (sleep 1 s, then send requestCurrentState and wait
+     * for a response).  Any beacon packets we transmit before the host's USB
+     * IN endpoint is ready are silently dropped.  By waiting 5 s here we
+     * ensure the host is fully enumerated and listening before we send the
+     * first STATE_AUTHORIZED beacon, so the browser receives it reliably. */
+    vTaskDelay(pdMS_TO_TICKS(5000));
+
     ESP_LOGI(TAG, "Entering Improv WiFi provisioning mode – "
                   "open the installer page and enter your WiFi credentials.");
 
