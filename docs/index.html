@@ -20,44 +20,45 @@
 
     // Post-flash USB-Serial-JTAG reconnect fix.
     //
-    // Problem: After flashing, ESPLoader hard-resets the ESP32-S3. esp-web-tools
-    // calls port.open() only 100 ms later. At that point the USB connection is
-    // still in the bootloader phase. The improv-wifi-serial-sdk initialize()
-    // begins reading, but the IDF USB-Serial-JTAG driver initialisation (which
-    // runs as part of IDF startup, before app_main) causes a brief USB drop.
-    // That drop throws inside initialize(), setting _client = null, so the
-    // post-flash "Next" button routes to DASHBOARD instead of PROVISION and the
-    // "Connect to Wi-Fi" option never appears.
+    // Problem: After flashing, ESPLoader hard-resets the ESP32-S3 and closes the
+    // serial port.  esp-web-tools calls port.open() only 100 ms later.  At that
+    // point the host OS is still in the middle of USB reenumeration triggered by
+    // the IDF USB-Serial-JTAG console driver initialising on first boot (this
+    // happens before app_main, so the host sees a brief disconnect/reconnect of
+    // the USB serial device).  Windows USB reenumeration takes 2–6 s.
     //
-    // Fix: intercept SerialPort.prototype.close to record the last-close time,
-    // and intercept SerialPort.prototype.open to delay the call ~4 s after a
-    // recent post-flash close. By 4 s the full IDF boot + Improv WiFi startup is
-    // complete, so initialize() finds an Improv beacon immediately and routes
-    // correctly to the WiFi provisioning form.
+    // The improv-wifi-serial-sdk initialize() function opens a reader and then
+    // does await sleep(1000).  If the USB drop occurs during that 1 s window,
+    // reader.read() throws, _reader becomes undefined, and initialize() throws
+    // PortNotReady → _client = null.  When _client is null the post-flash "Next"
+    // routes to DASHBOARD instead of PROVISION, so "Connect to Wi-Fi" never shows.
+    // This is intermittent: on fast machines reenumeration finishes before the
+    // window; on slower machines it overlaps and causes the failure.
+    //
+    // Fix: delay the specific post-flash port.open() call made by esp-web-tools
+    // by 6 s from when it is invoked.  By 6 s the host USB reenumeration is
+    // complete and the Improv beacon loop is running on the device, so
+    // initialize() succeeds on the first try.
+    //
+    // How we identify the post-flash call without affecting normal connects or
+    // ESPLoader's flash-time opens:
+    //   • The initial "Connect" dialog opens with: port.open({ baudRate: 115200 })
+    //   • ESPLoader opens with:                    port.open({ baudRate: N })
+    //   • esp-web-tools post-flash reconnect:       port.open({ baudRate: 115200,
+    //                                                           bufferSize: 8192 })
+    // Only the post-flash call passes bufferSize: 8192, so that is our trigger.
     if (typeof SerialPort !== 'undefined') {
       (function () {
-        var origClose = SerialPort.prototype.close;
-        var origOpen  = SerialPort.prototype.open;
-        var lastClose = 0;
-
-        SerialPort.prototype.close = function () {
-          lastClose = Date.now();
-          return origClose.apply(this, arguments);
-        };
+        var origOpen = SerialPort.prototype.open;
 
         SerialPort.prototype.open = function (options) {
-          var msSinceClose = Date.now() - lastClose;
-
-          // Only activate the delay within 8 s of a close (post-flash scenario).
-          // Normal dialog-open connects arrive before any flash has happened
-          // (lastClose = 0) and are not affected.
-          if (lastClose > 0 && msSinceClose < 8000) {
+          if (options && options.bufferSize === 8192) {
             var self     = this;
-            var deadline = lastClose + 15000; // give up 15 s after close
+            var deadline = Date.now() + 25000; // absolute deadline
 
             var tryOpen = function () {
               return origOpen.call(self, options).catch(function (err) {
-                // Retry on NetworkError (device offline); propagate any other error.
+                // Retry while the USB device is still reenumerating.
                 if (
                   err instanceof DOMException &&
                   err.name === 'NetworkError' &&
@@ -69,10 +70,9 @@
               });
             };
 
-            // Wait until 4 s have elapsed since the close (minus however much
-            // time has already passed), then start retrying until success.
-            var wait = Math.max(0, lastClose + 4000 - Date.now());
-            return new Promise(function (r) { setTimeout(r, wait); }).then(tryOpen);
+            // Wait 6 s before the first attempt.  Even on slow Windows machines,
+            // USB reenumeration is complete and Improv is beaconing by then.
+            return new Promise(function (r) { setTimeout(r, 6000); }).then(tryOpen);
           }
 
           return origOpen.apply(this, arguments);
