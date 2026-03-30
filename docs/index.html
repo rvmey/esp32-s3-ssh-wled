@@ -17,6 +17,68 @@
     if ('serviceWorker' in navigator) {
       navigator.serviceWorker.register('sw.js').catch(function () {});
     }
+
+    // Post-flash USB-Serial-JTAG reconnect fix.
+    //
+    // Problem: After flashing, ESPLoader hard-resets the ESP32-S3. esp-web-tools
+    // calls port.open() only 100 ms later. At that point the USB connection is
+    // still in the bootloader phase. The improv-wifi-serial-sdk initialize()
+    // begins reading, but the IDF USB-Serial-JTAG driver initialisation (which
+    // runs as part of IDF startup, before app_main) causes a brief USB drop.
+    // That drop throws inside initialize(), setting _client = null, so the
+    // post-flash "Next" button routes to DASHBOARD instead of PROVISION and the
+    // "Connect to Wi-Fi" option never appears.
+    //
+    // Fix: intercept SerialPort.prototype.close to record the last-close time,
+    // and intercept SerialPort.prototype.open to delay the call ~4 s after a
+    // recent post-flash close. By 4 s the full IDF boot + Improv WiFi startup is
+    // complete, so initialize() finds an Improv beacon immediately and routes
+    // correctly to the WiFi provisioning form.
+    if (typeof SerialPort !== 'undefined') {
+      (function () {
+        var origClose = SerialPort.prototype.close;
+        var origOpen  = SerialPort.prototype.open;
+        var lastClose = 0;
+
+        SerialPort.prototype.close = function () {
+          lastClose = Date.now();
+          return origClose.apply(this, arguments);
+        };
+
+        SerialPort.prototype.open = function (options) {
+          var msSinceClose = Date.now() - lastClose;
+
+          // Only activate the delay within 8 s of a close (post-flash scenario).
+          // Normal dialog-open connects arrive before any flash has happened
+          // (lastClose = 0) and are not affected.
+          if (lastClose > 0 && msSinceClose < 8000) {
+            var self     = this;
+            var deadline = lastClose + 15000; // give up 15 s after close
+
+            var tryOpen = function () {
+              return origOpen.call(self, options).catch(function (err) {
+                // Retry on NetworkError (device offline); propagate any other error.
+                if (
+                  err instanceof DOMException &&
+                  err.name === 'NetworkError' &&
+                  Date.now() < deadline
+                ) {
+                  return new Promise(function (r) { setTimeout(r, 500); }).then(tryOpen);
+                }
+                return Promise.reject(err);
+              });
+            };
+
+            // Wait until 4 s have elapsed since the close (minus however much
+            // time has already passed), then start retrying until success.
+            var wait = Math.max(0, lastClose + 4000 - Date.now());
+            return new Promise(function (r) { setTimeout(r, wait); }).then(tryOpen);
+          }
+
+          return origOpen.apply(this, arguments);
+        };
+      }());
+    }
   </script>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
