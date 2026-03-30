@@ -3,11 +3,21 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <!-- Tell browsers and CDN edge nodes not to cache this page -->
+  <meta http-equiv="Cache-Control" content="no-cache, max-age=0" />
+  <meta http-equiv="Pragma" content="no-cache" />
   <title>ESP32-S3 SSH Server – Installer</title>
   <script
     type="module"
     src="https://unpkg.com/esp-web-tools@10/dist/web/install-button.js?module"
   ></script>
+  <script>
+    // Register service worker so that any future visit — even from a stale
+    // cached index.html — intercepts manifest.json and serves manifest_v2.json.
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('sw.js').catch(function () {});
+    }
+  </script>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -165,7 +175,8 @@
     </ol>
 
     <div class="install-row">
-      <esp-web-install-button manifest="manifest_v2.json"></esp-web-install-button>
+      <!-- manifest attribute is set dynamically by config.json fetch below -->
+      <esp-web-install-button id="install-btn"></esp-web-install-button>
     </div>
 
     <p class="note">
@@ -176,5 +187,17 @@
       transmitted to any server.
     </p>
   </div>
+  <script>
+    // Fetch the manifest pointer from config.json using a timestamp cache-buster.
+    // Date.now() makes the URL unique every millisecond, so it is guaranteed to
+    // bypass any CDN or browser cache and always return the current manifest path.
+    (function () {
+      var btn = document.getElementById('install-btn');
+      fetch('config.json?t=' + Date.now())
+        .then(function (r) { return r.json(); })
+        .then(function (cfg) { btn.setAttribute('manifest', cfg.manifest); })
+        .catch(function () { btn.setAttribute('manifest', 'manifest_v2.json'); });
+    }());
+  </script>
 </body>
 </html>
