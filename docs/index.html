@@ -12,8 +12,8 @@
     src="https://unpkg.com/esp-web-tools@10/dist/web/install-button.js?module"
   ></script>
   <script>
-    // Register service worker so that any future visit — even from a stale
-    // cached index.html — intercepts manifest.json and serves manifest_v2.json.
+    // Register service worker so that any future visit replaces any
+    // previously-installed SW that was redirecting manifest.json.
     if ('serviceWorker' in navigator) {
       navigator.serviceWorker.register('sw.js').catch(function () {});
     }
@@ -268,7 +268,7 @@
       fetch('config.json?t=' + Date.now())
         .then(function (r) { return r.json(); })
         .then(function (cfg) { btn.setAttribute('manifest', cfg.manifest); })
-        .catch(function () { btn.setAttribute('manifest', 'manifest_v2.json'); });
+        .catch(function () { btn.setAttribute('manifest', 'manifest.json'); });
     }());
   </script>
 </body>
