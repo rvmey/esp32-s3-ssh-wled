@@ -356,24 +356,51 @@ static const uint8_t s_font8x8[95][8] = {
 
 void screen_draw_text(const char *text)
 {
-    /* Background colour as RGB565 big-endian (same formula as screen_fill) */
+    /* ---- Word-wrap into lines of at most TEXT_COLS chars ---- */
+    static char lines[TEXT_ROWS][TEXT_COLS + 1];
+    int line_len[TEXT_ROWS];
+    int num_lines = 0;
+
+    const char *src = text;
+    while (*src && num_lines < TEXT_ROWS) {
+        /* Skip leading spaces at the start of each line */
+        while (*src == ' ') src++;
+        if (*src == '\0') break;
+
+        /* Find how much fits: try to break at a word boundary */
+        int avail = TEXT_COLS;
+        int take  = 0;
+
+        /* Count remaining non-NUL chars */
+        int remaining = (int)strlen(src);
+        if (remaining <= avail) {
+            take = remaining;          /* everything fits */
+        } else {
+            /* Walk back from avail to find a space to break on */
+            take = avail;
+            while (take > 0 && src[take] != ' ' && src[take] != '\0') take--;
+            if (take == 0) take = avail;   /* no space found: hard break */
+        }
+
+        memcpy(lines[num_lines], src, (size_t)take);
+        lines[num_lines][take] = '\0';
+        line_len[num_lines] = take;
+        num_lines++;
+        src += take;
+    }
+    if (num_lines == 0) return;
+
+    /* ---- Colours ---- */
     uint16_t bg = ((uint16_t)(s_r & 0xF8) << 8)
                 | ((uint16_t)(s_g & 0xFC) << 3)
                 | (s_b >> 3);
     uint8_t bg_h = (uint8_t)(bg >> 8);
     uint8_t bg_l = (uint8_t)(bg & 0xFF);
-
-    /* White foreground (RGB565 0xFFFF) */
     uint8_t fg_h = 0xFF;
     uint8_t fg_l = 0xFF;
 
-    int len = (int)strlen(text);
-    if (len > TEXT_COLS * TEXT_ROWS) len = TEXT_COLS * TEXT_ROWS;
-    int text_row_count = (len + TEXT_COLS - 1) / TEXT_COLS;
-    if (text_row_count < 1) text_row_count = 1;
-
-    /* Centre the block of text vertically */
-    int start_y = (LCD_H - text_row_count * CHAR_H) / 2;
+    /* Centre the block vertically */
+    int start_y = (LCD_H - num_lines * CHAR_H) / 2;
 
     /* Full-screen address window */
     uint8_t caset[] = { 0x00, 0x00,
@@ -386,25 +413,24 @@ void screen_draw_text(const char *text)
     axs_cmd(0x2B, raset, sizeof(raset));
 
     for (int y = 0; y < LCD_H; y++) {
-        /* Start with a background-filled row */
+        /* Fill row buffer with background */
         for (int i = 0; i < LCD_W * 2; i += 2) {
             s_row_buf[i]     = bg_h;
             s_row_buf[i + 1] = bg_l;
         }
 
         int rel_y = y - start_y;
-        if (rel_y >= 0 && rel_y < text_row_count * CHAR_H) {
-            int trow      = rel_y / CHAR_H;          /* text line index          */
-            int font_scan = (rel_y % CHAR_H) / FONT_SCALE; /* font scanline 0-7  */
-            int ci_start  = trow * TEXT_COLS;
-            int ci_count  = len - ci_start;
-            if (ci_count > TEXT_COLS) ci_count = TEXT_COLS;
+        if (rel_y >= 0 && rel_y < num_lines * CHAR_H) {
+            int trow      = rel_y / CHAR_H;
+            int font_scan = (rel_y % CHAR_H) / FONT_SCALE;
+            int ci_count  = line_len[trow];
+            const char *row_text = lines[trow];
 
-            /* Centre the characters in this text row horizontally */
+            /* Centre this line horizontally */
             int start_x = (LCD_W - ci_count * CHAR_W) / 2;
 
             for (int c = 0; c < ci_count; c++) {
-                unsigned char ch = (unsigned char)text[ci_start + c];
+                unsigned char ch = (unsigned char)row_text[c];
                 if (ch < 0x20 || ch > 0x7E) ch = '?';
                 uint8_t frow = s_font8x8[ch - 0x20][font_scan];
 
