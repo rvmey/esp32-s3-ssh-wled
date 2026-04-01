@@ -53,11 +53,12 @@
 /* wolfSSH */
 #include "wolfssh/ssh.h"
 
-/* wolfCrypt (for key generation) */
+/* wolfCrypt (for key generation + base64 decoding) */
 #include "wolfssl/wolfcrypt/ecc.h"
 #include "wolfssl/wolfcrypt/random.h"
 #include "wolfssl/wolfcrypt/asn.h"
 #include "wolfssl/wolfcrypt/error-crypt.h"
+#include "wolfssl/wolfcrypt/coding.h"
 
 /* sdkconfig-supplied credentials */
 #include "sdkconfig.h"
@@ -112,70 +113,81 @@ static const char s_banner[] =
 static WOLFSSH_CTX *s_ctx = NULL;
 
 /* ------------------------------------------------------------------ */
-/* Base-64 decode (used to parse authorized_keys public key blobs)     */
+/* Public-key auth check                                               */
 /* ------------------------------------------------------------------ */
-
-static int b64val(char c)
-{
-    if (c >= 'A' && c <= 'Z') return c - 'A';
-    if (c >= 'a' && c <= 'z') return c - 'a' + 26;
-    if (c >= '0' && c <= '9') return c - '0' + 52;
-    if (c == '+') return 62;
-    if (c == '/') return 63;
-    return -1;
-}
-
-/* Decode a clean base64 string (standard alphabet, may have = padding).
- * Returns decoded byte count, or -1 on buffer overflow / bad input. */
-static int b64_decode(const char *in, int n, uint8_t *out, int cap)
-{
-    int oi = 0, i = 0;
-    while (i < n) {
-        int a = (i   < n && in[i  ] != '=') ? b64val(in[i  ]) : -1;
-        int b = (i+1 < n && in[i+1] != '=') ? b64val(in[i+1]) : -1;
-        int c = (i+2 < n && in[i+2] != '=') ? b64val(in[i+2]) : -1;
-        int d = (i+3 < n && in[i+3] != '=') ? b64val(in[i+3]) : -1;
-        i += 4;
-        if (a < 0 || b < 0) break;
-        if (oi >= cap) return -1;
-        out[oi++] = (uint8_t)((a << 2) | (b >> 4));
-        if (c >= 0) { if (oi >= cap) return -1; out[oi++] = (uint8_t)(((b & 0xf) << 4) | (c >> 2)); }
-        if (d >= 0) { if (oi >= cap) return -1; out[oi++] = (uint8_t)(((c & 0x3) << 6) |  d); }
-    }
-    return oi;
-}
 
 /* Returns 1 if the presented key matches the stored authorized key, else 0. */
 static int check_pubkey_auth(WS_UserAuthData *authData)
 {
     nvs_handle_t h;
-    if (nvs_open(NVS_CFG_NS, NVS_READONLY, &h) != ESP_OK) return 0;
+    if (nvs_open(NVS_CFG_NS, NVS_READONLY, &h) != ESP_OK) {
+        ESP_LOGW(TAG, "Pubkey auth: NVS open failed");
+        return 0;
+    }
 
     char line[800] = {0};   /* "ssh-type base64blob" stored without comment */
     size_t len = sizeof(line);
     esp_err_t err = nvs_get_str(h, NVS_CFG_KEY_PKEY, line, &len);
     nvs_close(h);
-    if (err != ESP_OK || line[0] == '\0') return 0;
+    if (err != ESP_OK || line[0] == '\0') {
+        ESP_LOGW(TAG, "Pubkey auth: NVS read failed or empty (err=%d)", err);
+        return 0;
+    }
+    ESP_LOGI(TAG, "Pubkey auth: NVS key = '%.40s...'", line);
 
     /* Skip the key-type field to reach the base64 blob */
     const char *p = line;
     while (*p && *p != ' ') p++;
-    if (*p != ' ') return 0;
+    if (*p != ' ') {
+        ESP_LOGW(TAG, "Pubkey auth: no space found in stored key");
+        return 0;
+    }
     p++;  /* skip space */
 
     /* Find end of base64 blob (stop at space, CR, LF, or NUL) */
     const char *b64_end = p;
     while (*b64_end && *b64_end != ' ' &&
            *b64_end != '\r' && *b64_end != '\n') b64_end++;
-    int b64_len = (int)(b64_end - p);
-    if (b64_len <= 0) return 0;
+    word32 b64_len = (word32)(b64_end - p);
+    if (b64_len == 0) {
+        ESP_LOGW(TAG, "Pubkey auth: empty base64 blob");
+        return 0;
+    }
+    ESP_LOGI(TAG, "Pubkey auth: base64 blob length=%lu", (unsigned long)b64_len);
 
-    /* Decode and compare against the key blob wolfSSH presented */
+    /* Decode using wolfssl's Base64_Decode and compare against the key blob
+     * wolfSSH presented.  wolfssl's implementation is the authoritative
+     * decoder used everywhere else in the stack. */
     uint8_t decoded[1024];
-    int dec_len = b64_decode(p, b64_len, decoded, (int)sizeof(decoded));
-    if (dec_len <= 0) return 0;
-    if ((word32)dec_len != authData->sf.publicKey.publicKeySz) return 0;
-    return memcmp(decoded, authData->sf.publicKey.publicKey, dec_len) == 0;
+    word32 dec_len = (word32)sizeof(decoded);
+    int rc = Base64_Decode((const byte *)p, b64_len, decoded, &dec_len);
+    if (rc != 0) {
+        ESP_LOGW(TAG, "Pubkey auth: Base64_Decode failed rc=%d", rc);
+        return 0;
+    }
+    ESP_LOGI(TAG, "Pubkey auth: decoded=%lu wolfSSH publicKeySz=%lu",
+             (unsigned long)dec_len,
+             (unsigned long)authData->sf.publicKey.publicKeySz);
+    if (dec_len != authData->sf.publicKey.publicKeySz) {
+        ESP_LOGW(TAG, "Pubkey auth: size mismatch — decoded=%lu vs wolfSSH=%lu",
+                 (unsigned long)dec_len,
+                 (unsigned long)authData->sf.publicKey.publicKeySz);
+        return 0;
+    }
+    int match = (memcmp(decoded, authData->sf.publicKey.publicKey, dec_len) == 0);
+    if (!match) {
+        ESP_LOGW(TAG, "Pubkey auth: key content mismatch");
+        /* Log first 8 bytes of each for comparison */
+        ESP_LOGW(TAG, "Pubkey auth: decoded[0..7]  = %02x %02x %02x %02x %02x %02x %02x %02x",
+                 decoded[0], decoded[1], decoded[2], decoded[3],
+                 decoded[4], decoded[5], decoded[6], decoded[7]);
+        const byte *wk = authData->sf.publicKey.publicKey;
+        ESP_LOGW(TAG, "Pubkey auth: wolfSSH[0..7]  = %02x %02x %02x %02x %02x %02x %02x %02x",
+                 wk[0], wk[1], wk[2], wk[3], wk[4], wk[5], wk[6], wk[7]);
+    } else {
+        ESP_LOGI(TAG, "Pubkey auth: key match!");
+    }
+    return match;
 }
 
 /* ------------------------------------------------------------------ */
