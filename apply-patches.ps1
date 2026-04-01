@@ -10,9 +10,9 @@
     working state.
 
     Patches applied:
-      0001  esp_sdk_mem_lib.c  – rename enum member 'thread_local' to
-                                 'thread_local_seg' (C23 made it a keyword)
-      0002  user_settings.h    – disable wolfssl HW acceleration for ESP32-S3
+      0001  esp_sdk_mem_lib.c  - rename enum member thread_local to
+                                 thread_local_seg (C23 made it a keyword)
+      0002  user_settings.h    - disable wolfssl HW acceleration for ESP32-S3
                                  (PERIPH_AES_MODULE / PERIPH_RSA_MODULE removed
                                  from ESP-IDF v6.0 periph_defs.h)
 #>
@@ -32,19 +32,19 @@ function Patch-File {
     $FullPath = Join-Path $Root $RelPath
 
     if (-not (Test-Path $FullPath)) {
-        Write-Warning "SKIP  $RelPath  (file not found — run 'idf.py build' once first to populate managed_components/)"
+        Write-Warning "SKIP  $RelPath  (file not found - run idf.py build once first to populate managed_components/)"
         return
     }
 
     $content = Get-Content $FullPath -Raw -Encoding UTF8
 
-    if ($content -like "*$NewText*") {
+    if ($content.Contains($NewText)) {
         Write-Host "SKIP  $Description  (already applied)" -ForegroundColor DarkGray
         return
     }
 
-    if (-not ($content -like "*$OldText*")) {
-        Write-Warning "SKIP  $Description  (original text not found — wolfssl version may differ)"
+    if (-not $content.Contains($OldText)) {
+        Write-Warning "SKIP  $Description  (original text not found - wolfssl version may differ)"
         return
     }
 
@@ -54,54 +54,31 @@ function Patch-File {
 }
 
 # ---------------------------------------------------------------------------
-# Patch 0001 – esp_sdk_mem_lib.c: thread_local → thread_local_seg
+# Patch 0001 - esp_sdk_mem_lib.c: thread_local -> thread_local_seg
 # ---------------------------------------------------------------------------
 Patch-File `
-    -RelPath   "managed_components\wolfssl__wolfssl\wolfcrypt\src\port\Espressif\esp_sdk_mem_lib.c" `
-    -OldText   "    thread_local, /* thread_local_start to thread_local_end */" `
-    -NewText   "    thread_local_seg, /* renamed from thread_local: C23 made thread_local a keyword */" `
-    -Description "0001 esp_sdk_mem_lib.c enum member thread_local → thread_local_seg"
+    -RelPath      "managed_components\wolfssl__wolfssl\wolfcrypt\src\port\Espressif\esp_sdk_mem_lib.c" `
+    -OldText      "    thread_local, /* thread_local_start to thread_local_end */" `
+    -NewText      "    thread_local_seg, /* renamed from thread_local: C23 made thread_local a keyword */" `
+    -Description  "0001 esp_sdk_mem_lib.c enum member thread_local -> thread_local_seg"
 
 Patch-File `
-    -RelPath   "managed_components\wolfssl__wolfssl\wolfcrypt\src\port\Espressif\esp_sdk_mem_lib.c" `
-    -OldText   "    sdk_log_meminfo(thread_local,  _thread_local_start, _thread_local_end);" `
-    -NewText   "    sdk_log_meminfo(thread_local_seg,  _thread_local_start, _thread_local_end);" `
-    -Description "0001 esp_sdk_mem_lib.c usage thread_local → thread_local_seg"
+    -RelPath      "managed_components\wolfssl__wolfssl\wolfcrypt\src\port\Espressif\esp_sdk_mem_lib.c" `
+    -OldText      "    sdk_log_meminfo(thread_local,  _thread_local_start, _thread_local_end);" `
+    -NewText      "    sdk_log_meminfo(thread_local_seg,  _thread_local_start, _thread_local_end);" `
+    -Description  "0001 esp_sdk_mem_lib.c usage thread_local -> thread_local_seg"
 
 # ---------------------------------------------------------------------------
-# Patch 0002 – user_settings.h: disable wolfssl HW crypto for ESP32-S3
+# Patch 0002 - user_settings.h: disable wolfssl HW crypto for ESP32-S3
+# user_settings.h uses LF-only line endings (downloaded from component registry)
 # ---------------------------------------------------------------------------
+$old02 = "#elif defined(CONFIG_IDF_TARGET_ESP32S3)`n    #define WOLFSSL_ESP32`n    /* wolfSSL HW Acceleration supported on ESP32-S3. Uncomment to disable: */`n    /*  #define NO_ESP32_CRYPT                 */`n    /*  #define NO_WOLFSSL_ESP32_CRYPT_HASH    */`n    /*  #define NO_WOLFSSL_ESP32_CRYPT_AES     */`n    /*  #define NO_WOLFSSL_ESP32_CRYPT_RSA_PRI */`n    /*  #define NO_WOLFSSL_ESP32_CRYPT_RSA_PRI_MP_MUL  */`n    /*  #define NO_WOLFSSL_ESP32_CRYPT_RSA_PRI_MULMOD  */`n    /*  #define NO_WOLFSSL_ESP32_CRYPT_RSA_PRI_EXPTMOD */`n    /***** END CONFIG_IDF_TARGET_ESP32S3 *****/"
+$new02 = "#elif defined(CONFIG_IDF_TARGET_ESP32S3)`n    #define WOLFSSL_ESP32`n    /* Hardware acceleration disabled for ESP-IDF v6.0 compatibility.`n     * PERIPH_AES_MODULE / PERIPH_RSA_MODULE were removed from periph_defs.h`n     * in IDF v6.0, and clk_gate_ll.h moved to esp_hal_clock component.`n     * Fall back to software crypto.`n     * Note: Must define all NO_WOLFSSL_ESP32_CRYPT_* here (not just`n     * NO_ESP32_CRYPT) because sha.h checks NO_WOLFSSL_ESP32_CRYPT_HASH`n     * before esp32-crypt.h is included. */`n    #define NO_ESP32_CRYPT`n    #define NO_WOLFSSL_ESP32_CRYPT_HASH`n    #define NO_WOLFSSL_ESP32_CRYPT_AES`n    #define NO_WOLFSSL_ESP32_CRYPT_RSA_PRI`n    /***** END CONFIG_IDF_TARGET_ESP32S3 *****/"
+
 Patch-File `
-    -RelPath   "managed_components\wolfssl__wolfssl\include\user_settings.h" `
-    -OldText   @'
-#elif defined(CONFIG_IDF_TARGET_ESP32S3)
-    #define WOLFSSL_ESP32
-    /* wolfSSL HW Acceleration supported on ESP32-S3. Uncomment to disable: */
-    /*  #define NO_ESP32_CRYPT                 */
-    /*  #define NO_WOLFSSL_ESP32_CRYPT_HASH    */
-    /*  #define NO_WOLFSSL_ESP32_CRYPT_AES     */
-    /*  #define NO_WOLFSSL_ESP32_CRYPT_RSA_PRI */
-    /*  #define NO_WOLFSSL_ESP32_CRYPT_RSA_PRI_MP_MUL  */
-    /*  #define NO_WOLFSSL_ESP32_CRYPT_RSA_PRI_MULMOD  */
-    /*  #define NO_WOLFSSL_ESP32_CRYPT_RSA_PRI_EXPTMOD */
-    /***** END CONFIG_IDF_TARGET_ESP32S3 *****/
-'@ `
-    -NewText   @'
-#elif defined(CONFIG_IDF_TARGET_ESP32S3)
-    #define WOLFSSL_ESP32
-    /* Hardware acceleration disabled for ESP-IDF v6.0 compatibility.
-     * PERIPH_AES_MODULE / PERIPH_RSA_MODULE were removed from periph_defs.h
-     * in IDF v6.0, and clk_gate_ll.h moved to esp_hal_clock component.
-     * Fall back to software crypto.
-     * Note: Must define all NO_WOLFSSL_ESP32_CRYPT_* here (not just
-     * NO_ESP32_CRYPT) because sha.h checks NO_WOLFSSL_ESP32_CRYPT_HASH
-     * before esp32-crypt.h is included. */
-    #define NO_ESP32_CRYPT
-    #define NO_WOLFSSL_ESP32_CRYPT_HASH
-    #define NO_WOLFSSL_ESP32_CRYPT_AES
-    #define NO_WOLFSSL_ESP32_CRYPT_RSA_PRI
-    /***** END CONFIG_IDF_TARGET_ESP32S3 *****/
-'@ `
-    -Description "0002 user_settings.h disable HW crypto for ESP32-S3 / IDF v6.0"
+    -RelPath      "managed_components\wolfssl__wolfssl\include\user_settings.h" `
+    -OldText      $old02 `
+    -NewText      $new02 `
+    -Description  "0002 user_settings.h disable HW crypto for ESP32-S3 / IDF v6.0"
 
 Write-Host "`nDone." -ForegroundColor Cyan
