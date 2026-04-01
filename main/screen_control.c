@@ -409,7 +409,7 @@ void screen_draw_text(const char *text)
                 uint8_t frow = s_font8x8[ch - 0x20][font_scan];
 
                 for (int bit = 0; bit < 8; bit++) {
-                    bool is_fg = (frow & (0x80u >> bit)) != 0;
+                    bool is_fg = (frow & (0x01u << bit)) != 0;
                     uint8_t ph = is_fg ? fg_h : bg_h;
                     uint8_t pl = is_fg ? fg_l : bg_l;
                     int px = start_x + c * CHAR_W + bit * FONT_SCALE;
