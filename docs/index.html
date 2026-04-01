@@ -151,6 +151,36 @@
       margin-bottom: 1.5rem;
     }
 
+    /* Hardware variant selector */
+    .variant-select {
+      display: flex;
+      gap: 0.75rem;
+      margin-bottom: 1.5rem;
+    }
+
+    .variant-select label {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      background: #252840;
+      border: 2px solid #3a3f60;
+      border-radius: 0.6rem;
+      padding: 0.6rem 0.85rem;
+      cursor: pointer;
+      font-size: 0.88rem;
+      color: #cbd5e1;
+      transition: border-color 0.2s, background 0.2s;
+    }
+
+    .variant-select input[type="radio"] { display: none; }
+
+    .variant-select label:has(input:checked) {
+      border-color: #4f46e5;
+      background: #2d2f55;
+      color: #e2e8f0;
+    }
+
     /* Style the ESP Web Tools button */
     esp-web-install-button::part(button) {
       background: #4f46e5;
@@ -196,6 +226,12 @@
     <ol class="steps">
       <li>
         <div>
+          <strong>Select your hardware variant below.</strong><br />
+          Choose the board that matches the device you are flashing.
+        </div>
+      </li>
+      <li>
+        <div>
           <strong>Connect your ESP32-S3 via USB.</strong><br />
           Use the USB cable connected to the <span class="badge">USB-UART</span>
           (not the native USB) port if your board has both.
@@ -220,7 +256,7 @@
       <li>
         <div>
           <strong>Connect via SSH.</strong><br />
-          Once the LED turns solid green run:<br />
+          Once the device is ready run:<br />
           <span class="badge">ssh admin@&lt;device-ip&gt;</span><br />
           or send a single command non-interactively:<br />
           <span class="badge">ssh admin@&lt;device-ip&gt; 'color red'</span><br />
@@ -229,6 +265,18 @@
         </div>
       </li>
     </ol>
+
+    <!-- Hardware variant selector -->
+    <div class="variant-select">
+      <label>
+        <input type="radio" name="variant" value="manifest-devkitc.json" checked />
+        &#9679;&nbsp;<span><strong>DevKitC-1</strong><br />Onboard RGB LED</span>
+      </label>
+      <label>
+        <input type="radio" name="variant" value="manifest-jc3248w535.json" />
+        &#9679;&nbsp;<span><strong>JC3248W535</strong><br />320&times;480 Screen</span>
+      </label>
+    </div>
 
     <div class="install-row">
       <!-- manifest attribute is set dynamically by config.json fetch below -->
@@ -244,15 +292,22 @@
     </p>
   </div>
   <script>
-    // Fetch the manifest pointer from config.json using a timestamp cache-buster.
-    // Date.now() makes the URL unique every millisecond, so it is guaranteed to
-    // bypass any CDN or browser cache and always return the current manifest path.
     (function () {
       var btn = document.getElementById('install-btn');
-      fetch('config.json?t=' + Date.now())
-        .then(function (r) { return r.json(); })
-        .then(function (cfg) { btn.setAttribute('manifest', cfg.manifest); })
-        .catch(function () { btn.setAttribute('manifest', 'manifest.json'); });
+
+      // Set the manifest based on which variant radio is selected.
+      function updateManifest() {
+        var selected = document.querySelector('input[name="variant"]:checked');
+        btn.setAttribute('manifest', selected ? selected.value : 'manifest-devkitc.json');
+      }
+
+      // Wire up change events on the radio buttons.
+      document.querySelectorAll('input[name="variant"]').forEach(function (r) {
+        r.addEventListener('change', updateManifest);
+      });
+
+      // Set initial manifest from the checked radio.
+      updateManifest();
     }());
   </script>
 </body>

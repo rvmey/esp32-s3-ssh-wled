@@ -4,14 +4,48 @@
 #include "freertos/task.h"
 #include "nvs_flash.h"
 #include "esp_log.h"
+#include "sdkconfig.h"
 
 #include "wifi_manager.h"
 #include "improv_wifi.h"
-#include "led_control.h"
 #include "ssh_server.h"
 #include "http_config.h"
 
+#if CONFIG_HARDWARE_DEVKITC
+#include "led_control.h"
+#elif CONFIG_HARDWARE_JC3248W535
+#include "screen_control.h"
+#endif
+
 static const char *TAG = "main";
+
+/* Thin wrappers so startup code below is readable regardless of variant */
+static inline void hw_init(void)
+{
+#if CONFIG_HARDWARE_DEVKITC
+    led_init();
+#elif CONFIG_HARDWARE_JC3248W535
+    screen_init();
+#endif
+}
+
+static inline void hw_set_color(uint8_t r, uint8_t g, uint8_t b)
+{
+#if CONFIG_HARDWARE_DEVKITC
+    led_set_color(r, g, b);
+#elif CONFIG_HARDWARE_JC3248W535
+    screen_set_color(r, g, b);
+#endif
+}
+
+static inline void hw_off(void)
+{
+#if CONFIG_HARDWARE_DEVKITC
+    led_off();
+#elif CONFIG_HARDWARE_JC3248W535
+    screen_off();
+#endif
+}
 
 void app_main(void)
 {
@@ -24,44 +58,43 @@ void app_main(void)
     }
     ESP_ERROR_CHECK(err);
 
-    /* Initialise the WS2812 RGB LED on GPIO 48 */
-    led_init();
+    /* Initialise the output device for this hardware variant */
+    hw_init();
 
     if (!wifi_has_stored_credentials()) {
         /* No saved credentials – wait for the web installer to provision us */
         ESP_LOGI(TAG, "No WiFi credentials stored. "
                       "Open the installer page to configure WiFi.");
-        led_set_color(0, 0, 64); /* blue = waiting for provisioning */
+        hw_set_color(0, 0, 64); /* blue = waiting for provisioning */
         if (improv_wifi_start() != ESP_OK) {
-            led_set_color(64, 0, 0);
+            hw_set_color(64, 0, 0);
             ESP_LOGE(TAG, "Provisioning failed. Halting.");
             vTaskSuspend(NULL);
         }
     } else {
         /* Brief blue blink then connect with stored (or Kconfig) credentials */
-        led_set_color(0, 0, 64);
+        hw_set_color(0, 0, 64);
         vTaskDelay(pdMS_TO_TICKS(300));
-        led_off();
+        hw_off();
 
         if (wifi_connect() != ESP_OK) {
-            led_set_color(64, 0, 0);
+            hw_set_color(64, 0, 0);
             ESP_LOGE(TAG, "Wi-Fi connection failed. Halting.");
             vTaskSuspend(NULL);
         }
     }
 
     /* Solid green → Wi-Fi connected */
-    led_set_color(0, 32, 0);
+    hw_set_color(0, 32, 0);
     vTaskDelay(pdMS_TO_TICKS(500));
-    led_off();
+    hw_off();
 
     /* Start the HTTP config server so the user can set the SSH password */
     http_config_start();
 
     /* Start the SSH server */
     if (ssh_server_start() != ESP_OK) {
-        /* Solid red → SSH init failed */
-        led_set_color(64, 0, 0);
+        hw_set_color(64, 0, 0);
         ESP_LOGE(TAG, "SSH server failed to start. Halting.");
         vTaskSuspend(NULL);
     }

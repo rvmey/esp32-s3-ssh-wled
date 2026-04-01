@@ -1,8 +1,10 @@
 /*
  * ssh_server.c
  *
- * wolfSSH-based SSH server for the ESP32-S3-DevKitC-1.
- * Provides an interactive shell to control the onboard WS2812 LED on GPIO 48.
+ * wolfSSH-based SSH server for the ESP32-S3.
+ * Provides an interactive shell to control the output device (RGB LED or
+ * QSPI display) selected at build time via CONFIG_HARDWARE_DEVKITC /
+ * CONFIG_HARDWARE_JC3248W535.
  *
  * Shell commands
  * --------------
@@ -10,7 +12,7 @@
  *                                    magenta purple orange pink
  *   color R G B       RGB triplet, each 0-255
  *   color #RRGGBB     Hex colour string
- *   off               Turn the LED off
+ *   off               Turn the output off
  *   status            Print the current colour
  *   help              Print command reference
  *   exit | quit       Close the SSH session
@@ -23,7 +25,12 @@
  */
 
 #include "ssh_server.h"
+
+#if CONFIG_HARDWARE_DEVKITC
 #include "led_control.h"
+#elif CONFIG_HARDWARE_JC3248W535
+#include "screen_control.h"
+#endif
 
 #include <string.h>
 #include <stdlib.h>
@@ -80,6 +87,15 @@ static const char *TAG = "ssh_srv";
 /* Banner text                                                         */
 /* ------------------------------------------------------------------ */
 
+#if CONFIG_HARDWARE_JC3248W535
+static const char s_banner[] =
+    "\r\n"
+    "  +-----------------------------------------+\r\n"
+    "  |  ESP32-S3 Screen Controller via SSH      |\r\n"
+    "  |  Type 'help' for available commands.     |\r\n"
+    "  +-----------------------------------------+\r\n"
+    "\r\n";
+#else
 static const char s_banner[] =
     "\r\n"
     "  +-----------------------------------------+\r\n"
@@ -87,6 +103,7 @@ static const char s_banner[] =
     "  |  Type 'help' for available commands.     |\r\n"
     "  +-----------------------------------------+\r\n"
     "\r\n";
+#endif
 
 /* ------------------------------------------------------------------ */
 /* wolfSSH global context                                              */
@@ -529,6 +546,18 @@ static int parse_name(const char *name, uint8_t *r, uint8_t *g, uint8_t *b)
     return 0;
 }
 
+#if CONFIG_HARDWARE_JC3248W535
+static const char s_help[] =
+    "Commands:\r\n"
+    "  color <name>      Named colour: red green blue white yellow\r\n"
+    "                    cyan magenta purple orange pink\r\n"
+    "  color R G B       RGB triplet, each value 0-255\r\n"
+    "  color #RRGGBB     Hex colour (e.g. #FF8800)\r\n"
+    "  off               Fill screen black\r\n"
+    "  status            Show current screen colour\r\n"
+    "  help              Show this help text\r\n"
+    "  exit | quit       Close the connection\r\n";
+#else
 static const char s_help[] =
     "Commands:\r\n"
     "  color <name>      Named colour: red green blue white yellow\r\n"
@@ -539,6 +568,7 @@ static const char s_help[] =
     "  status            Show current LED colour\r\n"
     "  help              Show this help text\r\n"
     "  exit | quit       Close the connection\r\n";
+#endif
 
 /* ------------------------------------------------------------------ */
 /* Handle a single parsed command.                                     */
@@ -570,13 +600,29 @@ static int handle_command(WOLFSSH *ssh, const char *line)
 
     /* ---- off ---- */
     if (strcasecmp(line, "off") == 0) {
+#if CONFIG_HARDWARE_JC3248W535
+        screen_off();
+        ssh_puts(ssh, "Screen off." CRLF);
+#else
         led_off();
         ssh_puts(ssh, "LED off." CRLF);
+#endif
         return 0;
     }
 
     /* ---- status ---- */
     if (strcasecmp(line, "status") == 0) {
+#if CONFIG_HARDWARE_JC3248W535
+        screen_get_color(&r, &g, &b);
+        if (r == 0 && g == 0 && b == 0) {
+            ssh_puts(ssh, "Screen is off (black)." CRLF);
+        } else {
+            snprintf(tmp, sizeof(tmp),
+                     "Screen: R:%-3d G:%-3d B:%-3d  (#%02X%02X%02X)" CRLF,
+                     r, g, b, r, g, b);
+            ssh_puts(ssh, tmp);
+        }
+#else
         led_get_color(&r, &g, &b);
         if (r == 0 && g == 0 && b == 0) {
             ssh_puts(ssh, "LED is off." CRLF);
@@ -586,6 +632,7 @@ static int handle_command(WOLFSSH *ssh, const char *line)
                      r, g, b, r, g, b);
             ssh_puts(ssh, tmp);
         }
+#endif
         return 0;
     }
 
@@ -612,10 +659,17 @@ static int handle_command(WOLFSSH *ssh, const char *line)
             return 0;
         }
 
+#if CONFIG_HARDWARE_JC3248W535
+        screen_set_color(r, g, b);
+        snprintf(tmp, sizeof(tmp),
+                 "Screen set to R:%-3d G:%-3d B:%-3d  (#%02X%02X%02X)" CRLF,
+                 r, g, b, r, g, b);
+#else
         led_set_color(r, g, b);
         snprintf(tmp, sizeof(tmp),
                  "LED set to R:%-3d G:%-3d B:%-3d  (#%02X%02X%02X)" CRLF,
                  r, g, b, r, g, b);
+#endif
         ssh_puts(ssh, tmp);
         return 0;
     }

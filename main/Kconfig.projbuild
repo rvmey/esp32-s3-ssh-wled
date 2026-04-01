@@ -1,5 +1,19 @@
 menu "ESP32 SSH LED Configuration"
 
+    choice HARDWARE_VARIANT
+        prompt "Hardware variant"
+        default HARDWARE_DEVKITC
+        help
+            Select the target board. This controls which output device
+            (onboard LED or QSPI display) responds to SSH color commands.
+
+        config HARDWARE_DEVKITC
+            bool "ESP32-S3-DevKitC-1 (onboard WS2812 RGB LED on GPIO 48)"
+
+        config HARDWARE_JC3248W535
+            bool "Guition JC3248W535 (320x480 AXS15231 QSPI display)"
+    endchoice
+
     config WIFI_SSID
         string "WiFi SSID"
         default "MyWifi"

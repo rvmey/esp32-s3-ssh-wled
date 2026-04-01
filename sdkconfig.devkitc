@@ -1,0 +1,2 @@
+# Hardware variant: ESP32-S3-DevKitC-1 (onboard WS2812 RGB LED on GPIO 48)
+CONFIG_HARDWARE_DEVKITC=y

@@ -1,7 +1,28 @@
-# ESP32-S3 RGB LED Controller via SSH
+# ESP32-S3 SSH Server
 
-Control the onboard WS2812 RGB LED (GPIO 48) on the **ESP32-S3-DevKitC-1** over
-a real SSH connection powered by **wolfSSH**.
+Control an ESP32-S3 output device (RGB LED or colour screen) over a real SSH
+connection powered by **[wolfSSH](https://www.wolfssl.com/wolfssh/)**.  Two
+hardware variants are supported; choose the one that matches your board.
+
+| Variant | Hardware | What it controls |
+|---------|----------|------------------|
+| [ESP32-S3-DevKitC-1](ESP32-S3-DevKitC-1.md) | DevKitC-1 | Onboard WS2812 RGB LED (GPIO 48) |
+| [JC3248W535](JC3248W535.md) | Guition JC3248W535 | 320×480 AXS15231 QSPI display |
+
+---
+
+## Browser installer
+
+The easiest way to flash the firmware is the **web installer** — no toolchain
+required, just a Chromium-based browser (Chrome, Edge, Opera):
+
+**<https://rvmey.github.io/esp32-s3-ssh-wled/>**
+
+1. Open the page, select your hardware variant.
+2. Click **Install** and choose the serial port.
+3. Enter your WiFi credentials when prompted — they go directly to the device
+   over USB and are never sent to any server.
+4. Connect via SSH once the device reports its IP address.
 
 ---
 
@@ -11,14 +32,21 @@ a real SSH connection powered by **wolfSSH**.
 esp32_ssh_led/
 ├── CMakeLists.txt
 ├── sdkconfig.defaults
+├── docs/                          ← GitHub Pages web installer
+│   ├── index.html
+│   ├── manifest-devkitc.json
+│   ├── manifest-jc3248w535.json
+│   └── firmware/
 ├── main/
 │   ├── CMakeLists.txt
-│   ├── idf_component.yml      ← declares wolfSSH + led_strip dependencies
-│   ├── Kconfig.projbuild      ← WiFi / SSH credentials (menuconfig)
+│   ├── idf_component.yml          ← wolfSSH + led_strip dependencies
+│   ├── Kconfig.projbuild          ← WiFi / SSH / variant config (menuconfig)
 │   ├── main.c
 │   ├── wifi_manager.{h,c}
-│   ├── led_control.{h,c}      ← WS2812 driver (RMT, GPIO 48)
-│   └── ssh_server.{h,c}       ← wolfSSH server + shell
+│   ├── improv_wifi.{h,c}
+│   ├── led_control.{h,c}          ← WS2812 driver (DevKitC-1 variant)
+│   ├── screen_control.{h,c}       ← AXS15231 QSPI driver (JC3248W535 variant)
+│   └── ssh_server.{h,c}           ← wolfSSH server + interactive shell
 ```
 
 ---
@@ -35,7 +63,7 @@ esp32_ssh_led/
 
 ## Build & flash
 
-### 1  Configure credentials
+### 1  Configure credentials and hardware variant
 
 ```bash
 idf.py menuconfig
@@ -45,6 +73,7 @@ Navigate to **"ESP32 SSH LED Configuration"** and set:
 
 | Setting | Default | Notes |
 |---------|---------|-------|
+| **Hardware variant** | `DevKitC-1` | Select your target board |
 | WiFi SSID | `MyWifi` | Your 2.4 GHz network name |
 | WiFi Password | *(empty)* | Leave empty for open networks |
 | SSH Port | `22` | Change to e.g. `2222` if port 22 is blocked |
@@ -66,7 +95,7 @@ and the **espressif/led_strip** component on the first build.
 idf.py -p COM<N> flash monitor
 ```
 
-The serial monitor will print the device's IP address once Wi-Fi connects.
+The serial monitor prints the device's IP address once Wi-Fi connects.
 
 ---
 
@@ -86,53 +115,6 @@ Use the password set in menuconfig (default: `esp32led`).
 
 ---
 
-## Shell commands
-
-```
-> help
-
-Commands:
-  color <name>      Named colour: red green blue white yellow
-                    cyan magenta purple orange pink
-  color R G B       RGB triplet, each value 0-255
-  color #RRGGBB     Hex colour (e.g. #FF8800)
-  off               Turn the LED off
-  status            Show current LED colour
-  help              Show this help text
-  exit | quit       Close the connection
-```
-
-### Examples
-
-```
-> color red
-LED set to R:255 G:0   B:0    (#FF0000)
-
-> color 0 128 255
-LED set to R:0   G:128 B:255  (#0080FF)
-
-> color #FF8800
-LED set to R:255 G:136 B:0    (#FF8800)
-
-> off
-LED off.
-
-> status
-LED is off.
-```
-
----
-
-## LED boot indicators
-
-| Colour | Meaning |
-|--------|---------|
-| Brief blue | LED driver initialised |
-| Brief green | Wi-Fi connected, IP obtained |
-| Solid red | Error (Wi-Fi failed or SSH init failed) — check serial log |
-
----
-
 ## Security notes
 
 * The default password `esp32led` is intentionally obvious — set a strong
@@ -141,8 +123,7 @@ LED is off.
   SSH-2 with AES, ECC, and SHA-2; the connection is fully encrypted.
 * The host key is stored in NVS (unencrypted by default). Enable NVS
   encryption (`CONFIG_NVS_ENCRYPTION=y`) for extra protection.
-* Only **password authentication** is enabled. Public-key auth can be added
-  by extending `user_auth_cb` in `ssh_server.c`.
+* Only **password authentication** is enabled by default.
 
 ---
 
@@ -153,4 +134,7 @@ LED is off.
 | `wolfSSH_init failed` | wolfSSL not configured — check `idf_component.yml` version |
 | Host key error at connect | NVS corrupt — run `idf.py erase-flash` |
 | `bind() failed on port 22` | Some routers block port 22 from LAN — try port 2222 |
-| Wrong LED colour / no output | Wrong pixel format — change `LED_PIXEL_FORMAT_GRB` ↔ `LED_PIXEL_FORMAT_RGB` in `led_control.c` |
+
+For hardware-specific troubleshooting see the variant docs:
+[ESP32-S3-DevKitC-1.md](ESP32-S3-DevKitC-1.md) · [JC3248W535.md](JC3248W535.md)
+

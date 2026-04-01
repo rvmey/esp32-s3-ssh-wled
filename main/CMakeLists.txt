@@ -1,11 +1,18 @@
+# Hardware-variant source files: only one output driver is compiled per build.
+if(CONFIG_HARDWARE_JC3248W535)
+    set(VARIANT_SRCS "screen_control.c")
+else()
+    set(VARIANT_SRCS "led_control.c")
+endif()
+
 idf_component_register(
     SRCS
         "main.c"
         "wifi_manager.c"
         "improv_wifi.c"
-        "led_control.c"
         "ssh_server.c"
         "http_config.c"
+        ${VARIANT_SRCS}
     INCLUDE_DIRS
         "."
 )

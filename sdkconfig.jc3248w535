@@ -1,0 +1,2 @@
+# Hardware variant: Guition JC3248W535 (320x480 AXS15231 QSPI display)
+CONFIG_HARDWARE_JC3248W535=y
