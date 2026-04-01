@@ -565,6 +565,7 @@ static const char s_help[] =
     "                    cyan magenta purple orange pink\r\n"
     "  color R G B       RGB triplet, each value 0-255\r\n"
     "  color #RRGGBB     Hex colour (e.g. #FF8800)\r\n"
+    "  text <message>    Draw white text on screen (wraps at 20 chars)\r\n"
     "  off               Fill screen black\r\n"
     "  status            Show current screen colour\r\n"
     "  help              Show this help text\r\n"
@@ -609,6 +610,22 @@ static int handle_command(WOLFSSH *ssh, const char *line)
         ssh_puts(ssh, s_help);
         return 0;
     }
+
+    /* ---- text (JC3248W535 only) ---- */
+#if CONFIG_HARDWARE_JC3248W535
+    if (strncasecmp(line, "text", 4) == 0 &&
+        (line[4] == ' ' || line[4] == '\t' || line[4] == '\0')) {
+        const char *msg = skip_ws(line + 4);
+        if (*msg == '\0') {
+            ssh_puts(ssh, "Usage: text <message>" CRLF);
+            return 0;
+        }
+        screen_draw_text(msg);
+        snprintf(tmp, sizeof(tmp), "Screen text: %s" CRLF, msg);
+        ssh_puts(ssh, tmp);
+        return 0;
+    }
+#endif
 
     /* ---- off ---- */
     if (strcasecmp(line, "off") == 0) {
