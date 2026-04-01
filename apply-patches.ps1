@@ -81,4 +81,19 @@ Patch-File `
     -NewText      $new02 `
     -Description  "0002 user_settings.h disable HW crypto for ESP32-S3 / IDF v6.0"
 
+# ---------------------------------------------------------------------------
+# Patch 0003 - user_settings.h: add WOLFSSL_ED25519_STREAMING_VERIFY
+# wolfSSH >= 1.4.20 internal.h forces WOLFSSH_NO_ED25519 (disabling ed25519
+# user auth entirely) unless WOLFSSL_ED25519_STREAMING_VERIFY is defined.
+# user_settings.h uses LF-only line endings (downloaded from component registry)
+# ---------------------------------------------------------------------------
+$old03 = "    /* ED25519 requires SHA512 */`n    #define HAVE_ED25519`n#endif"
+$new03 = "    /* ED25519 requires SHA512 */`n    #define HAVE_ED25519`n    /* wolfSSH >= 1.4.20 requires WOLFSSL_ED25519_STREAMING_VERIFY.`n     * Without it, wolfssh/internal.h forces WOLFSSH_NO_ED25519, completely`n     * disabling ed25519 user auth (ssh-ed25519 public key login). */`n    #define WOLFSSL_ED25519_STREAMING_VERIFY`n#endif"
+
+Patch-File `
+    -RelPath      "managed_components\wolfssl__wolfssl\include\user_settings.h" `
+    -OldText      $old03 `
+    -NewText      $new03 `
+    -Description  "0003 user_settings.h add WOLFSSL_ED25519_STREAMING_VERIFY for wolfssh 1.4.20"
+
 Write-Host "`nDone." -ForegroundColor Cyan
