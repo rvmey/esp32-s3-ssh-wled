@@ -89,6 +89,12 @@ idf.py build
 The IDF Component Manager will automatically download **wolfSSH**, **wolfSSL**,
 and the **espressif/led_strip** component on the first build.
 
+> **ESP-IDF v6.0 note** — wolfssl 5.8.2 has minor incompatibilities with
+> ESP-IDF v6.0 (C23 keyword conflict, removed peripheral module defines).
+> Run `.\apply-patches.ps1` once after the first build (which populates
+> `managed_components/`) to apply the fixes.  `build.ps1` does this
+> automatically.
+
 ### 3  Flash & monitor
 
 ```bash

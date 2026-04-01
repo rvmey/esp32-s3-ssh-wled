@@ -109,6 +109,11 @@ if (-not (Test-Path $FirmwareDir)) {
     New-Item -ItemType Directory -Path $FirmwareDir | Out-Null
 }
 
+# Apply patches to managed_components/ (fixes wolfssl 5.8.2 / IDF v6.0 incompatibilities).
+# The script is idempotent — safe to run on every build.
+Write-Step "Applying managed_components patches"
+& (Join-Path $PSScriptRoot 'apply-patches.ps1')
+
 # Optional clean
 if ($Clean) {
     foreach ($v in $variants) {
