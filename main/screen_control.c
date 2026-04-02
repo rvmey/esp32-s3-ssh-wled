@@ -146,11 +146,12 @@ static void screen_fill(uint8_t r, uint8_t g, uint8_t b)
         s_row_buf[i + 1] = pl;
     }
 
-    /* Set full-screen address window */
-    uint8_t caset[] = { 0x00, 0x00, (uint8_t)((w-1)>>8), (uint8_t)((w-1)&0xFF) };
-    uint8_t raset[] = { 0x00, 0x00, (uint8_t)((h-1)>>8), (uint8_t)((h-1)&0xFF) };
-    axs_cmd(0x2A, caset, sizeof(caset));   /* CASET */
-    axs_cmd(0x2B, raset, sizeof(raset));   /* RASET */
+    /* Address window: always physical panel dimensions regardless of orientation.
+     * MADCTL MV changes the GRAM scan direction; CASET/RASET are physical coords. */
+    uint8_t caset[] = { 0x00, 0x00, (uint8_t)((LCD_PHYS_W-1)>>8), (uint8_t)((LCD_PHYS_W-1)&0xFF) };
+    uint8_t raset[] = { 0x00, 0x00, (uint8_t)((LCD_PHYS_H-1)>>8), (uint8_t)((LCD_PHYS_H-1)&0xFF) };
+    axs_cmd(0x2A, caset, sizeof(caset));   /* CASET: 0..319 (physical columns) */
+    axs_cmd(0x2B, raset, sizeof(raset));   /* RASET: 0..479 (physical rows)    */
 
     /* Stream rows: first uses RAMWR, remaining use RAMWRC */
     axs_write_row(false);
@@ -436,9 +437,9 @@ void screen_draw_text(const char *text)
     /* Centre the block vertically */
     int start_y = (h - num_lines * CHAR_H) / 2;
 
-    /* Set full-screen address window */
-    uint8_t caset[] = { 0x00, 0x00, (uint8_t)((w-1)>>8), (uint8_t)((w-1)&0xFF) };
-    uint8_t raset[] = { 0x00, 0x00, (uint8_t)((h-1)>>8), (uint8_t)((h-1)&0xFF) };
+    /* Address window: always physical panel dimensions regardless of orientation. */
+    uint8_t caset[] = { 0x00, 0x00, (uint8_t)((LCD_PHYS_W-1)>>8), (uint8_t)((LCD_PHYS_W-1)&0xFF) };
+    uint8_t raset[] = { 0x00, 0x00, (uint8_t)((LCD_PHYS_H-1)>>8), (uint8_t)((LCD_PHYS_H-1)&0xFF) };
     axs_cmd(0x2A, caset, sizeof(caset));
     axs_cmd(0x2B, raset, sizeof(raset));
 
