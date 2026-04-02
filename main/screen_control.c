@@ -180,12 +180,15 @@ esp_err_t screen_init(void)
     };
     ESP_ERROR_CHECK(spi_bus_initialize(LCD_HOST, &bus, SPI_DMA_CH_AUTO));
 
-    /* SPI device — no HALFDUPLEX so SPI_TRANS_CS_KEEP_ACTIVE is permitted */
+    /* SPI device — HALFDUPLEX required for QIO mode; CS_KEEP_ACTIVE only
+     * requires spi_device_acquire_bus() which we already call, so both
+     * flags can coexist. */
     spi_device_interface_config_t dev = {
         .clock_speed_hz = LCD_CLK_HZ,
         .mode           = 0,
         .spics_io_num   = LCD_CS,
         .queue_size     = 1,
+        .flags          = SPI_DEVICE_HALFDUPLEX,
     };
     ESP_ERROR_CHECK(spi_bus_add_device(LCD_HOST, &dev, &s_spi));
 
