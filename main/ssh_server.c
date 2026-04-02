@@ -71,7 +71,7 @@ static const char *TAG = "ssh_srv";
 
 #define SSH_TASK_STACK   (12 * 1024)
 #define SSH_TASK_PRIO    5
-#define LINE_BUF_SZ      128
+#define LINE_BUF_SZ      512
 #define KEY_BUF_SZ       512
 #define HIST_MAX         20
 #define NVS_NS           "ssh"
