@@ -17,6 +17,8 @@
 #include "screen_control.h"
 #endif
 
+#define APP_VERSION "2.0.1"
+
 static const char *TAG = "main";
 
 /* Thin wrappers so startup code below is readable regardless of variant */
@@ -99,6 +101,7 @@ void app_main(void)
         vTaskSuspend(NULL);
     }
 
+    ESP_LOGI(TAG, "esp32-s3-ssh-screen v" APP_VERSION);
     ESP_LOGI(TAG, "SSH server running. Connect with:");
     ESP_LOGI(TAG, "  ssh %s@<device-ip> -p %d",
              CONFIG_SSH_USERNAME, CONFIG_SSH_PORT);
