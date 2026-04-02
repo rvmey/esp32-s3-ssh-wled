@@ -154,22 +154,25 @@ static void screen_fill(uint8_t r, uint8_t g, uint8_t b)
     uint8_t ph = (uint8_t)(px >> 8);
     uint8_t pl = (uint8_t)(px & 0xFF);
 
-    int w = lcd_w(), h = lcd_h();
-
-    /* Pre-fill one row with the solid colour */
-    for (int i = 0; i < w * 2; i += 2) {
+    /*
+     * CASET/RASET always address physical pixels (0..LCD_PHYS_W-1 columns,
+     * 0..LCD_PHYS_H-1 rows).  MADCTL MV only changes which physical direction
+     * becomes the logical X/Y — it does not alter the GRAM address space.
+     * Always send LCD_PHYS_W pixels per row, LCD_PHYS_H rows.
+     */
+    for (int i = 0; i < LCD_PHYS_W * 2; i += 2) {
         s_row_buf[i]     = ph;
         s_row_buf[i + 1] = pl;
     }
 
-    uint8_t caset[] = { 0x00, 0x00, (uint8_t)((w-1)>>8), (uint8_t)((w-1)&0xFF) };
-    uint8_t raset[] = { 0x00, 0x00, (uint8_t)((h-1)>>8), (uint8_t)((h-1)&0xFF) };
+    uint8_t caset[] = { 0x00, 0x00, (uint8_t)((LCD_PHYS_W-1)>>8), (uint8_t)((LCD_PHYS_W-1)&0xFF) };
+    uint8_t raset[] = { 0x00, 0x00, (uint8_t)((LCD_PHYS_H-1)>>8), (uint8_t)((LCD_PHYS_H-1)&0xFF) };
     axs_cmd(0x2A, caset, sizeof(caset));
     axs_cmd(0x2B, raset, sizeof(raset));
 
-    for (int y = 0; y < h; y++) {
-        if (y == 0) axs_pixel_write_start(s_row_buf, (size_t)(w * 2));
-        else        axs_pixel_write_cont (s_row_buf, (size_t)(w * 2));
+    for (int py = 0; py < LCD_PHYS_H; py++) {
+        if (py == 0) axs_pixel_write_start(s_row_buf, LCD_PHYS_W * 2);
+        else         axs_pixel_write_cont (s_row_buf, LCD_PHYS_W * 2);
     }
 }
 
@@ -442,56 +445,61 @@ void screen_draw_text(const char *text)
     uint8_t fg_h = 0xFF;
     uint8_t fg_l = 0xFF;
 
-    int w = lcd_w();
-    int h = lcd_h();
+    /*
+     * Text layout is computed in LOGICAL space (lcd_w() × lcd_h()), but
+     * pixel output always iterates PHYSICAL rows (LCD_PHYS_W × LCD_PHYS_H)
+     * so CASET/RASET are always physical addresses.
+     *
+     * Mapping physical (px, py) → logical (log_x, log_y):
+     *   portrait  (MV=0): log_x = px,  log_y = py
+     *   landscape (MV=1): log_x = py,  log_y = px   [axes transposed]
+     */
+    int w = lcd_w();   /* logical width  — used for layout & centering */
+    int h = lcd_h();   /* logical height — used for layout & centering */
 
-    /* Centre the block vertically */
     int start_y = (h - num_lines * CHAR_H) / 2;
 
-    uint8_t caset[] = { 0x00, 0x00, (uint8_t)((w-1)>>8), (uint8_t)((w-1)&0xFF) };
-    uint8_t raset[] = { 0x00, 0x00, (uint8_t)((h-1)>>8), (uint8_t)((h-1)&0xFF) };
+    uint8_t caset[] = { 0x00, 0x00, (uint8_t)((LCD_PHYS_W-1)>>8), (uint8_t)((LCD_PHYS_W-1)&0xFF) };
+    uint8_t raset[] = { 0x00, 0x00, (uint8_t)((LCD_PHYS_H-1)>>8), (uint8_t)((LCD_PHYS_H-1)&0xFF) };
     axs_cmd(0x2A, caset, sizeof(caset));
     axs_cmd(0x2B, raset, sizeof(raset));
 
-    for (int y = 0; y < h; y++) {
+    for (int py = 0; py < LCD_PHYS_H; py++) {
         /* Fill row buffer with background */
-        for (int i = 0; i < w * 2; i += 2) {
+        for (int i = 0; i < LCD_PHYS_W * 2; i += 2) {
             s_row_buf[i]     = bg_h;
             s_row_buf[i + 1] = bg_l;
         }
 
-        int rel_y = y - start_y;
-        if (rel_y >= 0 && rel_y < num_lines * CHAR_H) {
+        for (int px = 0; px < LCD_PHYS_W; px++) {
+            /* Map to logical coordinates */
+            int log_x = s_landscape ? py : px;   /* horizontal in logical space */
+            int log_y = s_landscape ? px : py;   /* vertical   in logical space */
+
+            int rel_y = log_y - start_y;
+            if (rel_y < 0 || rel_y >= num_lines * CHAR_H) continue;
+
             int trow      = rel_y / CHAR_H;
             int font_scan = (rel_y % CHAR_H) / FONT_SCALE;
             int ci_count  = line_len[trow];
             const char *row_text = lines[trow];
+            int start_x   = (w - ci_count * CHAR_W) / 2;
+            int rel_x     = log_x - start_x;
 
-            /* Centre this line horizontally */
-            int start_x = (w - ci_count * CHAR_W) / 2;
+            if (rel_x < 0 || rel_x >= ci_count * CHAR_W) continue;
 
-            for (int c = 0; c < ci_count; c++) {
-                unsigned char ch = (unsigned char)row_text[c];
-                if (ch < 0x20 || ch > 0x7E) ch = '?';
-                uint8_t frow = s_font8x8[ch - 0x20][font_scan];
+            int c       = rel_x / CHAR_W;
+            int bit_pos = (rel_x % CHAR_W) / FONT_SCALE;
 
-                for (int bit = 0; bit < 8; bit++) {
-                    bool is_fg = (frow & (0x01u << bit)) != 0;
-                    uint8_t ph = is_fg ? fg_h : bg_h;
-                    uint8_t pl = is_fg ? fg_l : bg_l;
-                    int px = start_x + c * CHAR_W + bit * FONT_SCALE;
-                    for (int sc = 0; sc < FONT_SCALE; sc++) {
-                        unsigned int x = (unsigned int)(px + sc);
-                        if (x < (unsigned int)w) {
-                            s_row_buf[x * 2]     = ph;
-                            s_row_buf[x * 2 + 1] = pl;
-                        }
-                    }
-                }
+            unsigned char ch = (unsigned char)row_text[c];
+            if (ch < 0x20 || ch > 0x7E) ch = '?';
+            if (s_font8x8[ch - 0x20][font_scan] & (0x01u << bit_pos)) {
+                s_row_buf[px * 2]     = fg_h;
+                s_row_buf[px * 2 + 1] = fg_l;
             }
         }
 
-        if (y == 0) axs_pixel_write_start(s_row_buf, (size_t)(w * 2));
-        else        axs_pixel_write_cont (s_row_buf, (size_t)(w * 2));
+        if (py == 0) axs_pixel_write_start(s_row_buf, LCD_PHYS_W * 2);
+        else         axs_pixel_write_cont (s_row_buf, LCD_PHYS_W * 2);
     }
 }
