@@ -465,9 +465,9 @@ void screen_draw_text(const char *text)
             int logical_y;
 
             if (s_landscape) {
-                /* 90° CCW logical landscape view rendered into portrait GRAM. */
-                logical_x = y;
-                logical_y = (LCD_PHYS_W - 1) - x;
+                /* 90° CW logical landscape view rendered into portrait GRAM. */
+                logical_x = (LCD_PHYS_H - 1) - y;
+                logical_y = x;
             } else {
                 logical_x = x;
                 logical_y = y;
