@@ -64,9 +64,6 @@ void app_main(void)
     /* Initialise the output device for this hardware variant */
     hw_init();
 
-    /* Apply any saved initialization script (e.g. landscape, color blue) */
-    ssh_run_init_script();
-
     if (!wifi_has_stored_credentials()) {
         /* No saved credentials – wait for the web installer to provision us */
         ESP_LOGI(TAG, "No WiFi credentials stored. "
@@ -94,6 +91,10 @@ void app_main(void)
     hw_set_color(0, 32, 0);
     vTaskDelay(pdMS_TO_TICKS(500));
     hw_off();
+
+    /* Apply the saved initialization script now that WiFi status blinks are
+     * done — color, text, landscape etc. will not be overwritten. */
+    ssh_run_init_script();
 
     /* Start the HTTP config server so the user can set the SSH password */
     http_config_start();
