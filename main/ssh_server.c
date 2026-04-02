@@ -569,6 +569,7 @@ static const char s_help[] =
     "  text <message>    Draw white text on screen (wraps at word boundaries)\r\n"
     "  landscape          Rotate display to landscape (480×320)\r\n"
     "  portrait           Rotate display to portrait  (320×480)\r\n"
+    "  fontsize <1-4>    Set font scale (1=8px, 2=16px, 3=24px, 4=32px)\r\n"
     "  off               Fill screen black\r\n"
     "  status            Show current screen colour\r\n"
     "  help              Show this help text\r\n"
@@ -640,6 +641,31 @@ static int handle_command(WOLFSSH *ssh, const char *line)
     if (strcasecmp(line, "portrait") == 0) {
         screen_set_landscape(false);
         ssh_puts(ssh, "Display set to portrait (320x480)." CRLF);
+        return 0;
+    }
+
+    /* ---- fontsize (JC3248W535 only) ---- */
+    if (strncasecmp(line, "fontsize", 8) == 0 &&
+        (line[8] == ' ' || line[8] == '\t' || line[8] == '\0')) {
+        const char *arg = skip_ws(line + 8);
+        if (*arg == '\0') {
+            int cur = 2;
+            screen_get_font_scale(&cur);
+            snprintf(tmp, sizeof(tmp),
+                     "Font scale: %d  (use: fontsize <1-4>)" CRLF, cur);
+            ssh_puts(ssh, tmp);
+            return 0;
+        }
+        int scale = atoi(arg);
+        if (scale < 1 || scale > 4) {
+            ssh_puts(ssh, "Error: font scale must be 1-4." CRLF);
+            return 0;
+        }
+        screen_set_font_scale(scale);
+        snprintf(tmp, sizeof(tmp),
+                 "Font scale set to %d (%dx%d px per character)." CRLF,
+                 scale, scale * 8, scale * 8);
+        ssh_puts(ssh, tmp);
         return 0;
     }
 #endif

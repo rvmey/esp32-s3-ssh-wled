@@ -58,3 +58,19 @@ void screen_set_landscape(bool landscape);
  * @param landscape  Set to true if currently in landscape mode.
  */
 void screen_get_landscape(bool *landscape);
+
+/**
+ * @brief Set the font scale factor used by screen_draw_text().
+ *        Each font pixel is rendered as (scale × scale) screen pixels.
+ *        Valid range: 1–4.  Default: 2 (16×16 px per character).
+ *
+ * @param scale  Scale factor 1–4 (clamped if out of range).
+ */
+void screen_set_font_scale(int scale);
+
+/**
+ * @brief Return the current font scale factor.
+ *
+ * @param scale  Output: current scale (1–4).
+ */
+void screen_get_font_scale(int *scale);

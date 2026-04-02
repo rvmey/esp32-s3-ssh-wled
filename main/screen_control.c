@@ -59,6 +59,7 @@ static const char *TAG = "screen";
 static spi_device_handle_t s_spi       = NULL;
 static uint8_t             s_r, s_g, s_b;
 static bool                s_landscape = false;
+static int                 s_font_scale = 2; /* screen pixels per font pixel; 1-4 */
 
 /* Logical width/height — swapped in landscape mode */
 static inline int lcd_w(void) { return s_landscape ? LCD_PHYS_H : LCD_PHYS_W; }
@@ -257,6 +258,18 @@ void screen_get_landscape(bool *landscape)
     *landscape = s_landscape;
 }
 
+void screen_set_font_scale(int scale)
+{
+    if (scale < 1) scale = 1;
+    if (scale > 4) scale = 4;
+    s_font_scale = scale;
+}
+
+void screen_get_font_scale(int *scale)
+{
+    *scale = s_font_scale;
+}
+
 /* ------------------------------------------------------------------ */
 /* Bitmap font (8 × 8, ASCII 0x20 ' ' – 0x7E '~', MSB = left pixel)  */
 /* ------------------------------------------------------------------ */
@@ -359,41 +372,42 @@ static const uint8_t s_font8x8[95][8] = {
 };
 
 /* Rendering parameters */
-#define FONT_SCALE    2                         /* each font pixel → 2×2 screen pixels */
-#define CHAR_W        (8 * FONT_SCALE)           /* 16 screen pixels wide */
-#define CHAR_H        (8 * FONT_SCALE)           /* 16 screen pixels tall */
-/* Max cols/rows are for the landscape or portrait max dimension (480/16 = 30) */
-#define TEXT_COLS_MAX (LCD_MAX_DIM / CHAR_W)     /* 30 — covers landscape cols & portrait rows */
-#define TEXT_ROWS_MAX (LCD_MAX_DIM / CHAR_H)     /* 30 — covers portrait rows & landscape cols */
+/* TEXT_COLS_MAX / TEXT_ROWS_MAX sized for the smallest supported scale (1),
+ * so the static line buffer covers all runtime scale values 1-4. */
+#define TEXT_COLS_MAX (LCD_MAX_DIM / 8)          /* 60 — scale-1 portrait or landscape */
+#define TEXT_ROWS_MAX (LCD_MAX_DIM / 8)          /* 60 — scale-1 portrait or landscape */
 
 static bool text_pixel_is_fg(int logical_x, int logical_y,
                              char lines[TEXT_ROWS_MAX][TEXT_COLS_MAX + 1],
                              const int *line_len, int num_lines,
                              int logical_w, int logical_h)
 {
-    int start_y = (logical_h - num_lines * CHAR_H) / 2;
+    int fscale  = s_font_scale;
+    int char_sz = 8 * fscale;  /* width == height for this square font */
+
+    int start_y = (logical_h - num_lines * char_sz) / 2;
     int rel_y = logical_y - start_y;
-    if (rel_y < 0 || rel_y >= num_lines * CHAR_H) {
+    if (rel_y < 0 || rel_y >= num_lines * char_sz) {
         return false;
     }
 
-    int trow = rel_y / CHAR_H;
-    int font_scan = (rel_y % CHAR_H) / FONT_SCALE;
+    int trow     = rel_y / char_sz;
+    int font_scan = (rel_y % char_sz) / fscale;
     int ci_count = line_len[trow];
-    int start_x = (logical_w - ci_count * CHAR_W) / 2;
-    int rel_x = logical_x - start_x;
-    if (rel_x < 0 || rel_x >= ci_count * CHAR_W) {
+    int start_x  = (logical_w - ci_count * char_sz) / 2;
+    int rel_x    = logical_x - start_x;
+    if (rel_x < 0 || rel_x >= ci_count * char_sz) {
         return false;
     }
 
-    int char_index = rel_x / CHAR_W;
-    int bit = (rel_x % CHAR_W) / FONT_SCALE;
-    unsigned char ch = (unsigned char)lines[trow][char_index];
-    if (ch < 0x20 || ch > 0x7E) {
-        ch = '?';
+    int char_index = rel_x / char_sz;
+    int bit        = (rel_x % char_sz) / fscale;
+    unsigned char glyph = (unsigned char)lines[trow][char_index];
+    if (glyph < 0x20 || glyph > 0x7E) {
+        glyph = '?';
     }
 
-    return (s_font8x8[ch - 0x20][font_scan] & (0x01u << bit)) != 0;
+    return (s_font8x8[glyph - 0x20][font_scan] & (0x01u << bit)) != 0;
 }
 
 void screen_draw_text(const char *text)
@@ -403,8 +417,8 @@ void screen_draw_text(const char *text)
     int line_len[TEXT_ROWS_MAX];
     int num_lines = 0;
 
-    int max_cols = lcd_w() / CHAR_W;
-    int max_rows = lcd_h() / CHAR_H;
+    int max_cols = lcd_w() / (8 * s_font_scale);
+    int max_rows = lcd_h() / (8 * s_font_scale);
 
     const char *src = text;
     while (*src && num_lines < max_rows) {
