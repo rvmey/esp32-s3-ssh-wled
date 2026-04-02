@@ -160,12 +160,15 @@ static void screen_fill(uint8_t r, uint8_t g, uint8_t b)
                         (uint8_t)((w - 1) & 0xFF) };
     axs_cmd(0x2A, caset, sizeof(caset));   /* CASET */
 
-    /* Stream all rows in one unbroken CS-low burst:
-     * row 0 carries the RAMWR header; subsequent rows are raw pixel data
-     * with CS kept active so the controller continues its write pointer. */
+    /* Stream all rows in one unbroken CS-low burst.
+     * SPI_TRANS_CS_KEEP_ACTIVE requires the bus to be acquired first;
+     * without spi_device_acquire_bus() the driver returns ESP_ERR_INVALID_ARG
+     * which ESP_ERROR_CHECK() turns into abort() → crash loop. */
+    spi_device_acquire_bus(s_spi, portMAX_DELAY);
     for (int y = 0; y < h; y++) {
         axs_write_row(/*is_first=*/(y == 0), /*is_last=*/(y == h - 1));
     }
+    spi_device_release_bus(s_spi);
 }
 
 /* ------------------------------------------------------------------ */
@@ -447,6 +450,7 @@ void screen_draw_text(const char *text)
                         (uint8_t)((w - 1) & 0xFF) };
     axs_cmd(0x2A, caset, sizeof(caset));
 
+    spi_device_acquire_bus(s_spi, portMAX_DELAY);
     for (int y = 0; y < h; y++) {
         /* Fill row buffer with background */
         for (int i = 0; i < w * 2; i += 2) {
@@ -487,4 +491,5 @@ void screen_draw_text(const char *text)
 
         axs_write_row(/*is_first=*/(y == 0), /*is_last=*/(y == h - 1));
     }
+    spi_device_release_bus(s_spi);
 }
