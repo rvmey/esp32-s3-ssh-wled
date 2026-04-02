@@ -4,6 +4,7 @@
 #include "freertos/task.h"
 #include "nvs_flash.h"
 #include "esp_log.h"
+#include "esp_rom_sys.h"
 #include "sdkconfig.h"
 
 #include "wifi_manager.h"
@@ -101,6 +102,7 @@ void app_main(void)
         vTaskSuspend(NULL);
     }
 
+    esp_rom_printf("esp32-s3-ssh-screen v" APP_VERSION "\n");
     ESP_LOGI(TAG, "esp32-s3-ssh-screen v" APP_VERSION);
     ESP_LOGI(TAG, "SSH server running. Connect with:");
     ESP_LOGI(TAG, "  ssh %s@<device-ip> -p %d",
