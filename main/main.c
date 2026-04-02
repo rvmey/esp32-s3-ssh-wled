@@ -64,6 +64,9 @@ void app_main(void)
     /* Initialise the output device for this hardware variant */
     hw_init();
 
+    /* Apply any saved initialization script (e.g. landscape, color blue) */
+    ssh_run_init_script();
+
     if (!wifi_has_stored_credentials()) {
         /* No saved credentials – wait for the web installer to provision us */
         ESP_LOGI(TAG, "No WiFi credentials stored. "

@@ -19,8 +19,10 @@
 #define NVS_NS       "ssh_cfg"
 #define NVS_KEY_PASS "password"
 #define NVS_KEY_PKEY "pubkey"
-#define MAX_PASS_LEN 64
-#define BODY_CAP     1024
+#define NVS_KEY_INIT "initscript"
+#define MAX_PASS_LEN  64
+#define MAX_INIT_LEN  512
+#define BODY_CAP      2048
 
 /* ── Helpers ─────────────────────────────────────────────────────────────── */
 
@@ -126,6 +128,11 @@ static const char s_html_head[] =
     ".show-row input[type=password],.show-row input[type=text]"
         "{flex:1;margin-bottom:0}"
     ".show-row label{margin:0;cursor:pointer;font-size:.8rem;white-space:nowrap}"
+    "textarea{width:100%;padding:.6rem .8rem;background:#0f1117;color:#e2e8f0;"
+             "border:1px solid #2d3148;border-radius:.5rem;font-size:.85rem;"
+             "font-family:monospace;box-sizing:border-box;margin-bottom:.5rem;"
+             "min-height:110px;resize:vertical}"
+    ".hint{color:#64748b;font-size:.8rem;margin:.2rem 0 1rem}"
     "</style></head><body><div class='card'>"
     "<h1>SSH Setup</h1>"
     "<p>Set the password used to log in via SSH.<br>"
@@ -164,20 +171,74 @@ static const char s_key_form[] =
     "<button type='submit'>Save Public Key</button>"
     "</form>";
 
-static const char s_tail[]         = "</div></body></html>";
-static const char s_ok_pass[]      = "<p class='ok'>&#10003; Password saved.</p>";
-static const char s_ok_key[]       = "<p class='ok'>&#10003; Public key saved &#8211; pubkey auth is now active.</p>";
-static const char s_ok_cleared[]   = "<p class='ok'>&#10003; Public key cleared.</p>";
-static const char s_err_mismatch[] = "<p class='err'>&#10007; Passwords do not match.</p>";
-static const char s_err_short[]    = "<p class='err'>&#10007; Password too short (minimum 4 characters).</p>";
-static const char s_err_key[]      = "<p class='err'>&#10007; Unsupported key type. Use ssh-ed25519 or ecdsa-sha2-nistp256/384/521 (not ssh-rsa).</p>";
-static const char s_err_nvs[]      = "<p class='err'>&#10007; Save failed (storage error).</p>";
+/* Init script form — split so the current value can be injected between them */
+static const char s_init_form_head[] =
+    "<h2>Initialization Script "
+    "<span style='font-weight:400;color:#64748b'>(optional)</span></h2>"
+    "<form method='POST' action='/initscript'>"
+    "<label for='is'>Commands to run at boot, one per line</label>"
+    "<textarea id='is' name='initscript' rows='6' "
+        "placeholder='landscape&#10;color blue&#10;text Hello!'>";
+
+static const char s_init_form_tail[] =
+    "</textarea>"
+    "<p class='hint'>Supported: <code>color</code>, <code>landscape</code>, "
+    "<code>portrait</code>, <code>text</code>, <code>off</code>.<br>"
+    "One command per line. Leave empty to clear.</p>"
+    "<button type='submit'>Save Script</button>"
+    "</form>";
+
+static const char s_tail[]              = "</div></body></html>";
+static const char s_ok_pass[]           = "<p class='ok'>&#10003; Password saved.</p>";
+static const char s_ok_key[]            = "<p class='ok'>&#10003; Public key saved &#8211; pubkey auth is now active.</p>";
+static const char s_ok_cleared[]        = "<p class='ok'>&#10003; Public key cleared.</p>";
+static const char s_ok_init[]           = "<p class='ok'>&#10003; Initialization script saved.</p>";
+static const char s_ok_init_cleared[]   = "<p class='ok'>&#10003; Initialization script cleared.</p>";
+static const char s_err_mismatch[]      = "<p class='err'>&#10007; Passwords do not match.</p>";
+static const char s_err_short[]         = "<p class='err'>&#10007; Password too short (minimum 4 characters).</p>";
+static const char s_err_key[]           = "<p class='err'>&#10007; Unsupported key type. Use ssh-ed25519 or ecdsa-sha2-nistp256/384/521 (not ssh-rsa).</p>";
+static const char s_err_nvs[]           = "<p class='err'>&#10007; Save failed (storage error).</p>";
 
 /* ── Page helper ─────────────────────────────────────────────────────────── */
 
+/* HTML-escape and send a string as chunked response output. */
+static void send_escaped(httpd_req_t *req, const char *s)
+{
+    char buf[64];
+    int  pos = 0;
+    while (*s) {
+        const char *ent = NULL;
+        if      (*s == '<') ent = "&lt;";
+        else if (*s == '>') ent = "&gt;";
+        else if (*s == '&') ent = "&amp;";
+        else if (*s == '"') ent = "&quot;";
+        if (ent) {
+            if (pos) { buf[pos] = '\0'; httpd_resp_sendstr_chunk(req, buf); pos = 0; }
+            httpd_resp_sendstr_chunk(req, ent);
+        } else {
+            buf[pos++] = *s;
+            if (pos >= (int)sizeof(buf) - 1) { buf[pos] = '\0'; httpd_resp_sendstr_chunk(req, buf); pos = 0; }
+        }
+        s++;
+    }
+    if (pos) { buf[pos] = '\0'; httpd_resp_sendstr_chunk(req, buf); }
+}
+
+/* Read init script from NVS into caller-supplied buffer; returns empty string on miss. */
+static void read_init_val(char *out, size_t out_sz)
+{
+    out[0] = '\0';
+    nvs_handle_t h;
+    if (nvs_open(NVS_NS, NVS_READONLY, &h) != ESP_OK) return;
+    nvs_get_str(h, NVS_KEY_INIT, out, &out_sz);
+    nvs_close(h);
+}
+
 static void send_page(httpd_req_t *req,
                       const char  *pass_msg,
-                      const char  *key_msg)
+                      const char  *key_msg,
+                      const char  *init_msg,
+                      const char  *init_val)
 {
     httpd_resp_set_type(req, "text/html");
     httpd_resp_sendstr_chunk(req, s_html_head);
@@ -185,6 +246,10 @@ static void send_page(httpd_req_t *req,
     httpd_resp_sendstr_chunk(req, s_pass_form);
     if (key_msg)  httpd_resp_sendstr_chunk(req, key_msg);
     httpd_resp_sendstr_chunk(req, s_key_form);
+    if (init_msg) httpd_resp_sendstr_chunk(req, init_msg);
+    httpd_resp_sendstr_chunk(req, s_init_form_head);
+    if (init_val && init_val[0]) send_escaped(req, init_val);
+    httpd_resp_sendstr_chunk(req, s_init_form_tail);
     httpd_resp_sendstr_chunk(req, s_tail);
     httpd_resp_sendstr_chunk(req, NULL);
 }
@@ -193,7 +258,9 @@ static void send_page(httpd_req_t *req,
 
 static esp_err_t get_handler(httpd_req_t *req)
 {
-    send_page(req, NULL, NULL);
+    char init_val[MAX_INIT_LEN] = {0};
+    read_init_val(init_val, sizeof(init_val));
+    send_page(req, NULL, NULL, NULL, init_val);
     return ESP_OK;
 }
 
@@ -228,7 +295,9 @@ static esp_err_t post_password_handler(httpd_req_t *req)
             msg = s_err_nvs;
         }
     }
-    send_page(req, msg, NULL);
+    char init_val[MAX_INIT_LEN] = {0};
+    read_init_val(init_val, sizeof(init_val));
+    send_page(req, msg, NULL, NULL, init_val);
     return ESP_OK;
 }
 
@@ -290,7 +359,52 @@ static esp_err_t post_pubkey_handler(httpd_req_t *req)
         }
     }
     free(pubkey);
-    send_page(req, NULL, msg);
+    char init_val[MAX_INIT_LEN] = {0};
+    read_init_val(init_val, sizeof(init_val));
+    send_page(req, NULL, msg, NULL, init_val);
+    return ESP_OK;
+}
+
+static esp_err_t post_initscript_handler(httpd_req_t *req)
+{
+    char *body = read_body(req);
+    if (!body) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, NULL);
+        return ESP_OK;
+    }
+
+    char script[MAX_INIT_LEN] = {0};
+    form_get_value(body, "initscript", script, sizeof(script));
+    free(body);
+
+    /* Trim trailing whitespace and blank lines */
+    int len = (int)strlen(script);
+    while (len > 0 && (script[len-1] == '\r' || script[len-1] == '\n' ||
+                       script[len-1] == ' '  || script[len-1] == '\t'))
+        script[--len] = '\0';
+
+    const char *msg;
+    nvs_handle_t h;
+    if (nvs_open(NVS_NS, NVS_READWRITE, &h) == ESP_OK) {
+        if (len == 0) {
+            nvs_erase_key(h, NVS_KEY_INIT);
+            msg = s_ok_init_cleared;
+            ESP_LOGI(TAG, "Init script cleared");
+        } else {
+            nvs_set_str(h, NVS_KEY_INIT, script);
+            msg = s_ok_init;
+            ESP_LOGI(TAG, "Init script updated (%d bytes)", len);
+        }
+        nvs_commit(h);
+        nvs_close(h);
+    } else {
+        msg = s_err_nvs;
+    }
+
+    /* Re-read from NVS to show the saved value in the form */
+    char init_val[MAX_INIT_LEN] = {0};
+    read_init_val(init_val, sizeof(init_val));
+    send_page(req, NULL, NULL, msg, init_val);
     return ESP_OK;
 }
 
@@ -310,13 +424,15 @@ esp_err_t http_config_start(void)
         return err;
     }
 
-    static const httpd_uri_t u_get  = { "/",         HTTP_GET,  get_handler,           NULL };
-    static const httpd_uri_t u_pass = { "/password", HTTP_POST, post_password_handler, NULL };
-    static const httpd_uri_t u_pkey = { "/pubkey",   HTTP_POST, post_pubkey_handler,   NULL };
+    static const httpd_uri_t u_get    = { "/",            HTTP_GET,  get_handler,               NULL };
+    static const httpd_uri_t u_pass   = { "/password",    HTTP_POST, post_password_handler,     NULL };
+    static const httpd_uri_t u_pkey   = { "/pubkey",      HTTP_POST, post_pubkey_handler,       NULL };
+    static const httpd_uri_t u_init   = { "/initscript",  HTTP_POST, post_initscript_handler,   NULL };
 
     httpd_register_uri_handler(server, &u_get);
     httpd_register_uri_handler(server, &u_pass);
     httpd_register_uri_handler(server, &u_pkey);
+    httpd_register_uri_handler(server, &u_init);
 
     ESP_LOGI(TAG, "HTTP config server started on port 80");
     return ESP_OK;

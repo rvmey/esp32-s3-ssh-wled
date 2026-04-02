@@ -495,6 +495,7 @@ static char *read_line(WOLFSSH *ssh, char *buf, int buf_sz, hist_t *hist)
 
 static void ssh_puts(WOLFSSH *ssh, const char *s)
 {
+    if (!ssh) return;
     wolfSSH_stream_send(ssh, (byte *)s, (word32)strlen(s));
 }
 
@@ -969,4 +970,37 @@ esp_err_t ssh_server_start(void)
     }
 
     return ESP_OK;
+}
+
+void ssh_run_init_script(void)
+{
+    nvs_handle_t h;
+    if (nvs_open(NVS_CFG_NS, NVS_READONLY, &h) != ESP_OK) return;
+
+    char script[512] = {0};
+    size_t len = sizeof(script);
+    esp_err_t err = nvs_get_str(h, "initscript", script, &len);
+    nvs_close(h);
+    if (err != ESP_OK || script[0] == '\0') return;
+
+    ESP_LOGI(TAG, "Running init script (%u bytes)", (unsigned)strlen(script));
+
+    char *p = script;
+    while (*p) {
+        /* skip all leading whitespace and blank lines */
+        while (*p == '\r' || *p == '\n' || *p == ' ' || *p == '\t') p++;
+        if (*p == '\0') break;
+
+        /* find end of this line */
+        char *eol = p;
+        while (*eol && *eol != '\r' && *eol != '\n') eol++;
+        char saved = *eol;
+        *eol = '\0';
+
+        ESP_LOGI(TAG, "Init cmd: %s", p);
+        handle_command(NULL, p);
+
+        *eol = saved;
+        p = saved ? eol + 1 : eol;
+    }
 }
