@@ -97,29 +97,31 @@ static void axs_cmd(uint8_t cmd, const uint8_t *data, size_t len)
 }
 
 /*
- * Write one row of pixel data with CS held low throughout the frame.
+ * Write one row of pixel data (lcd_w() pixels x 2 bytes each).
  *
- * first=true : prefixes the RAMWR command header (0x32 / 0x2C).
- * first=false : sends raw QIO data only (no command/address phase).
- * last=true  : deasserts CS after this transaction.
+ * is_continue=false -> RAMWR  (0x2C) -- starts writing at the window origin;
+ *                               use for the first row.
+ * is_continue=true  -> RAMWRC (0x3C) -- continues from where the previous
+ *                               RAMWR/RAMWRC left off; use for rows 1..(H-1).
  *
- * Caller must bracket the entire row sequence with
- * spi_device_acquire_bus / spi_device_release_bus.
+ * Header prefix 0x32 instructs the AXS15231 to receive pixel data in
+ * quad-wire SPI; SPI_TRANS_MODE_QIO activates quad output for the data phase.
  */
-static void axs_row_send(const uint8_t *data, int w, bool first, bool last)
+static void axs_write_row(bool is_continue)
 {
+    uint8_t ram_cmd = is_continue ? 0x3C : 0x2C;
+
     spi_transaction_ext_t t = {
         .base = {
             .flags     = SPI_TRANS_VARIABLE_CMD | SPI_TRANS_VARIABLE_ADDR
-                       | SPI_TRANS_MODE_QIO
-                       | (last ? 0u : SPI_TRANS_CS_KEEP_ACTIVE),
-            .cmd       = first ? 0x32u : 0u,
-            .addr      = first ? (uint32_t)0x2C << 8 : 0u,
-            .length    = (size_t)w * 2 * 8,
-            .tx_buffer = data,
+                       | SPI_TRANS_MODE_QIO,
+            .cmd       = 0x32,
+            .addr      = (uint32_t)ram_cmd << 8,
+            .length    = ((unsigned)lcd_w() * 2) * 8,
+            .tx_buffer = s_row_buf,
         },
-        .command_bits = first ? 8 : 0,
-        .address_bits = first ? 24 : 0,
+        .command_bits = 8,
+        .address_bits = 24,
     };
     ESP_ERROR_CHECK(spi_device_polling_transmit(s_spi, (spi_transaction_t *)&t));
 }
@@ -144,14 +146,17 @@ static void screen_fill(uint8_t r, uint8_t g, uint8_t b)
         s_row_buf[i + 1] = pl;
     }
 
+    /* Set full-screen address window */
     uint8_t caset[] = { 0x00, 0x00, (uint8_t)((w-1)>>8), (uint8_t)((w-1)&0xFF) };
-    axs_cmd(0x2A, caset, sizeof(caset));   /* CASET — no RASET in QSPI mode */
+    uint8_t raset[] = { 0x00, 0x00, (uint8_t)((h-1)>>8), (uint8_t)((h-1)&0xFF) };
+    axs_cmd(0x2A, caset, sizeof(caset));   /* CASET */
+    axs_cmd(0x2B, raset, sizeof(raset));   /* RASET */
 
-    spi_device_acquire_bus(s_spi, portMAX_DELAY);
-    for (int y = 0; y < h; y++) {
-        axs_row_send(s_row_buf, w, (y == 0), (y == h - 1));
+    /* Stream rows: first uses RAMWR, remaining use RAMWRC */
+    axs_write_row(false);
+    for (int y = 1; y < h; y++) {
+        axs_write_row(true);
     }
-    spi_device_release_bus(s_spi);
 }
 
 /* ------------------------------------------------------------------ */
@@ -431,11 +436,12 @@ void screen_draw_text(const char *text)
     /* Centre the block vertically */
     int start_y = (h - num_lines * CHAR_H) / 2;
 
-    /* CASET uses logical width; no RASET in QSPI mode */
+    /* Set full-screen address window */
     uint8_t caset[] = { 0x00, 0x00, (uint8_t)((w-1)>>8), (uint8_t)((w-1)&0xFF) };
+    uint8_t raset[] = { 0x00, 0x00, (uint8_t)((h-1)>>8), (uint8_t)((h-1)&0xFF) };
     axs_cmd(0x2A, caset, sizeof(caset));
+    axs_cmd(0x2B, raset, sizeof(raset));
 
-    spi_device_acquire_bus(s_spi, portMAX_DELAY);
     for (int y = 0; y < h; y++) {
         /* Fill row buffer with background */
         for (int i = 0; i < w * 2; i += 2) {
@@ -474,7 +480,6 @@ void screen_draw_text(const char *text)
             }
         }
 
-        axs_row_send(s_row_buf, w, (y == 0), (y == h - 1));
+        axs_write_row(y != 0);
     }
-    spi_device_release_bus(s_spi);
 }
