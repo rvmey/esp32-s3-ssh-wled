@@ -97,22 +97,30 @@ static void axs_cmd(uint8_t cmd, const uint8_t *data, size_t len)
 }
 
 /*
- * Send the first row of pixel data using RAMWR (0x2C).
- * All subsequent rows must use axs_pixel_write_cont() which sends
- * RAMWRC (0x3C, "Memory Write Continue") — the AXS15231B advances its
- * write pointer from where the previous transaction stopped, so there is
- * no need for CS_KEEP_ACTIVE and no need for a large contiguous buffer.
+ * Write a sequence of pixel rows to the display as a single uninterrupted
+ * SPI transaction (CS held low throughout).
+ *
+ * Call protocol:
+ *   axs_rows_begin(w)           -- sends RAMWR header, holds CS active
+ *   axs_rows_next(buf, w, last) -- sends one row; releases CS when last=true
+ *
+ * Caller must bracket with spi_device_acquire_bus / spi_device_release_bus.
  */
-static void axs_pixel_write_start(const uint8_t *data, size_t bytes)
+static void axs_rows_begin(int w)
 {
+    /* First transaction: RAMWR header (0x32, 0x00, 0x2C, 0x00) + first-row
+     * pixels are sent separately by axs_rows_next, so here we just open CS
+     * with a zero-length payload and keep it asserted.
+     * Actually we send the RAMWR command with CS kept active and zero data;
+     * the first row follows immediately in the next transaction. */
     spi_transaction_ext_t t = {
         .base = {
             .flags     = SPI_TRANS_VARIABLE_CMD | SPI_TRANS_VARIABLE_ADDR
-                       | SPI_TRANS_MODE_QIO,
+                       | SPI_TRANS_MODE_QIO | SPI_TRANS_CS_KEEP_ACTIVE,
             .cmd       = 0x32,
             .addr      = (uint32_t)0x2C << 8,   /* RAMWR */
-            .length    = bytes * 8,
-            .tx_buffer = data,
+            .length    = 0,
+            .tx_buffer = NULL,
         },
         .command_bits = 8,
         .address_bits = 24,
@@ -120,23 +128,20 @@ static void axs_pixel_write_start(const uint8_t *data, size_t bytes)
     ESP_ERROR_CHECK(spi_device_polling_transmit(s_spi, (spi_transaction_t *)&t));
 }
 
-/*
- * Continue a pixel write started by axs_pixel_write_start().
- * Uses RAMWRC (0x3C) so the controller does not reset its row pointer.
- */
-static void axs_pixel_write_cont(const uint8_t *data, size_t bytes)
+static void axs_rows_next(const uint8_t *data, int w, bool last)
 {
     spi_transaction_ext_t t = {
         .base = {
             .flags     = SPI_TRANS_VARIABLE_CMD | SPI_TRANS_VARIABLE_ADDR
-                       | SPI_TRANS_MODE_QIO,
-            .cmd       = 0x32,
-            .addr      = (uint32_t)0x3C << 8,   /* RAMWRC */
-            .length    = bytes * 8,
+                       | SPI_TRANS_MODE_QIO
+                       | (last ? 0 : SPI_TRANS_CS_KEEP_ACTIVE),
+            .cmd       = 0,   /* no command phase — raw data continuation */
+            .addr      = 0,
+            .length    = (size_t)w * 2 * 8,
             .tx_buffer = data,
         },
-        .command_bits = 8,
-        .address_bits = 24,
+        .command_bits = 0,
+        .address_bits = 0,
     };
     ESP_ERROR_CHECK(spi_device_polling_transmit(s_spi, (spi_transaction_t *)&t));
 }
@@ -154,26 +159,22 @@ static void screen_fill(uint8_t r, uint8_t g, uint8_t b)
     uint8_t ph = (uint8_t)(px >> 8);
     uint8_t pl = (uint8_t)(px & 0xFF);
 
-    /*
-     * CASET/RASET always address physical pixels (0..LCD_PHYS_W-1 columns,
-     * 0..LCD_PHYS_H-1 rows).  MADCTL MV only changes which physical direction
-     * becomes the logical X/Y — it does not alter the GRAM address space.
-     * Always send LCD_PHYS_W pixels per row, LCD_PHYS_H rows.
-     */
-    for (int i = 0; i < LCD_PHYS_W * 2; i += 2) {
+    int w = lcd_w(), h = lcd_h();
+
+    for (int i = 0; i < w * 2; i += 2) {
         s_row_buf[i]     = ph;
         s_row_buf[i + 1] = pl;
     }
 
-    uint8_t caset[] = { 0x00, 0x00, (uint8_t)((LCD_PHYS_W-1)>>8), (uint8_t)((LCD_PHYS_W-1)&0xFF) };
-    uint8_t raset[] = { 0x00, 0x00, (uint8_t)((LCD_PHYS_H-1)>>8), (uint8_t)((LCD_PHYS_H-1)&0xFF) };
-    axs_cmd(0x2A, caset, sizeof(caset));
-    axs_cmd(0x2B, raset, sizeof(raset));
+    uint8_t caset[] = { 0x00, 0x00, (uint8_t)((w-1)>>8), (uint8_t)((w-1)&0xFF) };
+    axs_cmd(0x2A, caset, sizeof(caset));   /* CASET — no RASET in QSPI mode */
 
-    for (int py = 0; py < LCD_PHYS_H; py++) {
-        if (py == 0) axs_pixel_write_start(s_row_buf, LCD_PHYS_W * 2);
-        else         axs_pixel_write_cont (s_row_buf, LCD_PHYS_W * 2);
+    spi_device_acquire_bus(s_spi, portMAX_DELAY);
+    axs_rows_begin(w);
+    for (int y = 0; y < h; y++) {
+        axs_rows_next(s_row_buf, w, (y == h - 1));
     }
+    spi_device_release_bus(s_spi);
 }
 
 /* ------------------------------------------------------------------ */
@@ -202,13 +203,12 @@ esp_err_t screen_init(void)
     };
     ESP_ERROR_CHECK(spi_bus_initialize(LCD_HOST, &bus, SPI_DMA_CH_AUTO));
 
-    /* SPI device */
+    /* SPI device — no HALFDUPLEX so SPI_TRANS_CS_KEEP_ACTIVE is permitted */
     spi_device_interface_config_t dev = {
         .clock_speed_hz = LCD_CLK_HZ,
         .mode           = 0,
         .spics_io_num   = LCD_CS,
         .queue_size     = 1,
-        .flags          = SPI_DEVICE_HALFDUPLEX,
     };
     ESP_ERROR_CHECK(spi_bus_add_device(LCD_HOST, &dev, &s_spi));
 
@@ -445,61 +445,57 @@ void screen_draw_text(const char *text)
     uint8_t fg_h = 0xFF;
     uint8_t fg_l = 0xFF;
 
-    /*
-     * Text layout is computed in LOGICAL space (lcd_w() × lcd_h()), but
-     * pixel output always iterates PHYSICAL rows (LCD_PHYS_W × LCD_PHYS_H)
-     * so CASET/RASET are always physical addresses.
-     *
-     * Mapping physical (px, py) → logical (log_x, log_y):
-     *   portrait  (MV=0): log_x = px,  log_y = py
-     *   landscape (MV=1): log_x = py,  log_y = px   [axes transposed]
-     */
-    int w = lcd_w();   /* logical width  — used for layout & centering */
-    int h = lcd_h();   /* logical height — used for layout & centering */
+    int w = lcd_w();
+    int h = lcd_h();
 
+    /* Centre the block vertically */
     int start_y = (h - num_lines * CHAR_H) / 2;
 
-    uint8_t caset[] = { 0x00, 0x00, (uint8_t)((LCD_PHYS_W-1)>>8), (uint8_t)((LCD_PHYS_W-1)&0xFF) };
-    uint8_t raset[] = { 0x00, 0x00, (uint8_t)((LCD_PHYS_H-1)>>8), (uint8_t)((LCD_PHYS_H-1)&0xFF) };
+    /* CASET uses logical width; no RASET in QSPI mode */
+    uint8_t caset[] = { 0x00, 0x00, (uint8_t)((w-1)>>8), (uint8_t)((w-1)&0xFF) };
     axs_cmd(0x2A, caset, sizeof(caset));
-    axs_cmd(0x2B, raset, sizeof(raset));
 
-    for (int py = 0; py < LCD_PHYS_H; py++) {
+    spi_device_acquire_bus(s_spi, portMAX_DELAY);
+    axs_rows_begin(w);
+    for (int y = 0; y < h; y++) {
         /* Fill row buffer with background */
-        for (int i = 0; i < LCD_PHYS_W * 2; i += 2) {
+        for (int i = 0; i < w * 2; i += 2) {
             s_row_buf[i]     = bg_h;
             s_row_buf[i + 1] = bg_l;
         }
 
-        for (int px = 0; px < LCD_PHYS_W; px++) {
-            /* Map to logical coordinates */
-            int log_x = s_landscape ? py : px;   /* horizontal in logical space */
-            int log_y = s_landscape ? px : py;   /* vertical   in logical space */
-
-            int rel_y = log_y - start_y;
-            if (rel_y < 0 || rel_y >= num_lines * CHAR_H) continue;
-
+        int rel_y = y - start_y;
+        if (rel_y >= 0 && rel_y < num_lines * CHAR_H) {
             int trow      = rel_y / CHAR_H;
             int font_scan = (rel_y % CHAR_H) / FONT_SCALE;
             int ci_count  = line_len[trow];
             const char *row_text = lines[trow];
-            int start_x   = (w - ci_count * CHAR_W) / 2;
-            int rel_x     = log_x - start_x;
 
-            if (rel_x < 0 || rel_x >= ci_count * CHAR_W) continue;
+            /* Centre this line horizontally */
+            int start_x = (w - ci_count * CHAR_W) / 2;
 
-            int c       = rel_x / CHAR_W;
-            int bit_pos = (rel_x % CHAR_W) / FONT_SCALE;
+            for (int c = 0; c < ci_count; c++) {
+                unsigned char ch = (unsigned char)row_text[c];
+                if (ch < 0x20 || ch > 0x7E) ch = '?';
+                uint8_t frow = s_font8x8[ch - 0x20][font_scan];
 
-            unsigned char ch = (unsigned char)row_text[c];
-            if (ch < 0x20 || ch > 0x7E) ch = '?';
-            if (s_font8x8[ch - 0x20][font_scan] & (0x01u << bit_pos)) {
-                s_row_buf[px * 2]     = fg_h;
-                s_row_buf[px * 2 + 1] = fg_l;
+                for (int bit = 0; bit < 8; bit++) {
+                    bool is_fg = (frow & (0x01u << bit)) != 0;
+                    uint8_t ph = is_fg ? fg_h : bg_h;
+                    uint8_t pl = is_fg ? fg_l : bg_l;
+                    int px = start_x + c * CHAR_W + bit * FONT_SCALE;
+                    for (int sc = 0; sc < FONT_SCALE; sc++) {
+                        unsigned int x = (unsigned int)(px + sc);
+                        if (x < (unsigned int)w) {
+                            s_row_buf[x * 2]     = ph;
+                            s_row_buf[x * 2 + 1] = pl;
+                        }
+                    }
+                }
             }
         }
 
-        if (py == 0) axs_pixel_write_start(s_row_buf, LCD_PHYS_W * 2);
-        else         axs_pixel_write_cont (s_row_buf, LCD_PHYS_W * 2);
+        axs_rows_next(s_row_buf, w, (y == h - 1));
     }
+    spi_device_release_bus(s_spi);
 }
