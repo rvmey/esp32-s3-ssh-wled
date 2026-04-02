@@ -97,17 +97,13 @@ static void axs_cmd(uint8_t cmd, const uint8_t *data, size_t len)
 }
 
 /*
- * Write one row of pixel data (lcd_w() pixels x 2 bytes each).
+ * Write one physical panel row (320 RGB565 pixels).
  *
- * is_continue=false -> RAMWR  (0x2C) -- starts writing at the window origin;
- *                               use for the first row.
- * is_continue=true  -> RAMWRC (0x3C) -- continues from where the previous
- *                               RAMWR/RAMWRC left off; use for rows 1..(H-1).
- *
- * Header prefix 0x32 instructs the AXS15231 to receive pixel data in
- * quad-wire SPI; SPI_TRANS_MODE_QIO activates quad output for the data phase.
+ * The panel stays in its native portrait addressing mode at all times.
+ * Landscape is handled in software by rotating logical coordinates before
+ * they are written into these physical rows.
  */
-static void axs_write_row(bool is_continue)
+static void axs_write_phys_row(bool is_continue)
 {
     uint8_t ram_cmd = is_continue ? 0x3C : 0x2C;
 
@@ -117,7 +113,7 @@ static void axs_write_row(bool is_continue)
                        | SPI_TRANS_MODE_QIO,
             .cmd       = 0x32,
             .addr      = (uint32_t)ram_cmd << 8,
-            .length    = ((unsigned)lcd_w() * 2) * 8,
+            .length    = (LCD_PHYS_W * 2u) * 8u,
             .tx_buffer = s_row_buf,
         },
         .command_bits = 8,
@@ -139,24 +135,24 @@ static void screen_fill(uint8_t r, uint8_t g, uint8_t b)
     uint8_t ph = (uint8_t)(px >> 8);
     uint8_t pl = (uint8_t)(px & 0xFF);
 
-    int w = lcd_w(), h = lcd_h();
+    int w = LCD_PHYS_W;
+    int h = LCD_PHYS_H;
 
     for (int i = 0; i < w * 2; i += 2) {
         s_row_buf[i]     = ph;
         s_row_buf[i + 1] = pl;
     }
 
-    /* Address window: always physical panel dimensions regardless of orientation.
-     * MADCTL MV changes the GRAM scan direction; CASET/RASET are physical coords. */
+    /* Full physical-panel address window. */
     uint8_t caset[] = { 0x00, 0x00, (uint8_t)((LCD_PHYS_W-1)>>8), (uint8_t)((LCD_PHYS_W-1)&0xFF) };
     uint8_t raset[] = { 0x00, 0x00, (uint8_t)((LCD_PHYS_H-1)>>8), (uint8_t)((LCD_PHYS_H-1)&0xFF) };
     axs_cmd(0x2A, caset, sizeof(caset));   /* CASET: 0..319 (physical columns) */
     axs_cmd(0x2B, raset, sizeof(raset));   /* RASET: 0..479 (physical rows)    */
 
     /* Stream rows: first uses RAMWR, remaining use RAMWRC */
-    axs_write_row(false);
+    axs_write_phys_row(false);
     for (int y = 1; y < h; y++) {
-        axs_write_row(true);
+        axs_write_phys_row(true);
     }
 }
 
@@ -252,20 +248,7 @@ void screen_get_color(uint8_t *r, uint8_t *g, uint8_t *b)
 void screen_set_landscape(bool landscape)
 {
     s_landscape = landscape;
-    /*
-     * AXS15231 MADCTL (0x36) bit map (standard MIPI DBI):
-     *   0x80 = MY  mirror rows
-     *   0x40 = MX  mirror columns
-     *   0x20 = MV  swap row/column order (transpose)
-     *
-     * Portrait  (320×480): 0x00 – native panel scan, no transform
-     * Landscape (480×320): 0x20 – MV only: transpose axes so physical
-     *                             rows become logical columns.
-     *                             Gives 90° CCW rotation with origin at
-     *                             top-left of the landscape view.
-     */
-    uint8_t madctl = landscape ? 0x20 : 0x00;
-    axs_cmd(0x36, &madctl, 1);
+    /* Keep the controller in native portrait mode and rotate in software. */
     screen_fill(s_r, s_g, s_b);
 }
 
@@ -383,6 +366,36 @@ static const uint8_t s_font8x8[95][8] = {
 #define TEXT_COLS_MAX (LCD_MAX_DIM / CHAR_W)     /* 30 — covers landscape cols & portrait rows */
 #define TEXT_ROWS_MAX (LCD_MAX_DIM / CHAR_H)     /* 30 — covers portrait rows & landscape cols */
 
+static bool text_pixel_is_fg(int logical_x, int logical_y,
+                             char lines[TEXT_ROWS_MAX][TEXT_COLS_MAX + 1],
+                             const int *line_len, int num_lines,
+                             int logical_w, int logical_h)
+{
+    int start_y = (logical_h - num_lines * CHAR_H) / 2;
+    int rel_y = logical_y - start_y;
+    if (rel_y < 0 || rel_y >= num_lines * CHAR_H) {
+        return false;
+    }
+
+    int trow = rel_y / CHAR_H;
+    int font_scan = (rel_y % CHAR_H) / FONT_SCALE;
+    int ci_count = line_len[trow];
+    int start_x = (logical_w - ci_count * CHAR_W) / 2;
+    int rel_x = logical_x - start_x;
+    if (rel_x < 0 || rel_x >= ci_count * CHAR_W) {
+        return false;
+    }
+
+    int char_index = rel_x / CHAR_W;
+    int bit = (rel_x % CHAR_W) / FONT_SCALE;
+    unsigned char ch = (unsigned char)lines[trow][char_index];
+    if (ch < 0x20 || ch > 0x7E) {
+        ch = '?';
+    }
+
+    return (s_font8x8[ch - 0x20][font_scan] & (0x01u << bit)) != 0;
+}
+
 void screen_draw_text(const char *text)
 {
     /* ---- Word-wrap into lines of at most avail chars ---- */
@@ -431,56 +444,42 @@ void screen_draw_text(const char *text)
     uint8_t fg_h = 0xFF;
     uint8_t fg_l = 0xFF;
 
-    int w = lcd_w();
-    int h = lcd_h();
+    int logical_w = lcd_w();
+    int logical_h = lcd_h();
 
-    /* Centre the block vertically */
-    int start_y = (h - num_lines * CHAR_H) / 2;
-
-    /* Address window: always physical panel dimensions regardless of orientation. */
+    /* Full physical-panel address window. */
     uint8_t caset[] = { 0x00, 0x00, (uint8_t)((LCD_PHYS_W-1)>>8), (uint8_t)((LCD_PHYS_W-1)&0xFF) };
     uint8_t raset[] = { 0x00, 0x00, (uint8_t)((LCD_PHYS_H-1)>>8), (uint8_t)((LCD_PHYS_H-1)&0xFF) };
     axs_cmd(0x2A, caset, sizeof(caset));
     axs_cmd(0x2B, raset, sizeof(raset));
 
-    for (int y = 0; y < h; y++) {
+    for (int y = 0; y < LCD_PHYS_H; y++) {
         /* Fill row buffer with background */
-        for (int i = 0; i < w * 2; i += 2) {
+        for (int i = 0; i < LCD_PHYS_W * 2; i += 2) {
             s_row_buf[i]     = bg_h;
             s_row_buf[i + 1] = bg_l;
         }
 
-        int rel_y = y - start_y;
-        if (rel_y >= 0 && rel_y < num_lines * CHAR_H) {
-            int trow      = rel_y / CHAR_H;
-            int font_scan = (rel_y % CHAR_H) / FONT_SCALE;
-            int ci_count  = line_len[trow];
-            const char *row_text = lines[trow];
+        for (int x = 0; x < LCD_PHYS_W; x++) {
+            int logical_x;
+            int logical_y;
 
-            /* Centre this line horizontally */
-            int start_x = (w - ci_count * CHAR_W) / 2;
+            if (s_landscape) {
+                /* 90° CCW logical landscape view rendered into portrait GRAM. */
+                logical_x = y;
+                logical_y = (LCD_PHYS_W - 1) - x;
+            } else {
+                logical_x = x;
+                logical_y = y;
+            }
 
-            for (int c = 0; c < ci_count; c++) {
-                unsigned char ch = (unsigned char)row_text[c];
-                if (ch < 0x20 || ch > 0x7E) ch = '?';
-                uint8_t frow = s_font8x8[ch - 0x20][font_scan];
-
-                for (int bit = 0; bit < 8; bit++) {
-                    bool is_fg = (frow & (0x01u << bit)) != 0;
-                    uint8_t ph = is_fg ? fg_h : bg_h;
-                    uint8_t pl = is_fg ? fg_l : bg_l;
-                    int px = start_x + c * CHAR_W + bit * FONT_SCALE;
-                    for (int sc = 0; sc < FONT_SCALE; sc++) {
-                        unsigned int x = (unsigned int)(px + sc);
-                        if (x < (unsigned int)w) {
-                            s_row_buf[x * 2]     = ph;
-                            s_row_buf[x * 2 + 1] = pl;
-                        }
-                    }
-                }
+            if (text_pixel_is_fg(logical_x, logical_y, lines, line_len,
+                                 num_lines, logical_w, logical_h)) {
+                s_row_buf[x * 2]     = fg_h;
+                s_row_buf[x * 2 + 1] = fg_l;
             }
         }
 
-        axs_write_row(y != 0);
+        axs_write_phys_row(y != 0);
     }
 }
