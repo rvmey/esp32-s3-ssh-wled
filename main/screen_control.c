@@ -97,51 +97,29 @@ static void axs_cmd(uint8_t cmd, const uint8_t *data, size_t len)
 }
 
 /*
- * Write a sequence of pixel rows to the display as a single uninterrupted
- * SPI transaction (CS held low throughout).
+ * Write one row of pixel data with CS held low throughout the frame.
  *
- * Call protocol:
- *   axs_rows_begin(w)           -- sends RAMWR header, holds CS active
- *   axs_rows_next(buf, w, last) -- sends one row; releases CS when last=true
+ * first=true : prefixes the RAMWR command header (0x32 / 0x2C).
+ * first=false : sends raw QIO data only (no command/address phase).
+ * last=true  : deasserts CS after this transaction.
  *
- * Caller must bracket with spi_device_acquire_bus / spi_device_release_bus.
+ * Caller must bracket the entire row sequence with
+ * spi_device_acquire_bus / spi_device_release_bus.
  */
-static void axs_rows_begin(int w)
-{
-    /* First transaction: RAMWR header (0x32, 0x00, 0x2C, 0x00) + first-row
-     * pixels are sent separately by axs_rows_next, so here we just open CS
-     * with a zero-length payload and keep it asserted.
-     * Actually we send the RAMWR command with CS kept active and zero data;
-     * the first row follows immediately in the next transaction. */
-    spi_transaction_ext_t t = {
-        .base = {
-            .flags     = SPI_TRANS_VARIABLE_CMD | SPI_TRANS_VARIABLE_ADDR
-                       | SPI_TRANS_MODE_QIO | SPI_TRANS_CS_KEEP_ACTIVE,
-            .cmd       = 0x32,
-            .addr      = (uint32_t)0x2C << 8,   /* RAMWR */
-            .length    = 0,
-            .tx_buffer = NULL,
-        },
-        .command_bits = 8,
-        .address_bits = 24,
-    };
-    ESP_ERROR_CHECK(spi_device_polling_transmit(s_spi, (spi_transaction_t *)&t));
-}
-
-static void axs_rows_next(const uint8_t *data, int w, bool last)
+static void axs_row_send(const uint8_t *data, int w, bool first, bool last)
 {
     spi_transaction_ext_t t = {
         .base = {
             .flags     = SPI_TRANS_VARIABLE_CMD | SPI_TRANS_VARIABLE_ADDR
                        | SPI_TRANS_MODE_QIO
-                       | (last ? 0 : SPI_TRANS_CS_KEEP_ACTIVE),
-            .cmd       = 0,   /* no command phase — raw data continuation */
-            .addr      = 0,
+                       | (last ? 0u : SPI_TRANS_CS_KEEP_ACTIVE),
+            .cmd       = first ? 0x32u : 0u,
+            .addr      = first ? (uint32_t)0x2C << 8 : 0u,
             .length    = (size_t)w * 2 * 8,
             .tx_buffer = data,
         },
-        .command_bits = 0,
-        .address_bits = 0,
+        .command_bits = first ? 8 : 0,
+        .address_bits = first ? 24 : 0,
     };
     ESP_ERROR_CHECK(spi_device_polling_transmit(s_spi, (spi_transaction_t *)&t));
 }
@@ -170,9 +148,8 @@ static void screen_fill(uint8_t r, uint8_t g, uint8_t b)
     axs_cmd(0x2A, caset, sizeof(caset));   /* CASET — no RASET in QSPI mode */
 
     spi_device_acquire_bus(s_spi, portMAX_DELAY);
-    axs_rows_begin(w);
     for (int y = 0; y < h; y++) {
-        axs_rows_next(s_row_buf, w, (y == h - 1));
+        axs_row_send(s_row_buf, w, (y == 0), (y == h - 1));
     }
     spi_device_release_bus(s_spi);
 }
@@ -456,7 +433,6 @@ void screen_draw_text(const char *text)
     axs_cmd(0x2A, caset, sizeof(caset));
 
     spi_device_acquire_bus(s_spi, portMAX_DELAY);
-    axs_rows_begin(w);
     for (int y = 0; y < h; y++) {
         /* Fill row buffer with background */
         for (int i = 0; i < w * 2; i += 2) {
@@ -495,7 +471,7 @@ void screen_draw_text(const char *text)
             }
         }
 
-        axs_rows_next(s_row_buf, w, (y == h - 1));
+        axs_row_send(s_row_buf, w, (y == 0), (y == h - 1));
     }
     spi_device_release_bus(s_spi);
 }
