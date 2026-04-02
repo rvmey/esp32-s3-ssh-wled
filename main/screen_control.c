@@ -26,9 +26,11 @@
 
 #include "driver/spi_master.h"
 #include "driver/gpio.h"
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include <assert.h>
 #include <string.h>
 
 static const char *TAG = "screen";
@@ -48,9 +50,11 @@ static const char *TAG = "screen";
 #define LCD_CS       45
 #define LCD_BL       1    /* backlight (active-high) */
 
-#define LCD_PHYS_W   320   /* physical panel columns */
-#define LCD_PHYS_H   480   /* physical panel rows    */
-#define LCD_MAX_DIM  480   /* longest dimension (landscape row width) */
+#define LCD_PHYS_W      320   /* physical panel columns */
+#define LCD_PHYS_H      480   /* physical panel rows    */
+#define LCD_MAX_DIM     LCD_PHYS_H  /* longest dimension, used for text grid sizing */
+/* Full frame in bytes — identical in both orientations (320×480 = 480×320) */
+#define FRAME_BUF_BYTES (LCD_PHYS_W * LCD_PHYS_H * 2)
 
 /* ------------------------------------------------------------------ */
 /* State                                                               */
@@ -65,10 +69,10 @@ static inline int lcd_w(void) { return s_landscape ? LCD_PHYS_H : LCD_PHYS_W; }
 static inline int lcd_h(void) { return s_landscape ? LCD_PHYS_W : LCD_PHYS_H; }
 
 /*
- * Row pixel buffer – one row of RGB565 pixels, 4-byte aligned so it is
- * valid as a DMA source.  Sized for the widest possible row (landscape).
+ * Full-frame pixel buffer in PSRAM.  Allocated at init; DMA-accessible on
+ * ESP32-S3 via GDMA.  Both orientations use the same byte count.
  */
-static uint8_t s_row_buf[LCD_MAX_DIM * 2] __attribute__((aligned(4)));
+static uint8_t *s_frame_buf = NULL;
 
 /* ------------------------------------------------------------------ */
 /* Low-level SPI helpers                                              */
@@ -100,32 +104,34 @@ static void axs_cmd(uint8_t cmd, const uint8_t *data, size_t len)
 }
 
 /*
- * Write one row of pixel data (lcd_w() pixels × 2 bytes each).
+ * Transmit the entire s_frame_buf (lcd_w() × lcd_h() pixels) to the
+ * AXS15231B in one single QSPI transaction.
  *
- * The AXS15231B in QSPI mode ignores RASET and ignores RAMWRC in separate
- * CS transactions — it only advances its internal write pointer while CS
- * remains asserted.  We therefore use SPI_TRANS_CS_KEEP_ACTIVE on every
- * transaction except the very last one so the controller sees one
- * unbroken burst:  [RAMWR header][row 0 pixels][row 1 pixels]…[row N pixels]
- *
- * is_first  = true  → send the RAMWR (0x2C) command header.
- * is_first  = false → send pixel data only (no header, CS still held low).
- * is_last   = true  → release CS at the end of this transaction.
+ * The AXS15231B in QSPI mode ignores RASET; the row extent is inferred
+ * from the pixel count clocked in after RAMWR.  A single transaction
+ * avoids any need for CS_KEEP_ACTIVE or RAMWRC.
  */
-static void axs_write_row(bool is_first, bool is_last)
+static void axs_write_frame(void)
 {
+    int w = lcd_w();
+    int h = lcd_h();
+
+    uint8_t caset[] = { 0x00, 0x00,
+                        (uint8_t)((w - 1) >> 8),
+                        (uint8_t)((w - 1) & 0xFF) };
+    axs_cmd(0x2A, caset, sizeof(caset));   /* CASET */
+
     spi_transaction_ext_t t = {
         .base = {
             .flags     = SPI_TRANS_VARIABLE_CMD | SPI_TRANS_VARIABLE_ADDR
-                       | SPI_TRANS_MODE_QIO
-                       | (is_last ? 0 : SPI_TRANS_CS_KEEP_ACTIVE),
-            .cmd       = is_first ? 0x32 : 0,
-            .addr      = is_first ? ((uint32_t)0x2C << 8) : 0,
-            .length    = ((unsigned)lcd_w() * 2) * 8,
-            .tx_buffer = s_row_buf,
+                       | SPI_TRANS_MODE_QIO,
+            .cmd       = 0x32,
+            .addr      = (uint32_t)0x2C << 8,
+            .length    = (unsigned)(w * h * 2) * 8,
+            .tx_buffer = s_frame_buf,
         },
-        .command_bits = is_first ? 8  : 0,
-        .address_bits = is_first ? 24 : 0,
+        .command_bits = 8,
+        .address_bits = 24,
     };
     ESP_ERROR_CHECK(spi_device_polling_transmit(s_spi, (spi_transaction_t *)&t));
 }
@@ -143,32 +149,13 @@ static void screen_fill(uint8_t r, uint8_t g, uint8_t b)
     uint8_t ph = (uint8_t)(px >> 8);
     uint8_t pl = (uint8_t)(px & 0xFF);
 
-    int w = lcd_w();
-    int h = lcd_h();
-
-    /* Fill row buffer */
-    for (int i = 0; i < w * 2; i += 2) {
-        s_row_buf[i]     = ph;
-        s_row_buf[i + 1] = pl;
+    int n = lcd_w() * lcd_h() * 2;
+    for (int i = 0; i < n; i += 2) {
+        s_frame_buf[i]     = ph;
+        s_frame_buf[i + 1] = pl;
     }
 
-    /* CASET: set column window 0..(w-1).
-     * RASET is ignored by the AXS15231B in QSPI mode; row extent is
-     * determined solely by the number of pixels clocked in after RAMWR. */
-    uint8_t caset[] = { 0x00, 0x00,
-                        (uint8_t)((w - 1) >> 8),
-                        (uint8_t)((w - 1) & 0xFF) };
-    axs_cmd(0x2A, caset, sizeof(caset));   /* CASET */
-
-    /* Stream all rows in one unbroken CS-low burst.
-     * SPI_TRANS_CS_KEEP_ACTIVE requires the bus to be acquired first;
-     * without spi_device_acquire_bus() the driver returns ESP_ERR_INVALID_ARG
-     * which ESP_ERROR_CHECK() turns into abort() → crash loop. */
-    spi_device_acquire_bus(s_spi, portMAX_DELAY);
-    for (int y = 0; y < h; y++) {
-        axs_write_row(/*is_first=*/(y == 0), /*is_last=*/(y == h - 1));
-    }
-    spi_device_release_bus(s_spi);
+    axs_write_frame();
 }
 
 /* ------------------------------------------------------------------ */
@@ -192,7 +179,9 @@ esp_err_t screen_init(void)
         .sclk_io_num   = LCD_CLK,
         .quadwp_io_num = LCD_D2,
         .quadhd_io_num = LCD_D3,
-        .max_transfer_sz = (LCD_MAX_DIM * 2) + 4,   /* header + one row (max dim) */
+        .max_transfer_sz = FRAME_BUF_BYTES + 4,     /* header + full frame */
+        /* note: ESP32-S3 GDMA can access PSRAM; large transfers use
+         * chained DMA descriptors automatically. */
         .flags           = SPICOMMON_BUSFLAG_QUAD,
     };
     ESP_ERROR_CHECK(spi_bus_initialize(LCD_HOST, &bus, SPI_DMA_CH_AUTO));
@@ -206,6 +195,11 @@ esp_err_t screen_init(void)
         .flags          = SPI_DEVICE_HALFDUPLEX,
     };
     ESP_ERROR_CHECK(spi_bus_add_device(LCD_HOST, &dev, &s_spi));
+
+    /* Allocate full-frame buffer from PSRAM (DMA-capable on ESP32-S3) */
+    s_frame_buf = heap_caps_malloc(FRAME_BUF_BYTES, MALLOC_CAP_SPIRAM);
+    assert(s_frame_buf != NULL);
+    memset(s_frame_buf, 0, FRAME_BUF_BYTES);
 
     /* AXS15231 initialisation */
     vTaskDelay(pdMS_TO_TICKS(20));
@@ -229,11 +223,13 @@ esp_err_t screen_init(void)
     axs_cmd(0x3A, colmod, sizeof(colmod));       /* COLMOD  */
     axs_cmd(0x36, madctl, sizeof(madctl));       /* MADCTL  */
     axs_cmd(0x20, NULL, 0);                      /* INVERT_OFF */
+
+    /* Write black into GRAM before enabling the display output so the
+     * panel never shows uninitialised framebuffer contents (snow). */
+    screen_off();
+
     axs_cmd(0x29, NULL, 0);                      /* DISPLAY_ON */
     vTaskDelay(pdMS_TO_TICKS(20));
-
-    /* Start with a black screen */
-    screen_off();
 
     ESP_LOGI(TAG, "AXS15231 ready (%d x %d @ 40 MHz QSPI)", lcd_w(), lcd_h());
     return ESP_OK;
@@ -444,52 +440,46 @@ void screen_draw_text(const char *text)
     /* Centre the block vertically */
     int start_y = (h - num_lines * CHAR_H) / 2;
 
-    /* CASET only — RASET is ignored in QSPI mode */
-    uint8_t caset[] = { 0x00, 0x00,
-                        (uint8_t)((w - 1) >> 8),
-                        (uint8_t)((w - 1) & 0xFF) };
-    axs_cmd(0x2A, caset, sizeof(caset));
+    /* Pre-fill frame buffer with background colour */
+    int n = w * h * 2;
+    for (int i = 0; i < n; i += 2) {
+        s_frame_buf[i]     = bg_h;
+        s_frame_buf[i + 1] = bg_l;
+    }
 
-    spi_device_acquire_bus(s_spi, portMAX_DELAY);
+    /* Render text rows into frame buffer */
     for (int y = 0; y < h; y++) {
-        /* Fill row buffer with background */
-        for (int i = 0; i < w * 2; i += 2) {
-            s_row_buf[i]     = bg_h;
-            s_row_buf[i + 1] = bg_l;
-        }
-
         int rel_y = y - start_y;
-        if (rel_y >= 0 && rel_y < num_lines * CHAR_H) {
-            int trow      = rel_y / CHAR_H;
-            int font_scan = (rel_y % CHAR_H) / FONT_SCALE;
-            int ci_count  = line_len[trow];
-            const char *row_text = lines[trow];
+        if (rel_y < 0 || rel_y >= num_lines * CHAR_H) continue;
 
-            /* Centre this line horizontally */
-            int start_x = (w - ci_count * CHAR_W) / 2;
+        int trow      = rel_y / CHAR_H;
+        int font_scan = (rel_y % CHAR_H) / FONT_SCALE;
+        int ci_count  = line_len[trow];
+        const char *row_text = lines[trow];
 
-            for (int c = 0; c < ci_count; c++) {
-                unsigned char ch = (unsigned char)row_text[c];
-                if (ch < 0x20 || ch > 0x7E) ch = '?';
-                uint8_t frow = s_font8x8[ch - 0x20][font_scan];
+        /* Centre this line horizontally */
+        int start_x = (w - ci_count * CHAR_W) / 2;
 
-                for (int bit = 0; bit < 8; bit++) {
-                    bool is_fg = (frow & (0x01u << bit)) != 0;
-                    uint8_t ph = is_fg ? fg_h : bg_h;
-                    uint8_t pl = is_fg ? fg_l : bg_l;
-                    int px = start_x + c * CHAR_W + bit * FONT_SCALE;
-                    for (int sc = 0; sc < FONT_SCALE; sc++) {
-                        unsigned int x = (unsigned int)(px + sc);
-                        if (x < (unsigned int)w) {
-                            s_row_buf[x * 2]     = ph;
-                            s_row_buf[x * 2 + 1] = pl;
-                        }
+        for (int c = 0; c < ci_count; c++) {
+            unsigned char ch = (unsigned char)row_text[c];
+            if (ch < 0x20 || ch > 0x7E) ch = '?';
+            uint8_t frow = s_font8x8[ch - 0x20][font_scan];
+
+            for (int bit = 0; bit < 8; bit++) {
+                bool is_fg = (frow & (0x01u << bit)) != 0;
+                uint8_t ph = is_fg ? fg_h : bg_h;
+                uint8_t pl = is_fg ? fg_l : bg_l;
+                int px = start_x + c * CHAR_W + bit * FONT_SCALE;
+                for (int sc = 0; sc < FONT_SCALE; sc++) {
+                    int x = px + sc;
+                    if ((unsigned)x < (unsigned)w) {
+                        s_frame_buf[(y * w + x) * 2]     = ph;
+                        s_frame_buf[(y * w + x) * 2 + 1] = pl;
                     }
                 }
             }
         }
-
-        axs_write_row(/*is_first=*/(y == 0), /*is_last=*/(y == h - 1));
     }
-    spi_device_release_bus(s_spi);
+
+    axs_write_frame();
 }
