@@ -258,7 +258,19 @@ void screen_get_color(uint8_t *r, uint8_t *g, uint8_t *b)
 void screen_set_landscape(bool landscape)
 {
     s_landscape = landscape;
-    uint8_t madctl = landscape ? 0x60 : 0x00;  /* MV|MX = 90° landscape */
+    /*
+     * AXS15231 MADCTL (0x36) bit map (standard MIPI DBI):
+     *   0x80 = MY  mirror rows
+     *   0x40 = MX  mirror columns
+     *   0x20 = MV  swap row/column order (transpose)
+     *
+     * Portrait  (320×480): 0x00 – native panel scan, no transform
+     * Landscape (480×320): 0x20 – MV only: transpose axes so physical
+     *                             rows become logical columns.
+     *                             Gives 90° CCW rotation with origin at
+     *                             top-left of the landscape view.
+     */
+    uint8_t madctl = landscape ? 0x20 : 0x00;
     axs_cmd(0x36, &madctl, 1);
     screen_fill(s_r, s_g, s_b);
 }
