@@ -48,21 +48,27 @@ static const char *TAG = "screen";
 #define LCD_CS       45
 #define LCD_BL       1    /* backlight (active-high) */
 
-#define LCD_W        320
-#define LCD_H        480
+#define LCD_PHYS_W   320   /* physical panel columns */
+#define LCD_PHYS_H   480   /* physical panel rows    */
+#define LCD_MAX_DIM  480   /* longest dimension (landscape row width) */
 
 /* ------------------------------------------------------------------ */
 /* State                                                               */
 /* ------------------------------------------------------------------ */
 
-static spi_device_handle_t s_spi  = NULL;
+static spi_device_handle_t s_spi       = NULL;
 static uint8_t             s_r, s_g, s_b;
+static bool                s_landscape = false;
+
+/* Logical width/height — swapped in landscape mode */
+static inline int lcd_w(void) { return s_landscape ? LCD_PHYS_H : LCD_PHYS_W; }
+static inline int lcd_h(void) { return s_landscape ? LCD_PHYS_W : LCD_PHYS_H; }
 
 /*
  * Row pixel buffer – one row of RGB565 pixels, 4-byte aligned so it is
- * valid as a DMA source.  Allocated in BSS (internal SRAM on ESP32-S3).
+ * valid as a DMA source.  Sized for the widest possible row (landscape).
  */
-static uint8_t s_row_buf[LCD_W * 2] __attribute__((aligned(4)));
+static uint8_t s_row_buf[LCD_MAX_DIM * 2] __attribute__((aligned(4)));
 
 /* ------------------------------------------------------------------ */
 /* Low-level SPI helpers                                              */
@@ -94,7 +100,7 @@ static void axs_cmd(uint8_t cmd, const uint8_t *data, size_t len)
 }
 
 /*
- * Write one row of pixel data (LCD_W pixels × 2 bytes each).
+ * Write one row of pixel data (lcd_w() pixels × 2 bytes each).
  *
  * is_continue=false → RAMWR  (0x2C) — starts writing at the current address
  *                             window origin; use for the first row.
@@ -115,7 +121,7 @@ static void axs_write_row(bool is_continue)
                        | SPI_TRANS_MODE_QIO,
             .cmd       = 0x32,
             .addr      = (uint32_t)ram_cmd << 8,
-            .length    = (LCD_W * 2) * 8,
+            .length    = ((unsigned)lcd_w() * 2) * 8,
             .tx_buffer = s_row_buf,
         },
         .command_bits = 8,
@@ -137,26 +143,29 @@ static void screen_fill(uint8_t r, uint8_t g, uint8_t b)
     uint8_t ph = (uint8_t)(px >> 8);
     uint8_t pl = (uint8_t)(px & 0xFF);
 
+    int w = lcd_w();
+    int h = lcd_h();
+
     /* Fill row buffer */
-    for (int i = 0; i < LCD_W * 2; i += 2) {
+    for (int i = 0; i < w * 2; i += 2) {
         s_row_buf[i]     = ph;
         s_row_buf[i + 1] = pl;
     }
 
     /* Set full-screen address window */
     uint8_t caset[] = { 0x00, 0x00,
-                        (uint8_t)((LCD_W - 1) >> 8),
-                        (uint8_t)((LCD_W - 1) & 0xFF) };
+                        (uint8_t)((w - 1) >> 8),
+                        (uint8_t)((w - 1) & 0xFF) };
     uint8_t raset[] = { 0x00, 0x00,
-                        (uint8_t)((LCD_H - 1) >> 8),
-                        (uint8_t)((LCD_H - 1) & 0xFF) };
+                        (uint8_t)((h - 1) >> 8),
+                        (uint8_t)((h - 1) & 0xFF) };
 
     axs_cmd(0x2A, caset, sizeof(caset));   /* CASET */
     axs_cmd(0x2B, raset, sizeof(raset));   /* RASET */
 
     /* Stream rows: first row uses RAMWR, remaining use RAMWRC */
     axs_write_row(false);
-    for (int y = 1; y < LCD_H; y++) {
+    for (int y = 1; y < h; y++) {
         axs_write_row(true);
     }
 }
@@ -182,7 +191,7 @@ esp_err_t screen_init(void)
         .sclk_io_num   = LCD_CLK,
         .quadwp_io_num = LCD_D2,
         .quadhd_io_num = LCD_D3,
-        .max_transfer_sz = (LCD_W * 2) + 4,   /* header + one row */
+        .max_transfer_sz = (LCD_MAX_DIM * 2) + 4,   /* header + one row (max dim) */
         .flags           = SPICOMMON_BUSFLAG_QUAD,
     };
     ESP_ERROR_CHECK(spi_bus_initialize(LCD_HOST, &bus, SPI_DMA_CH_AUTO));
@@ -225,7 +234,7 @@ esp_err_t screen_init(void)
     /* Start with a black screen */
     screen_off();
 
-    ESP_LOGI(TAG, "AXS15231 ready (%d x %d @ 40 MHz QSPI)", LCD_W, LCD_H);
+    ESP_LOGI(TAG, "AXS15231 ready (%d x %d @ 40 MHz QSPI)", lcd_w(), lcd_h());
     return ESP_OK;
 }
 
@@ -244,6 +253,19 @@ void screen_off(void)
 void screen_get_color(uint8_t *r, uint8_t *g, uint8_t *b)
 {
     *r = s_r;  *g = s_g;  *b = s_b;
+}
+
+void screen_set_landscape(bool landscape)
+{
+    s_landscape = landscape;
+    uint8_t madctl = landscape ? 0x60 : 0x00;  /* MV|MX = 90° landscape */
+    axs_cmd(0x36, &madctl, 1);
+    screen_fill(s_r, s_g, s_b);
+}
+
+void screen_get_landscape(bool *landscape)
+{
+    *landscape = s_landscape;
 }
 
 /* ------------------------------------------------------------------ */
@@ -348,27 +370,31 @@ static const uint8_t s_font8x8[95][8] = {
 };
 
 /* Rendering parameters */
-#define FONT_SCALE  2                       /* each font pixel → 2×2 screen pixels */
-#define CHAR_W      (8 * FONT_SCALE)        /* 16 screen pixels wide */
-#define CHAR_H      (8 * FONT_SCALE)        /* 16 screen pixels tall */
-#define TEXT_COLS   (LCD_W / CHAR_W)        /* 20 chars per row      */
-#define TEXT_ROWS   (LCD_H / CHAR_H)        /* 30 rows               */
+#define FONT_SCALE    2                         /* each font pixel → 2×2 screen pixels */
+#define CHAR_W        (8 * FONT_SCALE)           /* 16 screen pixels wide */
+#define CHAR_H        (8 * FONT_SCALE)           /* 16 screen pixels tall */
+/* Max cols/rows are for the landscape or portrait max dimension (480/16 = 30) */
+#define TEXT_COLS_MAX (LCD_MAX_DIM / CHAR_W)     /* 30 — covers landscape cols & portrait rows */
+#define TEXT_ROWS_MAX (LCD_MAX_DIM / CHAR_H)     /* 30 — covers portrait rows & landscape cols */
 
 void screen_draw_text(const char *text)
 {
-    /* ---- Word-wrap into lines of at most TEXT_COLS chars ---- */
-    static char lines[TEXT_ROWS][TEXT_COLS + 1];
-    int line_len[TEXT_ROWS];
+    /* ---- Word-wrap into lines of at most avail chars ---- */
+    static char lines[TEXT_ROWS_MAX][TEXT_COLS_MAX + 1];
+    int line_len[TEXT_ROWS_MAX];
     int num_lines = 0;
 
+    int max_cols = lcd_w() / CHAR_W;
+    int max_rows = lcd_h() / CHAR_H;
+
     const char *src = text;
-    while (*src && num_lines < TEXT_ROWS) {
+    while (*src && num_lines < max_rows) {
         /* Skip leading spaces at the start of each line */
         while (*src == ' ') src++;
         if (*src == '\0') break;
 
         /* Find how much fits: try to break at a word boundary */
-        int avail = TEXT_COLS;
+        int avail = max_cols;
         int take  = 0;
 
         /* Count remaining non-NUL chars */
@@ -399,22 +425,25 @@ void screen_draw_text(const char *text)
     uint8_t fg_h = 0xFF;
     uint8_t fg_l = 0xFF;
 
+    int w = lcd_w();
+    int h = lcd_h();
+
     /* Centre the block vertically */
-    int start_y = (LCD_H - num_lines * CHAR_H) / 2;
+    int start_y = (h - num_lines * CHAR_H) / 2;
 
     /* Full-screen address window */
     uint8_t caset[] = { 0x00, 0x00,
-                        (uint8_t)((LCD_W - 1) >> 8),
-                        (uint8_t)((LCD_W - 1) & 0xFF) };
+                        (uint8_t)((w - 1) >> 8),
+                        (uint8_t)((w - 1) & 0xFF) };
     uint8_t raset[] = { 0x00, 0x00,
-                        (uint8_t)((LCD_H - 1) >> 8),
-                        (uint8_t)((LCD_H - 1) & 0xFF) };
+                        (uint8_t)((h - 1) >> 8),
+                        (uint8_t)((h - 1) & 0xFF) };
     axs_cmd(0x2A, caset, sizeof(caset));
     axs_cmd(0x2B, raset, sizeof(raset));
 
-    for (int y = 0; y < LCD_H; y++) {
+    for (int y = 0; y < h; y++) {
         /* Fill row buffer with background */
-        for (int i = 0; i < LCD_W * 2; i += 2) {
+        for (int i = 0; i < w * 2; i += 2) {
             s_row_buf[i]     = bg_h;
             s_row_buf[i + 1] = bg_l;
         }
@@ -427,7 +456,7 @@ void screen_draw_text(const char *text)
             const char *row_text = lines[trow];
 
             /* Centre this line horizontally */
-            int start_x = (LCD_W - ci_count * CHAR_W) / 2;
+            int start_x = (w - ci_count * CHAR_W) / 2;
 
             for (int c = 0; c < ci_count; c++) {
                 unsigned char ch = (unsigned char)row_text[c];
@@ -441,7 +470,7 @@ void screen_draw_text(const char *text)
                     int px = start_x + c * CHAR_W + bit * FONT_SCALE;
                     for (int sc = 0; sc < FONT_SCALE; sc++) {
                         unsigned int x = (unsigned int)(px + sc);
-                        if (x < (unsigned int)LCD_W) {
+                        if (x < (unsigned int)w) {
                             s_row_buf[x * 2]     = ph;
                             s_row_buf[x * 2 + 1] = pl;
                         }

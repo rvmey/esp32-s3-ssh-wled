@@ -1,6 +1,7 @@
 #pragma once
 
 #include "esp_err.h"
+#include <stdbool.h>
 #include <stdint.h>
 
 /**
@@ -34,8 +35,26 @@ void screen_get_color(uint8_t *r, uint8_t *g, uint8_t *b);
 /**
  * @brief Render text centred on the screen using a white 16×16-pixel font
  *        (8×8 bitmap scaled 2×) on the current background colour.
- *        Text wraps at 20 characters per row; up to 30 rows are supported.
+ *        Text wraps at word boundaries; column/row capacity depends on
+ *        the current orientation (portrait: 20 cols × 30 rows;
+ *        landscape: 30 cols × 20 rows).
  *
  * @param text  NUL-terminated ASCII string (printable 0x20–0x7E).
  */
 void screen_draw_text(const char *text);
+
+/**
+ * @brief Switch between portrait (320×480) and landscape (480×320) mode.
+ *        Sends MADCTL to the display, then redraws the background colour.
+ *
+ * @param landscape  true = landscape (480 wide, 320 tall),
+ *                   false = portrait  (320 wide, 480 tall).
+ */
+void screen_set_landscape(bool landscape);
+
+/**
+ * @brief Return the current orientation.
+ *
+ * @param landscape  Set to true if currently in landscape mode.
+ */
+void screen_get_landscape(bool *landscape);

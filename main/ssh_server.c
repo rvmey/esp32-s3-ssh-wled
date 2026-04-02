@@ -565,7 +565,9 @@ static const char s_help[] =
     "                    cyan magenta purple orange pink\r\n"
     "  color R G B       RGB triplet, each value 0-255\r\n"
     "  color #RRGGBB     Hex colour (e.g. #FF8800)\r\n"
-    "  text <message>    Draw white text on screen (wraps at 20 chars)\r\n"
+    "  text <message>    Draw white text on screen (wraps at word boundaries)\r\n"
+    "  landscape          Rotate display to landscape (480×320)\r\n"
+    "  portrait           Rotate display to portrait  (320×480)\r\n"
     "  off               Fill screen black\r\n"
     "  status            Show current screen colour\r\n"
     "  help              Show this help text\r\n"
@@ -623,6 +625,20 @@ static int handle_command(WOLFSSH *ssh, const char *line)
         screen_draw_text(msg);
         snprintf(tmp, sizeof(tmp), "Screen text: %s" CRLF, msg);
         ssh_puts(ssh, tmp);
+        return 0;
+    }
+#endif
+
+    /* ---- landscape / portrait (JC3248W535 only) ---- */
+#if CONFIG_HARDWARE_JC3248W535
+    if (strcasecmp(line, "landscape") == 0) {
+        screen_set_landscape(true);
+        ssh_puts(ssh, "Display set to landscape (480x320)." CRLF);
+        return 0;
+    }
+    if (strcasecmp(line, "portrait") == 0) {
+        screen_set_landscape(false);
+        ssh_puts(ssh, "Display set to portrait (320x480)." CRLF);
         return 0;
     }
 #endif
