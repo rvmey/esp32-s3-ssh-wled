@@ -69,7 +69,7 @@
 
 static const char *TAG = "ssh_srv";
 
-#define SSH_TASK_STACK   (12 * 1024)
+#define SSH_TASK_STACK   (20 * 1024)
 #define SSH_TASK_PRIO    5
 #define LINE_BUF_SZ      512
 #define KEY_BUF_SZ       512
@@ -389,7 +389,7 @@ static char *read_line(WOLFSSH *ssh, char *buf, int buf_sz, hist_t *hist)
     int  pos         = 0;
     int  last_was_cr = 0;
     int  browse      = 0;          /* 0 = live input; 1..N = history depth */
-    char saved[LINE_BUF_SZ];      /* preserves partially-typed line        */
+    static char saved[LINE_BUF_SZ]; /* preserves partially-typed line (static: one session at a time) */
     byte ch;
 
     buf[0]   = '\0';
@@ -590,7 +590,7 @@ static const char s_help[] =
 
 static int handle_command(WOLFSSH *ssh, const char *line)
 {
-    char tmp[LINE_BUF_SZ];
+    static char tmp[LINE_BUF_SZ];  /* static: one session at a time */
     uint8_t r = 0, g = 0, b = 0;
 
     line = skip_ws(line);
