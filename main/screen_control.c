@@ -261,7 +261,7 @@ void screen_get_landscape(bool *landscape)
 void screen_set_font_scale(int scale)
 {
     if (scale < 1) scale = 1;
-    if (scale > 4) scale = 4;
+    if (scale > 6) scale = 6;
     s_font_scale = scale;
 }
 
