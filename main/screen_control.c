@@ -404,37 +404,102 @@ static const uint8_t s_font8x8[95][8] = {
 #define TEXT_COLS_MAX (LCD_MAX_DIM / 8)          /* 60 — scale-1 portrait or landscape */
 #define TEXT_ROWS_MAX (LCD_MAX_DIM / 8)          /* 60 — scale-1 portrait or landscape */
 
-static bool text_pixel_is_fg(int logical_x, int logical_y,
-                             char lines[TEXT_ROWS_MAX][TEXT_COLS_MAX + 1],
-                             const int *line_len, int num_lines,
-                             int logical_w, int logical_h)
+/* Look up one bit from the font.  gi = glyph - 0x20.
+ * bx = column 0 (left) … 7, by = row 0 (top) … 7.
+ * LSB of each byte is the leftmost pixel.                               */
+static inline int font_bit(int gi, int bx, int by)
+{
+    if ((unsigned)bx >= 8u || (unsigned)by >= 8u) return 0;
+    return (s_font8x8[gi][by] & (0x01u << bx)) ? 1 : 0;
+}
+
+/* Returns bilinear anti-aliased coverage: 0 = full background,
+ * 255 = full foreground.  For fscale < 2 a binary 0/255 is returned
+ * (bilinear at scale 1 would blur the tiny font).
+ *
+ * Each output pixel's centre is mapped to font-pixel space and the
+ * four nearest font pixels are blended with weights derived from the
+ * distance to each font-pixel centre, giving smooth greyscale edges
+ * when the result is used to blend fg / bg colours.                     */
+static uint8_t text_pixel_coverage(int logical_x, int logical_y,
+                                   char lines[TEXT_ROWS_MAX][TEXT_COLS_MAX + 1],
+                                   const int *line_len, int num_lines,
+                                   int logical_w, int logical_h)
 {
     int fscale  = s_font_scale;
-    int char_sz = 8 * fscale;  /* width == height for this square font */
+    int char_sz = 8 * fscale;
 
     int start_y = (logical_h - num_lines * char_sz) / 2;
-    int rel_y = logical_y - start_y;
-    if (rel_y < 0 || rel_y >= num_lines * char_sz) {
-        return false;
-    }
+    int rel_y   = logical_y - start_y;
+    if (rel_y < 0 || rel_y >= num_lines * char_sz) return 0;
 
     int trow     = rel_y / char_sz;
-    int font_scan = (rel_y % char_sz) / fscale;
     int ci_count = line_len[trow];
     int start_x  = (logical_w - ci_count * char_sz) / 2;
     int rel_x    = logical_x - start_x;
-    if (rel_x < 0 || rel_x >= ci_count * char_sz) {
-        return false;
-    }
+    if (rel_x < 0 || rel_x >= ci_count * char_sz) return 0;
 
     int char_index = rel_x / char_sz;
-    int bit        = (rel_x % char_sz) / fscale;
     unsigned char glyph = (unsigned char)lines[trow][char_index];
-    if (glyph < 0x20 || glyph > 0x7E) {
-        glyph = '?';
+    if (glyph < 0x20 || glyph > 0x7E) glyph = '?';
+    int gi = glyph - 0x20;
+
+    int sub_x = rel_x % char_sz;
+    int sub_y = rel_y % char_sz;
+    int bit_x = sub_x / fscale;
+    int bit_y = sub_y / fscale;
+
+    /* Scale 1: binary – bilinear at scale 1 blurs the tiny font. */
+    if (fscale < 2) {
+        return font_bit(gi, bit_x, bit_y) ? 255 : 0;
     }
 
-    return (s_font8x8[glyph - 0x20][font_scan] & (0x01u << bit)) != 0;
+    int tx = sub_x % fscale;   /* sub-pixel position within scale block */
+    int ty = sub_y % fscale;
+
+    /* Derive bilinear weights for X and Y axes independently.
+     * The output-pixel centre maps to font coordinate
+     *   fc = bit + (t + 0.5) / S
+     * The nearest font-pixel centres are at integer + 0.5 in font space.
+     * When fc < bit + 0.5  →  blend bit-1 and bit  (left-leaning half).
+     * When fc ≥ bit + 0.5  →  blend bit and bit+1  (right-leaning half).
+     * Weights are proportional to (1 − distance) across a unit font span.
+     * Numerators are in units of 1/(2·S); denominator = 2·S.           */
+    int wx0, wx1, nx;
+    if (2 * tx + 1 < fscale) {               /* left-leaning */
+        wx0 = fscale + 2 * tx + 1;           /* weight for bit_x   */
+        wx1 = fscale - 2 * tx - 1;           /* weight for bit_x-1 */
+        nx  = bit_x - 1;
+    } else {                                  /* right-leaning */
+        wx0 = 3 * fscale - 2 * tx - 1;       /* weight for bit_x   */
+        wx1 = 2 * tx + 1 - fscale;           /* weight for bit_x+1 */
+        nx  = bit_x + 1;
+    }
+
+    int wy0, wy1, ny;
+    if (2 * ty + 1 < fscale) {
+        wy0 = fscale + 2 * ty + 1;
+        wy1 = fscale - 2 * ty - 1;
+        ny  = bit_y - 1;
+    } else {
+        wy0 = 3 * fscale - 2 * ty - 1;
+        wy1 = 2 * ty + 1 - fscale;
+        ny  = bit_y + 1;
+    }
+
+    /* Four contributing font pixels (out-of-range queries return 0). */
+    int f00 = font_bit(gi, bit_x, bit_y);
+    int f10 = font_bit(gi, nx,    bit_y);
+    int f01 = font_bit(gi, bit_x, ny   );
+    int f11 = font_bit(gi, nx,    ny   );
+
+    int denom_sq = (2 * fscale) * (2 * fscale);
+    int num = f00 * wx0 * wy0
+            + f10 * wx1 * wy0
+            + f01 * wx0 * wy1
+            + f11 * wx1 * wy1;
+
+    return (uint8_t)((num * 255 + denom_sq / 2) / denom_sq);
 }
 
 void screen_draw_text(const char *text)
@@ -523,10 +588,23 @@ void screen_draw_text(const char *text)
                 logical_y = y;
             }
 
-            if (text_pixel_is_fg(logical_x, logical_y, lines, line_len,
-                                 num_lines, logical_w, logical_h)) {
+            uint8_t cov = text_pixel_coverage(logical_x, logical_y, lines,
+                                               line_len, num_lines,
+                                               logical_w, logical_h);
+            if (cov == 255) {
                 s_row_buf[x * 2]     = fg_h;
                 s_row_buf[x * 2 + 1] = fg_l;
+            } else if (cov > 0) {
+                /* Blend foreground over background proportionally. */
+                int anti = 255 - cov;
+                uint8_t br = (uint8_t)(((int)s_r * anti + (int)s_fr * cov) / 255);
+                uint8_t bg_blended = (uint8_t)(((int)s_g * anti + (int)s_fg * cov) / 255);
+                uint8_t bb = (uint8_t)(((int)s_b * anti + (int)s_fb * cov) / 255);
+                uint16_t px = ((uint16_t)(br & 0xF8) << 8)
+                            | ((uint16_t)(bg_blended & 0xFC) << 3)
+                            | (bb >> 3);
+                s_row_buf[x * 2]     = (uint8_t)(px >> 8);
+                s_row_buf[x * 2 + 1] = (uint8_t)(px & 0xFF);
             }
         }
 
