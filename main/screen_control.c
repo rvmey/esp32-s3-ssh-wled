@@ -57,7 +57,8 @@ static const char *TAG = "screen";
 /* ------------------------------------------------------------------ */
 
 static spi_device_handle_t s_spi       = NULL;
-static uint8_t             s_r, s_g, s_b;
+static uint8_t             s_r, s_g, s_b;                  /* background colour */
+static uint8_t             s_fr = 0xFF, s_fg = 0xFF, s_fb = 0xFF; /* text colour (default white) */
 static bool                s_landscape = false;
 static int                 s_font_scale = 2; /* screen pixels per font pixel; 1-6 */
 static char                s_text[512];      /* last text drawn; empty = none */
@@ -283,6 +284,19 @@ void screen_get_font_scale(int *scale)
     *scale = s_font_scale;
 }
 
+void screen_set_text_color(uint8_t r, uint8_t g, uint8_t b)
+{
+    s_fr = r;  s_fg = g;  s_fb = b;
+    if (s_text[0]) {
+        screen_draw_text(s_text);
+    }
+}
+
+void screen_get_text_color(uint8_t *r, uint8_t *g, uint8_t *b)
+{
+    *r = s_fr;  *g = s_fg;  *b = s_fb;
+}
+
 /* ------------------------------------------------------------------ */
 /* Bitmap font (8 × 8, ASCII 0x20 ' ' – 0x7E '~', MSB = left pixel)  */
 /* ------------------------------------------------------------------ */
@@ -474,8 +488,11 @@ void screen_draw_text(const char *text)
                 | (s_b >> 3);
     uint8_t bg_h = (uint8_t)(bg >> 8);
     uint8_t bg_l = (uint8_t)(bg & 0xFF);
-    uint8_t fg_h = 0xFF;
-    uint8_t fg_l = 0xFF;
+    uint16_t fg   = ((uint16_t)(s_fr & 0xF8) << 8)
+                   | ((uint16_t)(s_fg & 0xFC) << 3)
+                   | (s_fb >> 3);
+    uint8_t fg_h = (uint8_t)(fg >> 8);
+    uint8_t fg_l = (uint8_t)(fg & 0xFF);
 
     int logical_w = lcd_w();
     int logical_h = lcd_h();

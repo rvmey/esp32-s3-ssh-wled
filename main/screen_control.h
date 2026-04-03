@@ -74,3 +74,18 @@ void screen_set_font_scale(int scale);
  * @param scale  Output: current scale (1–4).
  */
 void screen_get_font_scale(int *scale);
+
+/**
+ * @brief Set the text (foreground) colour used by screen_draw_text().
+ *        Default is white (255, 255, 255).
+ *
+ * @param r  Red   component 0-255
+ * @param g  Green component 0-255
+ * @param b  Blue  component 0-255
+ */
+void screen_set_text_color(uint8_t r, uint8_t g, uint8_t b);
+
+/**
+ * @brief Return the current text colour through the output parameters.
+ */
+void screen_get_text_color(uint8_t *r, uint8_t *g, uint8_t *b);

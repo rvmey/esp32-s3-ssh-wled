@@ -566,7 +566,8 @@ static const char s_help[] =
     "                    cyan magenta purple orange pink\r\n"
     "  color R G B       RGB triplet, each value 0-255\r\n"
     "  color #RRGGBB     Hex colour (e.g. #FF8800)\r\n"
-    "  text <message>    Draw white text on screen (wraps at word boundaries)\r\n"
+    "  textcolor <name>  Set text colour (same syntax as color)\r\n"
+    "  text <message>    Draw text on screen (wraps at word boundaries)\r\n"
     "  landscape          Rotate display to landscape (480×320)\r\n"
     "  portrait           Rotate display to portrait  (320×480)\r\n"
     "  fontsize <1-6>    Set font scale (1=8px, 2=16px, 3=24px, 4=32px, 5=40px, 6=48px)\r\n"
@@ -694,6 +695,14 @@ static int handle_command(WOLFSSH *ssh, const char *line)
                      r, g, b, r, g, b);
             ssh_puts(ssh, tmp);
         }
+        {
+            uint8_t tr, tg, tb;
+            screen_get_text_color(&tr, &tg, &tb);
+            snprintf(tmp, sizeof(tmp),
+                     "Text:   R:%-3d G:%-3d B:%-3d  (#%02X%02X%02X)" CRLF,
+                     tr, tg, tb, tr, tg, tb);
+            ssh_puts(ssh, tmp);
+        }
 #else
         led_get_color(&r, &g, &b);
         if (r == 0 && g == 0 && b == 0) {
@@ -745,6 +754,48 @@ static int handle_command(WOLFSSH *ssh, const char *line)
         ssh_puts(ssh, tmp);
         return 0;
     }
+
+#if CONFIG_HARDWARE_JC3248W535
+    /* ---- textcolor / textcolour ---- */
+    if (strncasecmp(line, "textcolor", 9) == 0 ||
+        strncasecmp(line, "textcolour", 10) == 0) {
+
+        const char *arg = line + (strncasecmp(line, "textcolour", 10) == 0 ? 10 : 9);
+        arg = skip_ws(arg);
+
+        int ok = 0;
+
+        if (*arg == '\0') {
+            uint8_t tr, tg, tb;
+            screen_get_text_color(&tr, &tg, &tb);
+            snprintf(tmp, sizeof(tmp),
+                     "Text colour: R:%-3d G:%-3d B:%-3d  (#%02X%02X%02X)" CRLF,
+                     tr, tg, tb, tr, tg, tb);
+            ssh_puts(ssh, tmp);
+            return 0;
+        }
+
+        if (*arg == '#') {
+            ok = parse_hex(arg, &r, &g, &b);
+        } else if (isdigit((unsigned char)*arg)) {
+            ok = parse_rgb(arg, &r, &g, &b);
+        } else {
+            ok = parse_name(arg, &r, &g, &b);
+        }
+
+        if (!ok) {
+            ssh_puts(ssh, "Unknown colour.  Try: textcolor red  |  textcolor 255 128 0  |  textcolor #FF8800" CRLF);
+            return 0;
+        }
+
+        screen_set_text_color(r, g, b);
+        snprintf(tmp, sizeof(tmp),
+                 "Text colour set to R:%-3d G:%-3d B:%-3d  (#%02X%02X%02X)" CRLF,
+                 r, g, b, r, g, b);
+        ssh_puts(ssh, tmp);
+        return 0;
+    }
+#endif
 
     snprintf(tmp, sizeof(tmp), "Unknown command: '%s'.  Type 'help'." CRLF, line);
     ssh_puts(ssh, tmp);
