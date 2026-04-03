@@ -59,7 +59,8 @@ static const char *TAG = "screen";
 static spi_device_handle_t s_spi       = NULL;
 static uint8_t             s_r, s_g, s_b;
 static bool                s_landscape = false;
-static int                 s_font_scale = 2; /* screen pixels per font pixel; 1-4 */
+static int                 s_font_scale = 2; /* screen pixels per font pixel; 1-6 */
+static char                s_text[512];      /* last text drawn; empty = none */
 
 /* Logical width/height — swapped in landscape mode */
 static inline int lcd_w(void) { return s_landscape ? LCD_PHYS_H : LCD_PHYS_W; }
@@ -232,12 +233,17 @@ esp_err_t screen_init(void)
 void screen_set_color(uint8_t r, uint8_t g, uint8_t b)
 {
     s_r = r;  s_g = g;  s_b = b;
-    screen_fill(r, g, b);
+    if (s_text[0]) {
+        screen_draw_text(s_text);
+    } else {
+        screen_fill(r, g, b);
+    }
 }
 
 void screen_off(void)
 {
     s_r = s_g = s_b = 0;
+    s_text[0] = '\0';
     screen_fill(0, 0, 0);
 }
 
@@ -250,7 +256,11 @@ void screen_set_landscape(bool landscape)
 {
     s_landscape = landscape;
     /* Keep the controller in native portrait mode and rotate in software. */
-    screen_fill(s_r, s_g, s_b);
+    if (s_text[0]) {
+        screen_draw_text(s_text);
+    } else {
+        screen_fill(s_r, s_g, s_b);
+    }
 }
 
 void screen_get_landscape(bool *landscape)
@@ -263,6 +273,9 @@ void screen_set_font_scale(int scale)
     if (scale < 1) scale = 1;
     if (scale > 6) scale = 6;
     s_font_scale = scale;
+    if (s_text[0]) {
+        screen_draw_text(s_text);
+    }
 }
 
 void screen_get_font_scale(int *scale)
@@ -412,6 +425,12 @@ static bool text_pixel_is_fg(int logical_x, int logical_y,
 
 void screen_draw_text(const char *text)
 {
+    /* Save so color/orientation/fontsize changes can redraw automatically. */
+    if (text != s_text) {
+        strncpy(s_text, text, sizeof(s_text) - 1);
+        s_text[sizeof(s_text) - 1] = '\0';
+    }
+
     /* ---- Word-wrap into lines of at most avail chars ---- */
     static char lines[TEXT_ROWS_MAX][TEXT_COLS_MAX + 1];
     int line_len[TEXT_ROWS_MAX];
