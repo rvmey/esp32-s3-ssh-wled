@@ -692,10 +692,13 @@ static void touch_poll_task(void *arg)
         uint16_t tx, ty;
         bool have = touch_read_point(&tx, &ty);
 
-        /* Select the raw axis that maps to the display's vertical direction,
-         * and the sign factor that makes "swipe up" → positive delta.        */
-        int16_t raw_v = s_landscape ? (int16_t)ty : (int16_t)tx;
-        int     sign  = s_landscape ? -1 : 1;
+        /* Select the raw axis that maps to the display's vertical direction.
+         * The AXS15231B is mounted with swap_xy+mirror_y on the JC3248W535,
+         * so chip raw-Y = screen vertical in portrait,
+         *    chip raw-X = screen vertical in landscape.
+         * sign=1: swipe-up (raw value increases) → scroll down (show more).  */
+        int16_t raw_v = s_landscape ? (int16_t)tx : (int16_t)ty;
+        int     sign  = 1;
 
         if (have && !touching) {
             /* Finger just touched down */
