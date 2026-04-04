@@ -83,5 +83,5 @@ idf.py -p COM<N> flash
 
 | Symptom | Likely cause |
 |---------|-------------|
-| Wrong LED colour / no output | Wrong pixel format — change `LED_PIXEL_FORMAT_GRB` ↔ `LED_PIXEL_FORMAT_RGB` in `led_control.c` |
+| Wrong LED color / no output | Wrong pixel format — change `LED_PIXEL_FORMAT_GRB` ↔ `LED_PIXEL_FORMAT_RGB` in `led_control.c` |
 | LED flickers | Marginal 5 V supply; try a different USB cable or hub |

@@ -26,31 +26,6 @@ required, just a Chromium-based browser (Chrome, Edge, Opera):
 
 ---
 
-## Project layout
-
-```
-esp32_ssh_led/
-├── CMakeLists.txt
-├── sdkconfig.defaults
-├── docs/                          ← GitHub Pages web installer
-│   ├── index.html
-│   ├── manifest-devkitc.json
-│   ├── manifest-jc3248w535.json
-│   └── firmware/
-├── main/
-│   ├── CMakeLists.txt
-│   ├── idf_component.yml          ← wolfSSH + led_strip dependencies
-│   ├── Kconfig.projbuild          ← WiFi / SSH / variant config (menuconfig)
-│   ├── main.c
-│   ├── wifi_manager.{h,c}
-│   ├── improv_wifi.{h,c}
-│   ├── led_control.{h,c}          ← WS2812 driver (DevKitC-1 variant)
-│   ├── screen_control.{h,c}       ← AXS15231 QSPI driver (JC3248W535 variant)
-│   └── ssh_server.{h,c}           ← wolfSSH server + interactive shell
-```
-
----
-
 ## Prerequisites
 
 | Tool | Version |
@@ -121,24 +96,7 @@ Use the password set in menuconfig (default: `esp32led`).
 
 ## Security notes
 
-* The default password `esp32led` is intentionally obvious — set a strong
-  password via `menuconfig` before deploying.
 * wolfSSH uses the wolfSSL cryptographic library which implements standard
   SSH-2 with AES, ECC, and SHA-2; the connection is fully encrypted.
 * The host key is stored in NVS (unencrypted by default). Enable NVS
   encryption (`CONFIG_NVS_ENCRYPTION=y`) for extra protection.
-* Only **password authentication** is enabled by default.
-
----
-
-## Troubleshooting
-
-| Symptom | Likely cause |
-|---------|-------------|
-| `wolfSSH_init failed` | wolfSSL not configured — check `idf_component.yml` version |
-| Host key error at connect | NVS corrupt — run `idf.py erase-flash` |
-| `bind() failed on port 22` | Some routers block port 22 from LAN — try port 2222 |
-
-For hardware-specific troubleshooting see the variant docs:
-[ESP32-S3-DevKitC-1.md](ESP32-S3-DevKitC-1.md) · [JC3248W535.md](JC3248W535.md)
-
