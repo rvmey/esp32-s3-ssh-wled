@@ -31,6 +31,8 @@
 #include "freertos/task.h"
 #include <stdbool.h>
 #include <string.h>
+#include "freertos/semphr.h"
+#include "driver/i2c.h"
 
 static const char *TAG = "screen";
 
@@ -63,6 +65,25 @@ static uint8_t             s_fr = 0xFF, s_fg = 0xFF, s_fb = 0xFF; /* text colour
 static bool                s_landscape = false;
 static int                 s_font_scale = 2; /* screen pixels per font pixel; 1-6 */
 static char                s_text[512];      /* last text drawn; empty = none */
+
+/* Scroll state — updated by touch task and screen_draw_text */
+static int               s_scroll_line  = 0;   /* first visible wrapped line   */
+static int               s_scroll_total = 0;   /* total lines from last draw   */
+
+/* Guards concurrent SPI access (touch task vs SSH/HTTP task) */
+static SemaphoreHandle_t s_draw_mutex   = NULL;
+
+/* ------------------------------------------------------------------ */
+/* Touch controller (AXS15231B built-in capacitive touch, I2C)        */
+/* ------------------------------------------------------------------ */
+
+#define TOUCH_I2C_NUM  I2C_NUM_0
+#define TOUCH_I2C_ADDR 0x3B
+#define TOUCH_SDA_GPIO 4
+#define TOUCH_SCL_GPIO 8
+
+/* Forward declaration — defined after screen_draw_text */
+static void touch_poll_task(void *arg);
 
 /* Logical width/height — swapped in landscape mode */
 static inline int lcd_w(void) { return s_landscape ? LCD_PHYS_H : LCD_PHYS_W; }
@@ -132,6 +153,8 @@ static void axs_write_phys_row(bool is_continue)
 
 static void screen_fill(uint8_t r, uint8_t g, uint8_t b)
 {
+    xSemaphoreTake(s_draw_mutex, portMAX_DELAY);
+
     /* Convert to RGB565 big-endian */
     uint16_t px = ((uint16_t)(r & 0xF8) << 8)
                 | ((uint16_t)(g & 0xFC) << 3)
@@ -158,6 +181,8 @@ static void screen_fill(uint8_t r, uint8_t g, uint8_t b)
     for (int y = 1; y < h; y++) {
         axs_write_phys_row(true);
     }
+
+    xSemaphoreGive(s_draw_mutex);
 }
 
 /* ------------------------------------------------------------------ */
@@ -166,6 +191,8 @@ static void screen_fill(uint8_t r, uint8_t g, uint8_t b)
 
 esp_err_t screen_init(void)
 {
+    s_draw_mutex = xSemaphoreCreateMutex();
+
     /* Backlight on */
     gpio_config_t bl = {
         .pin_bit_mask = BIT64(LCD_BL),
@@ -229,6 +256,28 @@ esp_err_t screen_init(void)
     vTaskDelay(pdMS_TO_TICKS(20));
 
     ESP_LOGI(TAG, "AXS15231 ready (%d x %d @ 40 MHz QSPI)", lcd_w(), lcd_h());
+
+    /* Touch controller — AXS15231B built-in capacitive touch via I2C */
+    i2c_config_t i2c_cfg = {
+        .mode             = I2C_MODE_MASTER,
+        .sda_io_num       = TOUCH_SDA_GPIO,
+        .scl_io_num       = TOUCH_SCL_GPIO,
+        .sda_pullup_en    = GPIO_PULLUP_ENABLE,
+        .scl_pullup_en    = GPIO_PULLUP_ENABLE,
+        .master.clk_speed = 400000,
+    };
+    esp_err_t i2c_err = i2c_param_config(TOUCH_I2C_NUM, &i2c_cfg);
+    if (i2c_err == ESP_OK) {
+        i2c_err = i2c_driver_install(TOUCH_I2C_NUM, I2C_MODE_MASTER, 0, 0, 0);
+    }
+    if (i2c_err == ESP_OK) {
+        ESP_LOGI(TAG, "Touch I2C ready (SDA=%d SCL=%d addr=0x%02X)",
+                 TOUCH_SDA_GPIO, TOUCH_SCL_GPIO, TOUCH_I2C_ADDR);
+        xTaskCreate(touch_poll_task, "touch_poll", 2048, NULL, 5, NULL);
+    } else {
+        ESP_LOGW(TAG, "Touch I2C init failed (%d) — scroll by touch unavailable", i2c_err);
+    }
+
     return ESP_OK;
 }
 
@@ -303,6 +352,7 @@ void screen_get_text_color(uint8_t *r, uint8_t *g, uint8_t *b)
  * so the static line buffer covers all runtime scale values 1-4. */
 #define TEXT_COLS_MAX (LCD_MAX_DIM / 8)          /* 60 — scale-1 cols (8px wide) */
 #define TEXT_ROWS_MAX (LCD_MAX_DIM / 16)         /* 30 — scale-1 rows (16px tall) */
+#define ALL_LINES_MAX 128                        /* max total wrapped lines (scrollable content) */
 
 /* IBM VGA 8×16 font (MSB of each byte = leftmost pixel).
  * 95 glyphs spanning ASCII 0x20 – 0x7E.                                */
@@ -406,18 +456,19 @@ static const uint8_t s_font8x16[95][16] = {
 
 /* Returns true if the given logical pixel falls on a foreground font bit.
  * Always uses the 8×16 IBM VGA font scaled by s_font_scale.
- * char_w = 8 * scale, char_h = 16 * scale                              */
+ * char_w = 8 * scale, char_h = 16 * scale.
+ * start_y is the top pixel row of the text block in logical coordinates
+ * (0 when content overflows the screen; centred otherwise).             */
 static bool text_pixel_is_fg(int logical_x, int logical_y,
-                              char lines[TEXT_ROWS_MAX][TEXT_COLS_MAX + 1],
+                              const char (*lines)[TEXT_COLS_MAX + 1],
                               const int *line_len, int num_lines,
-                              int logical_w, int logical_h)
+                              int logical_w, int start_y)
 {
     int scale = s_font_scale;
     int cw    = 8  * scale;
     int ch    = 16 * scale;
 
-    int start_y = (logical_h - num_lines * ch) / 2;
-    int rel_y   = logical_y - start_y;
+    int rel_y = logical_y - start_y;
     if (rel_y < 0 || rel_y >= num_lines * ch) return false;
 
     int trow     = rel_y / ch;
@@ -440,48 +491,78 @@ static bool text_pixel_is_fg(int logical_x, int logical_y,
 
 void screen_draw_text(const char *text)
 {
-    /* Save so color/orientation/fontsize changes can redraw automatically. */
+    xSemaphoreTake(s_draw_mutex, portMAX_DELAY);
+
+    /* Save so color/orientation/fontsize changes can redraw automatically.
+     * Reset scroll offset whenever the text content changes.             */
     if (text != s_text) {
         strncpy(s_text, text, sizeof(s_text) - 1);
         s_text[sizeof(s_text) - 1] = '\0';
+        s_scroll_line = 0;
     }
 
-    /* ---- Word-wrap into lines of at most avail chars ---- */
-    static char lines[TEXT_ROWS_MAX][TEXT_COLS_MAX + 1];
-    int line_len[TEXT_ROWS_MAX];
-    int num_lines = 0;
+    /* ---- Word-wrap ALL content into the scrollable line buffer ---- */
+    static char all_lines[ALL_LINES_MAX][TEXT_COLS_MAX + 1];
+    static int  all_len[ALL_LINES_MAX];
+    int total_lines = 0;
 
     int max_cols = lcd_w()  / (8  * s_font_scale);
     int max_rows = lcd_h()  / (16 * s_font_scale);
 
-    const char *src = text;
-    while (*src && num_lines < max_rows) {
+    const char *src = s_text;
+    while (*src && total_lines < ALL_LINES_MAX) {
         /* Skip leading spaces at the start of each line */
         while (*src == ' ') src++;
         if (*src == '\0') break;
 
         /* Find how much fits: try to break at a word boundary */
-        int avail = max_cols;
-        int take  = 0;
-
-        /* Count remaining non-NUL chars */
+        int avail     = max_cols;
+        int take      = 0;
         int remaining = (int)strlen(src);
         if (remaining <= avail) {
-            take = remaining;          /* everything fits */
+            take = remaining;
         } else {
-            /* Walk back from avail to find a space to break on */
             take = avail;
             while (take > 0 && src[take] != ' ' && src[take] != '\0') take--;
             if (take == 0) take = avail;   /* no space found: hard break */
         }
 
-        memcpy(lines[num_lines], src, (size_t)take);
-        lines[num_lines][take] = '\0';
-        line_len[num_lines] = take;
-        num_lines++;
+        memcpy(all_lines[total_lines], src, (size_t)take);
+        all_lines[total_lines][take] = '\0';
+        all_len[total_lines] = take;
+        total_lines++;
         src += take;
     }
-    if (num_lines == 0) return;
+
+    if (total_lines == 0) {
+        xSemaphoreGive(s_draw_mutex);
+        return;
+    }
+
+    /* Publish total so the touch task can compute scroll limits. */
+    s_scroll_total = total_lines;
+
+    /* ---- Determine visible window and vertical start position ---- */
+    int start_y;
+    int first;       /* index of first visible line in all_lines[] */
+    int num_visible; /* number of lines to render                   */
+    int ch = 16 * s_font_scale;
+
+    if (total_lines <= max_rows) {
+        /* All content fits — centre vertically, no scrolling needed */
+        s_scroll_line = 0;
+        first       = 0;
+        num_visible = total_lines;
+        start_y     = (lcd_h() - total_lines * ch) / 2;
+    } else {
+        /* Content overflows — clamp scroll offset, align window to top */
+        int max_scroll = total_lines - max_rows;
+        if (s_scroll_line < 0)          s_scroll_line = 0;
+        if (s_scroll_line > max_scroll) s_scroll_line = max_scroll;
+        first       = s_scroll_line;
+        num_visible = max_rows;
+        start_y     = 0;
+    }
 
     /* ---- Colours ---- */
     uint16_t bg = ((uint16_t)(s_r & 0xF8) << 8)
@@ -489,14 +570,13 @@ void screen_draw_text(const char *text)
                 | (s_b >> 3);
     uint8_t bg_h = (uint8_t)(bg >> 8);
     uint8_t bg_l = (uint8_t)(bg & 0xFF);
-    uint16_t fg   = ((uint16_t)(s_fr & 0xF8) << 8)
-                   | ((uint16_t)(s_fg & 0xFC) << 3)
-                   | (s_fb >> 3);
+    uint16_t fg  = ((uint16_t)(s_fr & 0xF8) << 8)
+                 | ((uint16_t)(s_fg & 0xFC) << 3)
+                 | (s_fb >> 3);
     uint8_t fg_h = (uint8_t)(fg >> 8);
     uint8_t fg_l = (uint8_t)(fg & 0xFF);
 
     int logical_w = lcd_w();
-    int logical_h = lcd_h();
 
     /* Full physical-panel address window. */
     uint8_t caset[] = { 0x00, 0x00, (uint8_t)((LCD_PHYS_W-1)>>8), (uint8_t)((LCD_PHYS_W-1)&0xFF) };
@@ -512,8 +592,7 @@ void screen_draw_text(const char *text)
         }
 
         for (int x = 0; x < LCD_PHYS_W; x++) {
-            int logical_x;
-            int logical_y;
+            int logical_x, logical_y;
 
             if (s_landscape) {
                 /* 90° CW logical landscape view rendered into portrait GRAM. */
@@ -524,14 +603,109 @@ void screen_draw_text(const char *text)
                 logical_y = y;
             }
 
-            if (text_pixel_is_fg(logical_x, logical_y, lines,
-                                 line_len, num_lines,
-                                 logical_w, logical_h)) {
+            if (text_pixel_is_fg(logical_x, logical_y,
+                                 all_lines + first, all_len + first,
+                                 num_visible, logical_w, start_y)) {
                 s_row_buf[x * 2]     = fg_h;
                 s_row_buf[x * 2 + 1] = fg_l;
             }
         }
 
         axs_write_phys_row(y != 0);
+    }
+
+    xSemaphoreGive(s_draw_mutex);
+}
+
+/* ================================================================== */
+/* Capacitive touch — scroll support (AXS15231B built-in touch)       */
+/* ================================================================== */
+
+/* Read one touch sample from the AXS15231B touch controller.
+ * Sends the 11-byte read-touchpad command over I2C, then reads 8 bytes.
+ * Returns true (and sets *x / *y) when at least one finger is active.
+ * Raw coordinates: x = 0..319 (columns), y = 0..479 (rows) in portrait. */
+static bool touch_read_point(uint16_t *x, uint16_t *y)
+{
+    static const uint8_t cmd[11] = {
+        0xB5, 0xAB, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+    };
+    uint8_t data[8] = {0};
+    esp_err_t err = i2c_master_write_read_device(
+        TOUCH_I2C_NUM, TOUCH_I2C_ADDR,
+        cmd,  sizeof(cmd),
+        data, sizeof(data),
+        pdMS_TO_TICKS(10));
+    if (err != ESP_OK) return false;
+    if ((data[1] & 0x03) == 0) return false;  /* no active touch points */
+    *x = ((uint16_t)(data[2] & 0x0F) << 8) | data[3];
+    *y = ((uint16_t)(data[4] & 0x0F) << 8) | data[5];
+    return true;
+}
+
+/* Apply a touch-driven scroll.
+ *   delta > 0  finger moved down (or right in landscape) → show earlier lines
+ *   delta < 0  finger moved up   (or left in landscape)  → show later lines  */
+static void apply_scroll_touch(int delta)
+{
+    if (!s_text[0]) return;
+
+    int row_h      = 16 * s_font_scale;
+    int max_rows   = lcd_h() / row_h;
+    int max_scroll = s_scroll_total - max_rows;
+    if (max_scroll <= 0) return;  /* all content fits; nothing to scroll */
+
+    /* pixel delta → line count (at least 1 line per swipe gesture) */
+    int abs_d = delta < 0 ? -delta : delta;
+    int lines = (abs_d + row_h - 1) / row_h;
+    if (lines < 1) lines = 1;
+
+    if (delta > 0)
+        s_scroll_line -= lines;  /* swipe down → toward top    */
+    else
+        s_scroll_line += lines;  /* swipe up   → toward bottom */
+
+    if (s_scroll_line < 0)          s_scroll_line = 0;
+    if (s_scroll_line > max_scroll) s_scroll_line = max_scroll;
+
+    screen_draw_text(s_text);     /* redraw at new scroll position */
+}
+
+/* Touch polling task.
+ * Polls the touch controller every 20 ms, tracks finger up/down, and
+ * calls apply_scroll_touch() on release if the swipe exceeds 20 px.   */
+static void touch_poll_task(void *arg)
+{
+    (void)arg;
+    bool     touching      = false;
+    uint16_t touch_start_x = 0, touch_start_y = 0;
+    uint16_t last_x        = 0, last_y        = 0;
+
+    for (;;) {
+        vTaskDelay(pdMS_TO_TICKS(20));
+
+        uint16_t tx, ty;
+        bool have = touch_read_point(&tx, &ty);
+
+        if (have && !touching) {
+            /* Finger just touched down */
+            touching      = true;
+            touch_start_x = tx;  touch_start_y = ty;
+            last_x        = tx;  last_y        = ty;
+        } else if (have) {
+            /* Finger still down — track latest position */
+            last_x = tx;  last_y = ty;
+        } else if (touching) {
+            /* Finger lifted — evaluate swipe */
+            touching = false;
+            int dx = (int)last_x - (int)touch_start_x;
+            int dy = (int)last_y - (int)touch_start_y;
+            /* In landscape SW-rotation physical X maps to logical Y.
+             * Negate so swipe direction is consistent with portrait.   */
+            int scroll_delta = s_landscape ? -dx : dy;
+            if (scroll_delta > 20 || scroll_delta < -20) {
+                apply_scroll_touch(scroll_delta);
+            }
+        }
     }
 }
