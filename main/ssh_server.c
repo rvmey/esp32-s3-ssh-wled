@@ -567,7 +567,7 @@ static const char s_help[] =
     "  color R G B       RGB triplet, each value 0-255\r\n"
     "  color #RRGGBB     Hex colour (e.g. #FF8800)\r\n"
     "  textcolor <name>  Set text colour (same syntax as color)\r\n"
-    "  text <message>    Draw text on screen (wraps at word boundaries)\r\n"
+    "  text <message>    Draw text on screen (wraps at word boundaries, \\n = newline)\r\n"
     "  landscape          Rotate display to landscape (480×320)\r\n"
     "  portrait           Rotate display to portrait  (320×480)\r\n"
     "  fontsize <1-8>    Set font scale (1=8px, 2=16px, 3=24px, 4=32px, 5=40px, 6=48px, 7=56px, 8=64px)\r\n"
@@ -625,9 +625,23 @@ static int handle_command(WOLFSSH *ssh, const char *line)
             ssh_puts(ssh, "Usage: text <message>" CRLF);
             return 0;
         }
-        screen_draw_text(msg);
-        snprintf(tmp, sizeof(tmp), "Screen text: %s" CRLF, msg);
-        ssh_puts(ssh, tmp);
+        /* Unescape \\n into real newlines before drawing */
+        {
+            const char *s = msg;
+            char *d = tmp;
+            char *end = tmp + sizeof(tmp) - 1;
+            while (*s && d < end) {
+                if (s[0] == '\\' && s[1] == 'n') {
+                    *d++ = '\n';
+                    s += 2;
+                } else {
+                    *d++ = *s++;
+                }
+            }
+            *d = '\0';
+        }
+        screen_draw_text(tmp);
+        ssh_puts(ssh, "Text set." CRLF);
         return 0;
     }
 #endif

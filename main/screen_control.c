@@ -515,15 +515,25 @@ void screen_draw_text(const char *text)
         while (*src == ' ') src++;
         if (*src == '\0') break;
 
-        /* Find how much fits: try to break at a word boundary */
-        int avail     = max_cols;
-        int take      = 0;
-        int remaining = (int)strlen(src);
-        if (remaining <= avail) {
-            take = remaining;
+        /* Explicit newline: emit an empty line and advance */
+        if (*src == '\n') {
+            all_lines[total_lines][0] = '\0';
+            all_len[total_lines] = 0;
+            total_lines++;
+            src++;
+            continue;
+        }
+
+        /* Find hard newline limit, then fit within max_cols */
+        const char *nl = strchr(src, '\n');
+        int line_len = nl ? (int)(nl - src) : (int)strlen(src);
+        int avail    = max_cols;
+        int take;
+        if (line_len <= avail) {
+            take = line_len;
         } else {
             take = avail;
-            while (take > 0 && src[take] != ' ' && src[take] != '\0') take--;
+            while (take > 0 && src[take] != ' ') take--;
             if (take == 0) take = avail;   /* no space found: hard break */
         }
 
@@ -532,6 +542,8 @@ void screen_draw_text(const char *text)
         all_len[total_lines] = take;
         total_lines++;
         src += take;
+        /* If we consumed exactly up to a hard newline, skip it */
+        if (take == line_len && nl != NULL) src++;
     }
 
     if (total_lines == 0) {
