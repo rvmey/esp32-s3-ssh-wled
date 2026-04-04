@@ -803,6 +803,46 @@ static int handle_command(WOLFSSH *ssh, const char *line)
 }
 
 /* ------------------------------------------------------------------ */
+/* Execute one input line, which may contain multiple ';'-separated   */
+/* commands.  The 'text' command is greedy: once recognised it        */
+/* consumes the rest of the line (including any ';' in it) and stops  */
+/* processing further commands.                                       */
+/* Returns 0 to continue, 1 to close the session.                     */
+/* ------------------------------------------------------------------ */
+
+static int handle_commands(WOLFSSH *ssh, const char *line)
+{
+    char buf[LINE_BUF_SZ];
+    strncpy(buf, line, LINE_BUF_SZ - 1);
+    buf[LINE_BUF_SZ - 1] = '\0';
+
+    char *p = buf;
+    while (1) {
+        /* Trim leading whitespace from the current segment */
+        while (*p == ' ' || *p == '\t') p++;
+
+        /* Greedy check: if this segment starts with 'text' + space/tab/end,
+         * pass the whole remainder to handle_command and stop. */
+        if ((strncasecmp(p, "text", 4) == 0) &&
+            (p[4] == ' ' || p[4] == '\t' || p[4] == '\0')) {
+            return handle_command(ssh, p);
+        }
+
+        /* Find the next ';' separator */
+        char *semi = strchr(p, ';');
+        if (semi) {
+            *semi = '\0';   /* null-terminate this segment */
+            int done = handle_command(ssh, p);
+            if (done) return 1;
+            p = semi + 1;   /* advance past the '\0' we wrote */
+        } else {
+            /* Last (or only) segment — no more ';' */
+            return handle_command(ssh, p);
+        }
+    }
+}
+
+/* ------------------------------------------------------------------ */
 /* Per-connection state passed from listener_task to session_task      */
 /* ------------------------------------------------------------------ */
 
@@ -838,7 +878,7 @@ static void session_task(void *pvParam)
 
     /* ---- Non-interactive exec: ssh host 'command' ---- */
     if (s->exec_cmd[0] != '\0') {
-        handle_command(ssh, s->exec_cmd);
+        handle_commands(ssh, s->exec_cmd);
         wolfSSH_stream_exit(ssh, 0);
         int fd = wolfSSH_get_fd(ssh);
         free(s);
@@ -866,7 +906,7 @@ static void session_task(void *pvParam)
         /* Add non-empty lines to history before handling */
         if (line[0] != '\0') hist_add(&hist, line);
 
-        int done = handle_command(ssh, line);
+        int done = handle_commands(ssh, line);
         if (done) break;
 
         ssh_puts(ssh, PROMPT);
