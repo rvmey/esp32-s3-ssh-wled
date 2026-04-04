@@ -322,7 +322,7 @@ void screen_get_landscape(bool *landscape)
 void screen_set_font_scale(int scale)
 {
     if (scale < 1) scale = 1;
-    if (scale > 6) scale = 6;
+    if (scale > 8) scale = 8;
     s_font_scale = scale;
     if (s_text[0]) {
         screen_draw_text(s_text);

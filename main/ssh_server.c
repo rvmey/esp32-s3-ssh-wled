@@ -570,7 +570,7 @@ static const char s_help[] =
     "  text <message>    Draw text on screen (wraps at word boundaries)\r\n"
     "  landscape          Rotate display to landscape (480×320)\r\n"
     "  portrait           Rotate display to portrait  (320×480)\r\n"
-    "  fontsize <1-6>    Set font scale (1=8px, 2=16px, 3=24px, 4=32px, 5=40px, 6=48px)\r\n"
+    "  fontsize <1-8>    Set font scale (1=8px, 2=16px, 3=24px, 4=32px, 5=40px, 6=48px, 7=56px, 8=64px)\r\n"
     "  off               Fill screen black\r\n"
     "  status            Show current screen colour\r\n"
     "  help              Show this help text\r\n"
@@ -653,19 +653,19 @@ static int handle_command(WOLFSSH *ssh, const char *line)
             int cur = 2;
             screen_get_font_scale(&cur);
             snprintf(tmp, sizeof(tmp),
-                     "Font scale: %d  (use: fontsize <1-6>)" CRLF, cur);
+                     "Font scale: %d  (use: fontsize <1-8>)" CRLF, cur);
             ssh_puts(ssh, tmp);
             return 0;
         }
         int scale = atoi(arg);
-        if (scale < 1 || scale > 6) {
-            ssh_puts(ssh, "Error: font scale must be 1-6." CRLF);
+        if (scale < 1 || scale > 8) {
+            ssh_puts(ssh, "Error: font scale must be 1-8." CRLF);
             return 0;
         }
         screen_set_font_scale(scale);
         snprintf(tmp, sizeof(tmp),
                  "Font scale set to %d (%dx%d px per character)." CRLF,
-                 scale, scale * 8, scale * 8);
+                 scale, scale * 8, scale * 16);
         ssh_puts(ssh, tmp);
         return 0;
     }
