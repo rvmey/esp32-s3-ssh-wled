@@ -649,43 +649,42 @@ static bool touch_read_point(uint16_t *x, uint16_t *y)
     return true;
 }
 
-/* Apply a touch-driven scroll.
- *   delta > 0  finger moved down (or right in landscape) → show earlier lines
- *   delta < 0  finger moved up   (or left in landscape)  → show later lines  */
-static void apply_scroll_touch(int delta)
+/* Apply a touch-driven scroll to an absolute line position and redraw.
+ * Called by the touch task while a finger is down.                       */
+static void apply_scroll_abs(int new_scroll)
 {
     if (!s_text[0]) return;
 
     int row_h      = 16 * s_font_scale;
     int max_rows   = lcd_h() / row_h;
     int max_scroll = s_scroll_total - max_rows;
-    if (max_scroll <= 0) return;  /* all content fits; nothing to scroll */
+    if (max_scroll <= 0) return;
 
-    /* pixel delta → line count (at least 1 line per swipe gesture) */
-    int abs_d = delta < 0 ? -delta : delta;
-    int lines = (abs_d + row_h - 1) / row_h;
-    if (lines < 1) lines = 1;
+    if (new_scroll < 0)          new_scroll = 0;
+    if (new_scroll > max_scroll) new_scroll = max_scroll;
 
-    if (delta > 0)
-        s_scroll_line -= lines;  /* swipe down → toward top    */
-    else
-        s_scroll_line += lines;  /* swipe up   → toward bottom */
-
-    if (s_scroll_line < 0)          s_scroll_line = 0;
-    if (s_scroll_line > max_scroll) s_scroll_line = max_scroll;
-
-    screen_draw_text(s_text);     /* redraw at new scroll position */
+    if (new_scroll != s_scroll_line) {
+        s_scroll_line = new_scroll;
+        screen_draw_text(s_text);
+    }
 }
 
 /* Touch polling task.
- * Polls the touch controller every 20 ms, tracks finger up/down, and
- * calls apply_scroll_touch() on release if the swipe exceeds 20 px.   */
+ * Polls the AXS15231B touch controller every 20 ms and live-scrolls the
+ * text while the finger is moving.
+ *
+ * Axis mapping (from the chip mounting on the JC3248W535 board):
+ *   Portrait:  raw X (data[2..3]) = display vertical axis (due to swap_xy
+ *              + mirror_y transform in the chip mount).  Swipe up →
+ *              raw-X increases → s_scroll_line increases (show content below).
+ *   Landscape: raw Y (data[4..5]) = display vertical axis.  Swipe up →
+ *              raw-Y decreases → negate to get the same sign convention.    */
 static void touch_poll_task(void *arg)
 {
     (void)arg;
-    bool     touching      = false;
-    uint16_t touch_start_x = 0, touch_start_y = 0;
-    uint16_t last_x        = 0, last_y        = 0;
+    bool    touching     = false;
+    int     start_scroll = 0;
+    int16_t start_v      = 0;   /* raw vertical-axis sample at touch-down */
 
     for (;;) {
         vTaskDelay(pdMS_TO_TICKS(20));
@@ -693,25 +692,25 @@ static void touch_poll_task(void *arg)
         uint16_t tx, ty;
         bool have = touch_read_point(&tx, &ty);
 
+        /* Select the raw axis that maps to the display's vertical direction,
+         * and the sign factor that makes "swipe up" → positive delta.        */
+        int16_t raw_v = s_landscape ? (int16_t)ty : (int16_t)tx;
+        int     sign  = s_landscape ? -1 : 1;
+
         if (have && !touching) {
             /* Finger just touched down */
-            touching      = true;
-            touch_start_x = tx;  touch_start_y = ty;
-            last_x        = tx;  last_y        = ty;
+            touching     = true;
+            start_scroll = s_scroll_line;
+            start_v      = raw_v;
         } else if (have) {
-            /* Finger still down — track latest position */
-            last_x = tx;  last_y = ty;
+            /* Finger still down — live-scroll as it moves */
+            int row_h = 16 * s_font_scale;
+            if (row_h == 0) continue;
+            int delta_lines = sign * ((int)raw_v - (int)start_v) / row_h;
+            apply_scroll_abs(start_scroll + delta_lines);
         } else if (touching) {
-            /* Finger lifted — evaluate swipe */
+            /* Finger lifted */
             touching = false;
-            int dx = (int)last_x - (int)touch_start_x;
-            int dy = (int)last_y - (int)touch_start_y;
-            /* In landscape SW-rotation physical X maps to logical Y.
-             * Negate so swipe direction is consistent with portrait.   */
-            int scroll_delta = s_landscape ? -dx : dy;
-            if (scroll_delta > 20 || scroll_delta < -20) {
-                apply_scroll_touch(scroll_delta);
-            }
         }
     }
 }
