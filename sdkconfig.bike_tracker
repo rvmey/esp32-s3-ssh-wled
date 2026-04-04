@@ -1,0 +1,17 @@
+# Hardware variant: ESP32-S3 Bike Tracker (MPU6050 + u-blox GPS)
+CONFIG_HARDWARE_BIKE_TRACKER=y
+
+# Console via USB Serial/JTAG (DevKitC-1 — same as jc3248w535 config)
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
+CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
+
+# 8 MB flash (ESP32-S3-DevKitC-1-N8)
+CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE="8MB"
+
+# Custom partition table with large bike_nvs partition
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions_bike_tracker.csv"
+
+# Smaller main stack — no wolfSSH session needed
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192

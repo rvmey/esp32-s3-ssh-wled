@@ -1,0 +1,15 @@
+# Partition table for bike-tracker variant (8 MB flash)
+#
+# Layout:
+#   nvs       24 KB  — WiFi credentials, SSH host key, HTTP config
+#   phy_init   4 KB  — RF calibration data (required by WiFi)
+#   factory    2 MB  — Application firmware
+#   bike_nvs  5.9 MB — Ride data (dedicated NVS partition)
+#
+# Capacity: ~590 one-hour rides at 5-second track-point intervals
+#
+# Name,     Type, SubType,  Offset,   Size
+nvs,        data, nvs,      0x9000,   0x6000,
+phy_init,   data, phy,      0xF000,   0x1000,
+factory,    app,  factory,  0x10000,  0x200000,
+bike_nvs,   data, nvs,      0x210000, 0x5F0000,

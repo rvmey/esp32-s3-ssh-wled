@@ -16,9 +16,11 @@
 #include "led_control.h"
 #elif CONFIG_HARDWARE_JC3248W535
 #include "screen_control.h"
+#elif CONFIG_HARDWARE_BIKE_TRACKER
+#include "bike_tracker.h"
 #endif
 
-#define APP_VERSION "2.0.16"
+#define APP_VERSION "2.0.17"
 
 static const char *TAG = "main";
 
@@ -29,6 +31,8 @@ static inline void hw_init(void)
     led_init();
 #elif CONFIG_HARDWARE_JC3248W535
     screen_init();
+#elif CONFIG_HARDWARE_BIKE_TRACKER
+    /* no-op: bike_tracker_run() manages its own peripherals */
 #endif
 }
 
@@ -38,6 +42,8 @@ static inline void hw_set_color(uint8_t r, uint8_t g, uint8_t b)
     led_set_color(r, g, b);
 #elif CONFIG_HARDWARE_JC3248W535
     screen_set_color(r, g, b);
+#elif CONFIG_HARDWARE_BIKE_TRACKER
+    (void)r; (void)g; (void)b;
 #endif
 }
 
@@ -47,6 +53,8 @@ static inline void hw_off(void)
     led_off();
 #elif CONFIG_HARDWARE_JC3248W535
     screen_off();
+#elif CONFIG_HARDWARE_BIKE_TRACKER
+    /* no-op */
 #endif
 }
 
@@ -60,6 +68,13 @@ void app_main(void)
         err = nvs_flash_init();
     }
     ESP_ERROR_CHECK(err);
+
+#if CONFIG_HARDWARE_BIKE_TRACKER
+    /* Bike tracker manages its own peripherals and sleep cycle.
+     * This call never returns — it ends with esp_deep_sleep_start(). */
+    bike_tracker_run();
+    return;
+#endif
 
     /* Initialise the output device for this hardware variant */
     hw_init();

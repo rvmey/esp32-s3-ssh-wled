@@ -1,8 +1,22 @@
 # Hardware-variant source files: only one output driver is compiled per build.
 if(CONFIG_HARDWARE_JC3248W535)
     set(VARIANT_SRCS "screen_control.c")
+elseif(CONFIG_HARDWARE_BIKE_TRACKER)
+    set(VARIANT_SRCS
+        "bike_tracker.c"
+        "mpu6050.c"
+        "gps_ubx.c"
+        "ride_log.c"
+        "ride_upload.c")
 else()
     set(VARIANT_SRCS "led_control.c")
+endif()
+
+# SSH/HTTP server sources are not needed for the bike-tracker variant
+if(NOT CONFIG_HARDWARE_BIKE_TRACKER)
+    set(SSH_SRCS "ssh_server.c" "http_config.c")
+else()
+    set(SSH_SRCS "")
 endif()
 
 idf_component_register(
@@ -10,8 +24,7 @@ idf_component_register(
         "main.c"
         "wifi_manager.c"
         "improv_wifi.c"
-        "ssh_server.c"
-        "http_config.c"
+        ${SSH_SRCS}
         ${VARIANT_SRCS}
     INCLUDE_DIRS
         "."

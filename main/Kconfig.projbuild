@@ -12,7 +12,100 @@ menu "ESP32 SSH LED Configuration"
 
         config HARDWARE_JC3248W535
             bool "Guition JC3248W535 (320x480 AXS15231 QSPI display)"
+
+        config HARDWARE_BIKE_TRACKER
+            bool "ESP32-S3 Bike Tracker (MPU6050 + u-blox GPS)"
     endchoice
+
+    menu "Bike Tracker Settings"
+        depends on HARDWARE_BIKE_TRACKER
+
+        config MPU6050_I2C_PORT
+            int "MPU6050 I2C port number"
+            default 0
+            range 0 1
+            help
+                I2C peripheral (0 or 1) the MPU6050 is wired to.
+
+        config MPU6050_SDA_GPIO
+            int "MPU6050 SDA GPIO"
+            default 8
+            range 0 48
+
+        config MPU6050_SCL_GPIO
+            int "MPU6050 SCL GPIO"
+            default 9
+            range 0 48
+
+        config MPU6050_INT_GPIO
+            int "MPU6050 INT GPIO (must be RTC-capable, 0-21)"
+            default 4
+            range 0 21
+            help
+                GPIO connected to the MPU6050 INT pin. Must be an RTC-capable
+                GPIO (0-21 on ESP32-S3) for use as an EXT0 deep-sleep wakeup
+                source.
+
+        config MPU6050_AD0_HIGH
+            bool "MPU6050 AD0 pin is HIGH (I2C address 0x69)"
+            default n
+            help
+                Clear (default) = address 0x68 (AD0 low).
+                Set = address 0x69 (AD0 high).
+
+        config GPS_UART_NUM
+            int "GPS UART number"
+            default 1
+            range 0 2
+
+        config GPS_UART_RX_GPIO
+            int "GPS UART RX GPIO"
+            default 18
+            range 0 48
+
+        config GPS_UART_TX_GPIO
+            int "GPS UART TX GPIO"
+            default 17
+            range 0 48
+
+        config GPS_POWER_GPIO
+            int "GPS power-enable GPIO (-1 = not used)"
+            default -1
+            range -1 48
+            help
+                Optional GPIO that enables power to the GPS module.
+                Set to -1 if no power control pin is wired.
+
+        config GPS_FIX_TIMEOUT_S
+            int "GPS fix timeout (seconds)"
+            default 60
+            range 10 300
+            help
+                Seconds to wait for a 3D GPS fix before giving up and
+                going back to deep sleep without logging a ride.
+
+        config TRACKER_LOG_INTERVAL_S
+            int "Track-point log interval (seconds)"
+            default 5
+            range 1 60
+            help
+                One GPS track-point is recorded every this many seconds.
+
+        config TRACKER_INACTIVITY_TIMEOUT_S
+            int "Inactivity timeout before sleep (seconds)"
+            default 30
+            range 5 300
+            help
+                If no motion is detected for this many seconds, the current
+                ride is finished and the device returns to deep sleep.
+
+        config TRACKER_UPLOAD_URL
+            string "Ride upload URL (empty = disable upload)"
+            default ""
+            help
+                HTTP endpoint that receives ride data as a JSON POST.
+                Leave empty to store rides locally without uploading.
+    endmenu
 
     config WIFI_SSID
         string "WiFi SSID"

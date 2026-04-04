@@ -1,0 +1,17 @@
+{
+  "name": "ESP32-S3 Bike Tracker (MPU6050 + u-blox GPS)",
+  "version": "2.0.17",
+  "new_install_improv_wifi": true,
+  "new_install_improv_wait_time": 20,
+  "builds": [
+    {
+      "chipFamily": "ESP32-S3",
+      "parts": [
+        { "path": "firmware/bootloader.bin",                   "offset": 0      },
+        { "path": "firmware/partition-table-bike_tracker.bin", "offset": 32768  },
+        { "path": "firmware/nvs_blank.bin",                    "offset": 36864  },
+        { "path": "firmware/esp32_bike_tracker.bin",           "offset": 65536  }
+      ]
+    }
+  ]
+}

@@ -39,6 +39,13 @@ $variants = @(
         Config    = 'sdkconfig.jc3248w535'
         BuildDir  = 'build_jc3248w535'
         OutputBin = 'esp32_ssh_screen.bin'
+    },
+    [PSCustomObject]@{
+        Name         = 'bike_tracker'
+        Config       = 'sdkconfig.bike_tracker'
+        BuildDir     = 'build_bike_tracker'
+        OutputBin    = 'esp32_bike_tracker.bin'
+        PartitionBin = 'partition-table-bike_tracker.bin'
     }
 )
 
@@ -87,6 +94,13 @@ function Copy-Artifacts([PSCustomObject]$variant, [bool]$copyShared) {
         Copy-Item $partSrc  (Join-Path $FirmwareDir 'partition-table.bin')  -Force
         Write-Host '  Copied bootloader.bin' -ForegroundColor Green
         Write-Host '  Copied partition-table.bin' -ForegroundColor Green
+    }
+
+    # Variant-specific partition table (e.g. for custom flash layouts)
+    if ($variant.PSObject.Properties['PartitionBin']) {
+        $varPartSrc = Join-Path $buildDir 'partition_table\partition-table.bin'
+        Copy-Item $varPartSrc (Join-Path $FirmwareDir $variant.PartitionBin) -Force
+        Write-Host "  Copied $($variant.PartitionBin)" -ForegroundColor Green
     }
 }
 
