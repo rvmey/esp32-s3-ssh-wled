@@ -622,22 +622,28 @@ void screen_draw_text(const char *text)
 /* ================================================================== */
 
 /* Read one touch sample from the AXS15231B touch controller.
- * Sends the 11-byte read-touchpad command over I2C, then reads 8 bytes.
+ * Protocol: write the 8-byte read-touchpad command (separate transaction),
+ * then read 8 bytes (separate transaction — STOP between write and read).
  * Returns true (and sets *x / *y) when at least one finger is active.
  * Raw coordinates: x = 0..319 (columns), y = 0..479 (rows) in portrait. */
 static bool touch_read_point(uint16_t *x, uint16_t *y)
 {
-    static const uint8_t cmd[11] = {
-        0xB5, 0xAB, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+    static const uint8_t cmd[8] = {
+        0xB5, 0xAB, 0xA5, 0x5A, 0x00, 0x00, 0x00, 0x08
     };
     uint8_t data[8] = {0};
-    esp_err_t err = i2c_master_write_read_device(
+    /* Two separate transactions (STOP between write and read) */
+    esp_err_t err = i2c_master_write_to_device(
         TOUCH_I2C_NUM, TOUCH_I2C_ADDR,
-        cmd,  sizeof(cmd),
+        cmd, sizeof(cmd),
+        pdMS_TO_TICKS(10));
+    if (err != ESP_OK) return false;
+    err = i2c_master_read_from_device(
+        TOUCH_I2C_NUM, TOUCH_I2C_ADDR,
         data, sizeof(data),
         pdMS_TO_TICKS(10));
     if (err != ESP_OK) return false;
-    if ((data[1] & 0x03) == 0) return false;  /* no active touch points */
+    if (data[0] != 0 || data[1] == 0) return false;  /* no active touch */
     *x = ((uint16_t)(data[2] & 0x0F) << 8) | data[3];
     *y = ((uint16_t)(data[4] & 0x0F) << 8) | data[5];
     return true;
