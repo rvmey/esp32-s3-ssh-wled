@@ -109,8 +109,6 @@ The serial monitor prints the device's IP address once Wi-Fi connects.
 
 ```bash
 ssh admin@<device-ip>
-# or on a non-standard port:
-ssh admin@<device-ip> -p 2222
 ```
 
 Use the password set in menuconfig (default: `esp32led`).
