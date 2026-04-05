@@ -12,6 +12,7 @@
 #include "esp_wifi.h"
 #include "esp_log.h"
 #include "driver/gpio.h"
+#include "driver/rtc_io.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
@@ -26,6 +27,14 @@ static void IRAM_ATTR enter_deep_sleep(void)
     /* Re-arm MPU6050 motion interrupt as wakeup source.                    */
     mpu6050_clear_interrupt();
     mpu6050_configure_wakeup();
+
+    /* Enable internal RTC pull-down so a floating / disconnected INT pin
+     * does not immediately re-trigger EXT0 and cause a boot loop.         */
+    rtc_gpio_init((gpio_num_t)CONFIG_MPU6050_INT_GPIO);
+    rtc_gpio_set_direction((gpio_num_t)CONFIG_MPU6050_INT_GPIO,
+                           RTC_GPIO_MODE_INPUT_ONLY);
+    rtc_gpio_pullup_dis((gpio_num_t)CONFIG_MPU6050_INT_GPIO);
+    rtc_gpio_pulldown_en((gpio_num_t)CONFIG_MPU6050_INT_GPIO);
 
     esp_sleep_enable_ext0_wakeup((gpio_num_t)CONFIG_MPU6050_INT_GPIO, 1);
     ESP_LOGI(TAG, "Entering deep sleep, INT wakeup on GPIO %d",

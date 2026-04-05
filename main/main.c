@@ -20,7 +20,7 @@
 #include "bike_tracker.h"
 #endif
 
-#define APP_VERSION "2.0.17"
+#define APP_VERSION "2.0.18"
 
 static const char *TAG = "main";
 
