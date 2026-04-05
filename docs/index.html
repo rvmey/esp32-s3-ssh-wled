@@ -153,7 +153,8 @@
 
     /* Hardware variant selector */
     .variant-select {
-      display: flex;
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
       gap: 0.75rem;
       margin-bottom: 1.5rem;
     }
@@ -279,6 +280,10 @@
       <label>
         <input type="radio" name="variant" value="manifest-bike_tracker.json" />
         &#x1F6B2;&nbsp;<span><strong>Bike Tracker</strong><br />GPS + MPU6050</span>
+      </label>
+      <label>
+        <input type="radio" name="variant" value="manifest-picture_frame.json" />
+        &#x1F5BC;&nbsp;<span><strong>Picture Frame</strong><br />TRIGGERcmd Display</span>
       </label>
     </div>
 
