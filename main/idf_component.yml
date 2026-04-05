@@ -1,6 +1,8 @@
 ## IDF Component Manager manifest
 ## wolfSSH pulls in wolfSSL automatically as a dependency.
 ## led_strip is the official Espressif WS2812 driver.
+## esp_websocket_client provides Socket.IO transport for the picture-frame variant.
+## esp_jpeg provides software JPEG decoding for the picture-frame variant.
 
 dependencies:
   wolfssl/wolfssl:
@@ -9,5 +11,9 @@ dependencies:
     version: ">=1.4.17"
   espressif/led_strip:
     version: ">=2.5.0"
+  espressif/esp_websocket_client:
+    version: ">=1.0.0"
+  espressif/esp_jpeg:
+    version: ">=1.0.2"
   idf:
     version: ">=5.0.0"

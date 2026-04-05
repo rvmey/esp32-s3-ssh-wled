@@ -60,6 +60,18 @@ void screen_set_landscape(bool landscape);
 void screen_get_landscape(bool *landscape);
 
 /**
+ * @brief Blit a pre-decoded RGB565 image to the physical panel.
+ *        Scales the source image to fill the full 320×480 panel using
+ *        nearest-neighbour interpolation.
+ *
+ * @param rgb565  Pointer to source pixels in RGB565 format (little-endian
+ *                16-bit values, i.e. [LSByte, MSByte] per pixel).
+ * @param src_w   Source image width in pixels.
+ * @param src_h   Source image height in pixels.
+ */
+void screen_draw_rgb565(const uint8_t *rgb565, int src_w, int src_h);
+
+/**
  * @brief Set the font scale factor used by screen_draw_text().
  *        Each font pixel is rendered as (scale × scale) screen pixels.
  *        Valid range: 1–4.  Default: 2 (16×16 px per character).

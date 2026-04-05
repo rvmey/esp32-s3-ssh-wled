@@ -46,6 +46,12 @@ $variants = @(
         BuildDir     = 'build_bike_tracker'
         OutputBin    = 'esp32_bike_tracker.bin'
         PartitionBin = 'partition-table-bike_tracker.bin'
+    },
+    [PSCustomObject]@{
+        Name      = 'picture_frame'
+        Config    = 'sdkconfig.picture_frame'
+        BuildDir  = 'build_picture_frame'
+        OutputBin = 'esp32_picture_frame.bin'
     }
 )
 

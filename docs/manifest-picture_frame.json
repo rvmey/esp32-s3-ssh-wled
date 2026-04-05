@@ -1,5 +1,5 @@
 {
-  "name": "ESP32-S3 SSH Server — JC3248W535 (320x480 Screen)",
+  "name": "ESP32-S3 TriggerCMD Picture Frame — JC3248W535 (320x480 Screen)",
   "version": "2.0.19",
   "new_install_improv_wifi": true,
   "new_install_improv_wait_time": 20,
@@ -10,7 +10,7 @@
         { "path": "firmware/bootloader.bin",              "offset": 0     },
         { "path": "firmware/partition-table.bin",         "offset": 32768 },
         { "path": "firmware/nvs_blank.bin",               "offset": 36864 },
-        { "path": "firmware/esp32_ssh_screen.bin",        "offset": 65536 }
+        { "path": "firmware/esp32_picture_frame.bin",     "offset": 65536 }
       ]
     }
   ]

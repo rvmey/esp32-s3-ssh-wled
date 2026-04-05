@@ -15,7 +15,23 @@ menu "ESP32 SSH LED Configuration"
 
         config HARDWARE_BIKE_TRACKER
             bool "ESP32-S3 Bike Tracker (MPU6050 + u-blox GPS)"
+
+        config HARDWARE_PICTURE_FRAME
+            bool "TriggerCMD Picture Frame (JC3248W535 + Socket.IO display)"
     endchoice
+
+    menu "Picture Frame Settings"
+        depends on HARDWARE_PICTURE_FRAME
+
+        config PICTURE_FRAME_MAX_IMAGE_BYTES
+            int "Maximum JPEG download size (bytes)"
+            default 524288
+            help
+                Maximum size of a single JPEG image fetched from the display
+                event URL.  The buffer is allocated in PSRAM at startup.
+                512 KB (524288) is sufficient for most full-resolution photos
+                at moderate JPEG quality.
+    endmenu
 
     menu "Bike Tracker Settings"
         depends on HARDWARE_BIKE_TRACKER

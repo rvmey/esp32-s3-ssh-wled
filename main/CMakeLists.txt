@@ -1,6 +1,12 @@
 # Hardware-variant source files: only one output driver is compiled per build.
 if(CONFIG_HARDWARE_JC3248W535)
     set(VARIANT_SRCS "screen_control.c")
+elseif(CONFIG_HARDWARE_PICTURE_FRAME)
+    set(VARIANT_SRCS
+        "screen_control.c"
+        "picture_frame.c"
+        "socketio.c"
+        "http_pf_config.c")
 elseif(CONFIG_HARDWARE_BIKE_TRACKER)
     set(VARIANT_SRCS
         "bike_tracker.c"
@@ -12,8 +18,8 @@ else()
     set(VARIANT_SRCS "led_control.c")
 endif()
 
-# SSH/HTTP server sources are not needed for the bike-tracker variant
-if(NOT CONFIG_HARDWARE_BIKE_TRACKER)
+# SSH/HTTP server sources are not needed for bike-tracker or picture-frame
+if(NOT CONFIG_HARDWARE_BIKE_TRACKER AND NOT CONFIG_HARDWARE_PICTURE_FRAME)
     set(SSH_SRCS "ssh_server.c" "http_config.c")
 else()
     set(SSH_SRCS "")

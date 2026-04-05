@@ -1,0 +1,15 @@
+# Hardware variant: TriggerCMD Picture Frame (Guition JC3248W535)
+CONFIG_HARDWARE_PICTURE_FRAME=y
+
+# Console via USB Serial/JTAG (board has no UART-to-USB bridge)
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
+CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
+
+# OPI PSRAM — required for JPEG download buffer (~512 KB) + decoded RGB565 frame (~2 MB)
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_OCT=y
+CONFIG_SPIRAM_USE_MALLOC=y
+
+# TLS — full CA bundle includes GoDaddy Root G2 (TriggerCMD server chain)
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_FULL=y

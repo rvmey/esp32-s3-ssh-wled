@@ -319,6 +319,45 @@ void screen_get_landscape(bool *landscape)
     *landscape = s_landscape;
 }
 
+void screen_draw_rgb565(const uint8_t *rgb565, int src_w, int src_h)
+{
+    xSemaphoreTake(s_draw_mutex, portMAX_DELAY);
+
+    /* Address the full physical panel (always portrait: 320 × 480). */
+    uint8_t caset[] = { 0x00, 0x00,
+                        (uint8_t)((LCD_PHYS_W - 1) >> 8),
+                        (uint8_t)((LCD_PHYS_W - 1) & 0xFF) };
+    uint8_t raset[] = { 0x00, 0x00,
+                        (uint8_t)((LCD_PHYS_H - 1) >> 8),
+                        (uint8_t)((LCD_PHYS_H - 1) & 0xFF) };
+    axs_cmd(0x2A, caset, sizeof(caset));
+    axs_cmd(0x2B, raset, sizeof(raset));
+
+    /*
+     * Nearest-neighbour scale to fill LCD_PHYS_W × LCD_PHYS_H.
+     *
+     * The source buffer holds RGB565 pixels as little-endian uint16_t values
+     * (as produced by esp_jpeg_decode with swap_color_bytes = 0):
+     *   memory layout per pixel: [LSByte, MSByte]
+     *   reading as uint16_t on little-endian CPU: value = (MSByte<<8)|LSByte
+     *   so (value >> 8) == MSByte  →  sent first on SPI (big-endian to display)
+     */
+    const uint16_t *src = (const uint16_t *)rgb565;
+
+    for (int y = 0; y < LCD_PHYS_H; y++) {
+        int src_row = (y * src_h) / LCD_PHYS_H;
+        for (int x = 0; x < LCD_PHYS_W; x++) {
+            int src_col = (x * src_w) / LCD_PHYS_W;
+            uint16_t pixel = src[src_row * src_w + src_col];
+            s_row_buf[x * 2]     = (uint8_t)(pixel >> 8);
+            s_row_buf[x * 2 + 1] = (uint8_t)(pixel & 0xFF);
+        }
+        axs_write_phys_row(y != 0);
+    }
+
+    xSemaphoreGive(s_draw_mutex);
+}
+
 void screen_set_font_scale(int scale)
 {
     if (scale < 1) scale = 1;
