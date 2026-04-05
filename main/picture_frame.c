@@ -340,6 +340,10 @@ static esp_err_t connect_and_subscribe(const char *hw_token,
 
 void picture_frame_run(void)
 {
+    /* Initialise display first — screen_init() creates s_draw_mutex which all
+     * screen_draw_*() helpers require.  Must happen before any screen call. */
+    screen_init();
+
     /* Allocate persistent PSRAM buffers */
     s_dl_buf = heap_caps_malloc(DL_BUF_BYTES, MALLOC_CAP_SPIRAM);
     s_px_buf = heap_caps_malloc(PX_BUF_BYTES, MALLOC_CAP_SPIRAM);
