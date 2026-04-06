@@ -72,11 +72,17 @@ function Invoke-IdfBuild([PSCustomObject]$variant) {
     # exactly what cmake needs for its list separator.
     $defaults = "sdkconfig.defaults;$($variant.Config)"
 
+    # idf.py (python) writes informational messages to stderr.  Under
+    # $ErrorActionPreference = 'Stop' that triggers a terminating error, so
+    # temporarily relax it and rely solely on $LASTEXITCODE for failure detection.
+    $savedEAP = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
     & idf.py `
         --build-dir $variant.BuildDir `
         "-DSDKCONFIG_DEFAULTS=$defaults" `
         "-DSDKCONFIG=$($variant.BuildDir)/sdkconfig" `
         build
+    $ErrorActionPreference = $savedEAP
 
     if ($LASTEXITCODE -ne 0) {
         throw "idf.py build failed for variant '$($variant.Name)' (exit $LASTEXITCODE)"
