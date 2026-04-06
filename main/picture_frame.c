@@ -6,12 +6,16 @@
  * Boot sequence:
  *   1. screen_init()
  *   2. WiFi — Improv-WiFi BLE provisioning if no stored credentials.
- *   3. Hardware provisioning — POST /api/hardware/provision with JWT stored
- *      in NVS.  If the JWT is absent, the HTTP config page is started and
- *      the user is prompted to visit http://<ip>/ to supply it.
- *   4. Socket.IO connect to wss://www.triggercmd.com
- *   5. GET /api/hardware/subscribeToDisplay?hardwareId=<computer_id>
- *   6. Event loop — waits for "display" events and renders received JPEGs.
+ *   3. Hardware token — obtained via pair code flow:
+ *        GET /pair?model=TCMDSCREEN → {pairCode, pairToken}
+ *        Display code; poll GET /pair/lookup every 5 s (up to 10 min).
+ *        On authorisation, token is saved to NVS and device reboots.
+ *        On timeout, a fresh pair code is fetched automatically.
+ *   4. Provisioning — GET /api/hardware/provision with the stored JWT,
+ *      receiving back a computer ID stored in NVS.
+ *   5. Socket.IO connect to wss://www.triggercmd.com
+ *   6. GET /api/hardware/subscribeToDisplay?hardwareId=<computer_id>
+ *   7. Event loop — waits for "display" events and renders received JPEGs.
  */
 
 #include "picture_frame.h"
@@ -135,6 +139,64 @@ static int https_get_auth(const char *url, const char *token, char **body)
 
     if (status < 200 || status >= 300) {
         ESP_LOGE(TAG, "HTTPS GET %s → HTTP %d", url, status);
+        free(buf);
+        return -1;
+    }
+
+    *body = buf;
+    return total;
+}
+
+/*
+ * HTTPS GET without auth headers. Returns body length or -1 on failure.
+ * Caller must free *body.
+ */
+static int https_get_simple(const char *url, char **body)
+{
+    *body = NULL;
+
+    esp_http_client_config_t cfg = {
+        .url               = url,
+        .method            = HTTP_METHOD_GET,
+        .timeout_ms        = 15000,
+        .crt_bundle_attach = esp_crt_bundle_attach,
+    };
+
+    esp_http_client_handle_t client = esp_http_client_init(&cfg);
+    if (!client) return -1;
+
+    esp_err_t ret = esp_http_client_open(client, 0);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "https_get_simple open failed: %s", esp_err_to_name(ret));
+        esp_http_client_cleanup(client);
+        return -1;
+    }
+
+    int64_t cl = esp_http_client_fetch_headers(client);
+    int max_body = 2048;
+    if (cl > 0 && cl < max_body) max_body = (int)cl;
+
+    char *buf = malloc(max_body + 1);
+    if (!buf) {
+        esp_http_client_close(client);
+        esp_http_client_cleanup(client);
+        return -1;
+    }
+
+    int total = 0;
+    while (total < max_body) {
+        int n = esp_http_client_read(client, buf + total, max_body - total);
+        if (n <= 0) break;
+        total += n;
+    }
+    buf[total] = '\0';
+
+    int status = esp_http_client_get_status_code(client);
+    esp_http_client_close(client);
+    esp_http_client_cleanup(client);
+
+    if (status < 200 || status >= 300) {
+        ESP_LOGE(TAG, "https_get_simple %s → HTTP %d", url, status);
         free(buf);
         return -1;
     }
@@ -383,26 +445,80 @@ void picture_frame_run(void)
     bool have_token    = nvs_read_str(NVS_KEY_TOKEN,  hw_token,    sizeof(hw_token));
     bool have_comp_id  = nvs_read_str(NVS_KEY_COMPID, computer_id, sizeof(computer_id));
 
-    /* If no hardware token, serve the config page until the user adds one */
+    /* If no hardware token, run the pair code flow until authorised */
     if (!have_token) {
-        ESP_LOGI(TAG, "No HW token — starting config server");
-        http_pf_config_start();
+        while (true) {  /* pair_loop — retries on network failure or 10-min timeout */
 
-        char ip_msg[80] = "0.0.0.0";
-        wifi_get_ip(ip_msg, sizeof(ip_msg));
-        char disp_msg[128];
-        snprintf(disp_msg, sizeof(disp_msg),
-                 "Visit http://%s/\nto configure", ip_msg);
-        screen_draw_text(disp_msg);
+            /* Step 1: obtain a fresh pair code from TriggerCMD */
+            char *pair_body = NULL;
+            int pair_len = https_get_simple(
+                    "https://www.triggercmd.com/pair?model=TCMDSCREEN",
+                    &pair_body);
 
-        /* Poll NVS until token appears, then reboot */
-        while (true) {
-            vTaskDelay(pdMS_TO_TICKS(1000));
-            if (nvs_read_str(NVS_KEY_TOKEN, hw_token, sizeof(hw_token))) {
-                ESP_LOGI(TAG, "HW token stored — rebooting");
+            if (pair_len <= 0 || !pair_body) {
+                ESP_LOGE(TAG, "GET /pair failed — retrying in 10s");
+                screen_draw_text("Pairing failed\nRetrying...");
+                vTaskDelay(pdMS_TO_TICKS(10000));
+                continue;
+            }
+
+            char pair_code[8]    = {0};
+            char pair_token[768] = {0};
+            json_extract_str(pair_body, "pairCode",  pair_code,  sizeof(pair_code));
+            json_extract_str(pair_body, "pairToken", pair_token, sizeof(pair_token));
+            free(pair_body);
+
+            if (pair_code[0] == '\0' || pair_token[0] == '\0') {
+                ESP_LOGE(TAG, "GET /pair: missing pairCode/pairToken — retrying in 10s");
+                screen_draw_text("Pairing failed\nRetrying...");
+                vTaskDelay(pdMS_TO_TICKS(10000));
+                continue;
+            }
+
+            ESP_LOGI(TAG, "Pair code: %s", pair_code);
+
+            /* Step 2: show code on screen and serve it via local web page */
+            char pair_disp[128];
+            snprintf(pair_disp, sizeof(pair_disp),
+                     "Visit triggercmd.com\nSign in -> click name\n"
+                     "Click Pair -> enter:\n%s", pair_code);
+            screen_draw_text(pair_disp);
+            http_pf_config_start(pair_code);
+
+            /* Step 3: poll /pair/lookup every 5 s for up to 10 minutes */
+            char lookup_url[850];
+            snprintf(lookup_url, sizeof(lookup_url),
+                     "https://www.triggercmd.com/pair/lookup?token=%s",
+                     pair_token);
+
+            bool paired = false;
+            for (int i = 0; i < 120 && !paired; i++) {
+                vTaskDelay(pdMS_TO_TICKS(5000));
+
+                char *lk_body = NULL;
+                int lk_len = https_get_simple(lookup_url, &lk_body);
+                if (lk_len > 0 && lk_body) {
+                    char hw_tok_new[HW_TOKEN_MAX_LEN] = {0};
+                    if (json_extract_str(lk_body, "token",
+                                        hw_tok_new, sizeof(hw_tok_new)) &&
+                            hw_tok_new[0] != '\0') {
+                        nvs_write_str(NVS_KEY_TOKEN, hw_tok_new);
+                        ESP_LOGI(TAG, "Paired — token saved; rebooting");
+                        paired = true;
+                    }
+                    free(lk_body);
+                }
+            }
+
+            http_pf_config_stop();
+
+            if (paired) {
                 vTaskDelay(pdMS_TO_TICKS(500));
                 esp_restart();
             }
+
+            /* 10-minute timeout — fetch a fresh pair code */
+            ESP_LOGI(TAG, "Pair code timed out — fetching new code");
         }
     }
 
