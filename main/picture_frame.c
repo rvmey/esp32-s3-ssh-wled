@@ -38,6 +38,7 @@
 #include "screen_control.h"
 #include "socketio.h"
 #include "http_pf_config.h"
+#include "triggercmd_ca.h"   /* embedded Go Daddy Root G2 cert for triggercmd.com */
 #include "jpeg_decoder.h"    /* espressif/esp_jpeg managed component */
 
 
@@ -96,10 +97,10 @@ static int https_get_auth(const char *url, const char *token, char **body)
     *body = NULL;
 
     esp_http_client_config_t cfg = {
-        .url               = url,
-        .method            = HTTP_METHOD_GET,
-        .timeout_ms        = 15000,
-        .crt_bundle_attach = esp_crt_bundle_attach,
+        .url      = url,
+        .method   = HTTP_METHOD_GET,
+        .timeout_ms = 15000,
+        .cert_pem = TRIGGERCMD_CA_PEM,   /* GoDaddy Root G2 — avoids cross-signed bundle lookup */
     };
 
     esp_http_client_handle_t client = esp_http_client_init(&cfg);
@@ -156,10 +157,10 @@ static int https_get_simple(const char *url, char **body)
     *body = NULL;
 
     esp_http_client_config_t cfg = {
-        .url               = url,
-        .method            = HTTP_METHOD_GET,
-        .timeout_ms        = 15000,
-        .crt_bundle_attach = esp_crt_bundle_attach,
+        .url        = url,
+        .method     = HTTP_METHOD_GET,
+        .timeout_ms = 15000,
+        .cert_pem   = TRIGGERCMD_CA_PEM,   /* GoDaddy Root G2 — avoids cross-signed bundle lookup */
     };
 
     esp_http_client_handle_t client = esp_http_client_init(&cfg);

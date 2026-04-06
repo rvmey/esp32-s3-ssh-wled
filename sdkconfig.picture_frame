@@ -13,3 +13,5 @@ CONFIG_SPIRAM_USE_MALLOC=y
 # TLS — full CA bundle includes GoDaddy Root G2 (TriggerCMD server chain)
 CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
 CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_FULL=y
+# Allow cross-signed chain verification (GoDaddy sends a 4-cert cross-signed chain)
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_CROSS_SIGNED_VERIFY=y

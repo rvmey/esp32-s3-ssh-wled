@@ -19,7 +19,7 @@
 #include <stdlib.h>
 #include "esp_log.h"
 #include "esp_websocket_client.h"
-#include "esp_crt_bundle.h"
+#include "triggercmd_ca.h"   /* embedded Go Daddy Root G2 cert for triggercmd.com */
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
 
@@ -178,7 +178,7 @@ esp_err_t socketio_connect(const char          *uri,
     esp_websocket_client_config_t cfg = {
         .uri               = uri,
         .headers           = auth_hdr,
-        .crt_bundle_attach = esp_crt_bundle_attach,
+        .cert_pem          = TRIGGERCMD_CA_PEM,   /* GoDaddy Root G2 — avoids cross-signed bundle lookup */
         .ping_interval_sec = 25,   /* keep-alive through NAT idle timeouts */
         .buffer_size       = 4096,
     };
