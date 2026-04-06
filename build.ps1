@@ -89,6 +89,38 @@ function Invoke-IdfBuild([PSCustomObject]$variant) {
     }
 }
 
+function Test-VariantNeedsRebuild([PSCustomObject]$variant) {
+    # Always rebuild after -Clean (build dir won't exist)
+    $buildDir = Join-Path $PSScriptRoot $variant.BuildDir
+    $appBin   = Join-Path $buildDir 'esp32_ssh_led.bin'
+    if (-not (Test-Path $appBin)) { return $true }
+
+    $builtAt = (Get-Item $appBin).LastWriteTime
+
+    # Source files that affect this variant
+    $sources = @(
+        (Join-Path $PSScriptRoot 'CMakeLists.txt'),
+        (Join-Path $PSScriptRoot 'sdkconfig.defaults'),
+        (Join-Path $PSScriptRoot $variant.Config),
+        (Join-Path $PSScriptRoot 'main\CMakeLists.txt')
+    )
+    # All files under main/ and managed_components/ and patches/
+    foreach ($dir in @('main', 'managed_components', 'patches')) {
+        $full = Join-Path $PSScriptRoot $dir
+        if (Test-Path $full) {
+            Get-ChildItem $full -Recurse -File | ForEach-Object { $sources += $_.FullName }
+        }
+    }
+
+    foreach ($src in $sources) {
+        if ((Test-Path $src) -and (Get-Item $src).LastWriteTime -gt $builtAt) {
+            Write-Host "  Rebuild triggered by: $($src.Replace($PSScriptRoot + '\', ''))" -ForegroundColor DarkYellow
+            return $true
+        }
+    }
+    return $false
+}
+
 function Copy-Artifacts([PSCustomObject]$variant, [bool]$copyShared) {
     $buildDir = Join-Path $PSScriptRoot $variant.BuildDir
 
@@ -150,14 +182,24 @@ if ($Clean) {
     }
 }
 
-# Build each variant
-$first = $true
+# Build each variant (skip if sources are unchanged)
+$first   = $true
+$skipped = 0
 foreach ($v in $variants) {
+    if (-not $Clean -and -not (Test-VariantNeedsRebuild -variant $v)) {
+        Write-Host "`n>>> Skipping variant '$($v.Name)' -- no source changes detected" -ForegroundColor DarkGray
+        $skipped++
+        continue
+    }
     Invoke-IdfBuild -variant $v
     Copy-Artifacts  -variant $v -copyShared $first
     $first = $false
 }
 
-Write-Host "`nAll variants built successfully.`n" -ForegroundColor Green
+if ($skipped -eq $variants.Count) {
+    Write-Host "`nAll variants are up-to-date -- nothing to build.`n" -ForegroundColor Green
+} else {
+    Write-Host "`nBuild complete.`n" -ForegroundColor Green
+}
 Write-Host "Output in: $FirmwareDir" -ForegroundColor White
 Get-ChildItem $FirmwareDir | Select-Object Name, Length, LastWriteTime | Format-Table -AutoSize
