@@ -51,7 +51,7 @@ static const char *TAG = "pf";
  *   "https://xxxx.ngrok-free.app"  — ngrok HTTPS tunnel
  *   "http://192.168.1.50:3000"     — local dev server (no TLS)
  */
-static const char *TCMD_BASE_URL = "https://www.triggercmd.com";
+static const char *TCMD_BASE_URL = "http://192.168.86.28:1337";
 
 /* Strip scheme prefix for use in display text */
 static const char *tcmd_display_host(void)
