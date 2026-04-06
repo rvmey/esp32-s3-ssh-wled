@@ -1,6 +1,6 @@
 {
   "name": "ESP32-S3 Bike Tracker (MPU6050 + u-blox GPS)",
-  "version": "2.0.23",
+  "version": "2.0.24",
   "new_install_improv_wifi": true,
   "new_install_improv_wait_time": 20,
   "builds": [

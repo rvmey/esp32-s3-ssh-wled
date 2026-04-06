@@ -104,8 +104,13 @@ static int https_get_auth(const char *url, const char *token, char **body)
         .url      = url,
         .method   = HTTP_METHOD_GET,
         .timeout_ms = 15000,
-        .cert_pem = TRIGGERCMD_CA_PEM,   /* GoDaddy Root G2 — avoids cross-signed bundle lookup */
     };
+    /* Use embedded cert for prod (GoDaddy cross-signed chain); bundle for dev */
+    if (strcmp(TCMD_HOST, "www.triggercmd.com") == 0) {
+        cfg.cert_pem = TRIGGERCMD_CA_PEM;
+    } else {
+        cfg.crt_bundle_attach = esp_crt_bundle_attach;
+    }
 
     esp_http_client_handle_t client = esp_http_client_init(&cfg);
     if (!client) return -1;
@@ -164,8 +169,13 @@ static int https_get_simple(const char *url, char **body)
         .url        = url,
         .method     = HTTP_METHOD_GET,
         .timeout_ms = 15000,
-        .cert_pem   = TRIGGERCMD_CA_PEM,   /* GoDaddy Root G2 — avoids cross-signed bundle lookup */
     };
+    /* Use embedded cert for prod (GoDaddy cross-signed chain); bundle for dev */
+    if (strcmp(TCMD_HOST, "www.triggercmd.com") == 0) {
+        cfg.cert_pem = TRIGGERCMD_CA_PEM;
+    } else {
+        cfg.crt_bundle_attach = esp_crt_bundle_attach;
+    }
 
     esp_http_client_handle_t client = esp_http_client_init(&cfg);
     if (!client) return -1;
