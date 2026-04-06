@@ -44,9 +44,22 @@
 
 static const char *TAG = "pf";
 
-/* ── Server host (change to dev server as needed) ──────────────────────── */
+/* ── Server URL base (change to dev server as needed) ──────────────────── */
+/*
+ * Examples:
+ *   "https://www.triggercmd.com"   — production
+ *   "https://xxxx.ngrok-free.app"  — ngrok HTTPS tunnel
+ *   "http://192.168.1.50:3000"     — local dev server (no TLS)
+ */
+static const char *TCMD_BASE_URL = "https://www.triggercmd.com";
 
-static const char *TCMD_HOST = "80f1-68-37-123-127.ngrok-free.app";
+/* Strip scheme prefix for use in display text */
+static const char *tcmd_display_host(void)
+{
+    if (strncmp(TCMD_BASE_URL, "https://", 8) == 0) return TCMD_BASE_URL + 8;
+    if (strncmp(TCMD_BASE_URL, "http://",  7) == 0) return TCMD_BASE_URL + 7;
+    return TCMD_BASE_URL;
+}
 
 /* ── NVS helpers ────────────────────────────────────────────────────────── */
 
@@ -105,10 +118,10 @@ static int https_get_auth(const char *url, const char *token, char **body)
         .method   = HTTP_METHOD_GET,
         .timeout_ms = 15000,
     };
-    /* Use embedded cert for prod (GoDaddy cross-signed chain); bundle for dev */
-    if (strcmp(TCMD_HOST, "www.triggercmd.com") == 0) {
+    /* TLS: embedded GoDaddy cert for prod; crt_bundle for other HTTPS; plain HTTP needs nothing */
+    if (strstr(TCMD_BASE_URL, "triggercmd.com")) {
         cfg.cert_pem = TRIGGERCMD_CA_PEM;
-    } else {
+    } else if (strncmp(TCMD_BASE_URL, "https://", 8) == 0) {
         cfg.crt_bundle_attach = esp_crt_bundle_attach;
     }
 
@@ -170,10 +183,10 @@ static int https_get_simple(const char *url, char **body)
         .method     = HTTP_METHOD_GET,
         .timeout_ms = 15000,
     };
-    /* Use embedded cert for prod (GoDaddy cross-signed chain); bundle for dev */
-    if (strcmp(TCMD_HOST, "www.triggercmd.com") == 0) {
+    /* TLS: embedded GoDaddy cert for prod; crt_bundle for other HTTPS; plain HTTP needs nothing */
+    if (strstr(TCMD_BASE_URL, "triggercmd.com")) {
         cfg.cert_pem = TRIGGERCMD_CA_PEM;
-    } else {
+    } else if (strncmp(TCMD_BASE_URL, "https://", 8) == 0) {
         cfg.crt_bundle_attach = esp_crt_bundle_attach;
     }
 
@@ -378,9 +391,17 @@ static esp_err_t connect_and_subscribe(const char *hw_token,
 {
     screen_draw_text("Connecting to server...");
 
-    char sio_url[128];
-    snprintf(sio_url, sizeof(sio_url),
-             "wss://%s/socket.io/?EIO=4&transport=websocket", TCMD_HOST);
+    char sio_url[192];
+    /* Derive WebSocket scheme from TCMD_BASE_URL scheme */
+    if (strncmp(TCMD_BASE_URL, "https://", 8) == 0) {
+        snprintf(sio_url, sizeof(sio_url),
+                 "wss://%s/socket.io/?EIO=4&transport=websocket",
+                 TCMD_BASE_URL + 8);
+    } else {
+        snprintf(sio_url, sizeof(sio_url),
+                 "ws://%s/socket.io/?EIO=4&transport=websocket",
+                 TCMD_BASE_URL + 7);   /* skip "http://" */
+    }
 
     esp_err_t ret = socketio_connect(
             sio_url,
@@ -394,10 +415,10 @@ static esp_err_t connect_and_subscribe(const char *hw_token,
     }
 
     /* Socket.IO is now connected; call subscribeToDisplay */
-    char sub_url[192];
+    char sub_url[256];
     snprintf(sub_url, sizeof(sub_url),
-             "https://%s/api/hardware/subscribeToDisplay"
-             "?hardwareId=%s", TCMD_HOST, computer_id);
+             "%s/api/hardware/subscribeToDisplay?hardwareId=%s",
+             TCMD_BASE_URL, computer_id);
 
     char *body = NULL;
     int body_len = https_get_auth(sub_url, hw_token, &body);
@@ -470,9 +491,9 @@ void picture_frame_run(void)
 
             /* Step 1: obtain a fresh pair code from TriggerCMD */
             char *pair_body = NULL;
-            char pair_url[128];
+            char pair_url[192];
             snprintf(pair_url, sizeof(pair_url),
-                     "https://%s/pair?model=TCMDSCREEN", TCMD_HOST);
+                     "%s/pair?model=TCMDSCREEN", TCMD_BASE_URL);
             int pair_len = https_get_simple(
                     pair_url,
                     &pair_body);
@@ -503,15 +524,15 @@ void picture_frame_run(void)
             char pair_disp[192];
             snprintf(pair_disp, sizeof(pair_disp),
                      "Visit %s\nSign in -> click name\n"
-                     "Click Pair -> enter:\n%s", TCMD_HOST, pair_code);
+                     "Click Pair -> enter:\n%s", tcmd_display_host(), pair_code);
             screen_draw_text(pair_disp);
             http_pf_config_start(pair_code);
 
             /* Step 3: poll /pair/lookup every 5 s for up to 10 minutes */
             char lookup_url[900];
             snprintf(lookup_url, sizeof(lookup_url),
-                     "https://%s/pair/lookup?token=%s",
-                     TCMD_HOST, pair_token);
+                     "%s/pair/lookup?token=%s",
+                     TCMD_BASE_URL, pair_token);
 
             bool paired = false;
             for (int i = 0; i < 120 && !paired; i++) {
@@ -550,9 +571,9 @@ void picture_frame_run(void)
         screen_draw_text("Provisioning...");
 
         char *body = NULL;
-        char prov_url[128];
+        char prov_url[192];
         snprintf(prov_url, sizeof(prov_url),
-                 "https://%s/api/hardware/provision", TCMD_HOST);
+                 "%s/api/hardware/provision", TCMD_BASE_URL);
         int body_len = https_get_auth(
                 prov_url,
                 hw_token, &body);
