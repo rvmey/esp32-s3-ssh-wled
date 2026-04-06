@@ -44,6 +44,10 @@
 
 static const char *TAG = "pf";
 
+/* ── Server host (change to dev server as needed) ──────────────────────── */
+
+static const char *TCMD_HOST = "80f1-68-37-123-127.ngrok-free.app";
+
 /* ── NVS helpers ────────────────────────────────────────────────────────── */
 
 #define NVS_NS          "pf_cfg"
@@ -364,8 +368,12 @@ static esp_err_t connect_and_subscribe(const char *hw_token,
 {
     screen_draw_text("Connecting to server...");
 
+    char sio_url[128];
+    snprintf(sio_url, sizeof(sio_url),
+             "wss://%s/socket.io/?EIO=4&transport=websocket", TCMD_HOST);
+
     esp_err_t ret = socketio_connect(
-            "wss://www.triggercmd.com/socket.io/?EIO=4&transport=websocket",
+            sio_url,
             hw_token,
             pf_event_handler,
             NULL);
@@ -376,10 +384,10 @@ static esp_err_t connect_and_subscribe(const char *hw_token,
     }
 
     /* Socket.IO is now connected; call subscribeToDisplay */
-    char sub_url[128];
+    char sub_url[192];
     snprintf(sub_url, sizeof(sub_url),
-             "https://www.triggercmd.com/api/hardware/subscribeToDisplay"
-             "?hardwareId=%s", computer_id);
+             "https://%s/api/hardware/subscribeToDisplay"
+             "?hardwareId=%s", TCMD_HOST, computer_id);
 
     char *body = NULL;
     int body_len = https_get_auth(sub_url, hw_token, &body);
@@ -452,8 +460,11 @@ void picture_frame_run(void)
 
             /* Step 1: obtain a fresh pair code from TriggerCMD */
             char *pair_body = NULL;
+            char pair_url[128];
+            snprintf(pair_url, sizeof(pair_url),
+                     "https://%s/pair?model=TCMDSCREEN", TCMD_HOST);
             int pair_len = https_get_simple(
-                    "https://www.triggercmd.com/pair?model=TCMDSCREEN",
+                    pair_url,
                     &pair_body);
 
             if (pair_len <= 0 || !pair_body) {
@@ -479,18 +490,18 @@ void picture_frame_run(void)
             ESP_LOGI(TAG, "Pair code: %s", pair_code);
 
             /* Step 2: show code on screen and serve it via local web page */
-            char pair_disp[128];
+            char pair_disp[192];
             snprintf(pair_disp, sizeof(pair_disp),
-                     "Visit triggercmd.com\nSign in -> click name\n"
-                     "Click Pair -> enter:\n%s", pair_code);
+                     "Visit %s\nSign in -> click name\n"
+                     "Click Pair -> enter:\n%s", TCMD_HOST, pair_code);
             screen_draw_text(pair_disp);
             http_pf_config_start(pair_code);
 
             /* Step 3: poll /pair/lookup every 5 s for up to 10 minutes */
-            char lookup_url[850];
+            char lookup_url[900];
             snprintf(lookup_url, sizeof(lookup_url),
-                     "https://www.triggercmd.com/pair/lookup?token=%s",
-                     pair_token);
+                     "https://%s/pair/lookup?token=%s",
+                     TCMD_HOST, pair_token);
 
             bool paired = false;
             for (int i = 0; i < 120 && !paired; i++) {
@@ -529,8 +540,11 @@ void picture_frame_run(void)
         screen_draw_text("Provisioning...");
 
         char *body = NULL;
+        char prov_url[128];
+        snprintf(prov_url, sizeof(prov_url),
+                 "https://%s/api/hardware/provision", TCMD_HOST);
         int body_len = https_get_auth(
-                "https://www.triggercmd.com/api/hardware/provision",
+                prov_url,
                 hw_token, &body);
 
         if (body_len > 0 && body) {
