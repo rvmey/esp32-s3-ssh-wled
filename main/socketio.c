@@ -281,3 +281,13 @@ esp_err_t socketio_send_vget(const char *path, const char *auth_token)
     int sent = esp_websocket_client_send_text(s_client, msg, len, pdMS_TO_TICKS(3000));
     return (sent >= 0) ? ESP_OK : ESP_FAIL;
 }
+
+void socketio_send_eio_ping(void)
+{
+    if (!s_client || !s_connected) return;
+    /* EIO v2/v3 client-initiated keepalive: client sends "2", server replies "3".
+     * Sails.js 0.12 / socket.io 1.x will close the socket after pingTimeout (60 s)
+     * if it receives no ping from the client. */
+    esp_websocket_client_send_text(s_client, "2", 1, pdMS_TO_TICKS(3000));
+    ESP_LOGD(TAG, "EIO ping sent");
+}

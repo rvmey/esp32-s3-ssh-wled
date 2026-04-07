@@ -792,6 +792,8 @@ void picture_frame_run(void)
             continue;
         }
 
+        TickType_t last_ping_tick = xTaskGetTickCount();
+
         while (true) {
             /* Post run/save from the main task — never from the WS callback task */
             if (s_pending_run) {
@@ -818,6 +820,13 @@ void picture_frame_run(void)
             }
 
             vTaskDelay(pdMS_TO_TICKS(200));   /* poll every 200 ms */
+
+            /* EIO keepalive: send "2" ping every 20 s so the server doesn't
+             * close the socket after its 60-second pingTimeout. */
+            if ((xTaskGetTickCount() - last_ping_tick) >= pdMS_TO_TICKS(20000)) {
+                socketio_send_eio_ping();
+                last_ping_tick = xTaskGetTickCount();
+            }
 
             if (!socketio_connected()) {
                 ESP_LOGW(TAG, "Socket.IO disconnected — reconnecting");

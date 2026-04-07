@@ -69,3 +69,13 @@ bool socketio_connected(void);
  * Must be called after socketio_connect() succeeds.
  */
 esp_err_t socketio_send_vget(const char *path, const char *auth_token);
+
+/**
+ * @brief Send an EIO ping ("2") to keep the server connection alive.
+ *
+ * Sails.js 0.12 / socket.io 1.x uses EIO v2/v3 keep-alive where the client
+ * must send "2" once per pingInterval; the server replies "3".  Call this
+ * every ~20 s while connected to prevent the server from closing the socket
+ * after pingTimeout (60 s) of silence.
+ */
+void socketio_send_eio_ping(void);
