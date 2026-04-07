@@ -1,0 +1,51 @@
+[
+ {
+  "trigger": "text",
+  "command": "text",
+  "voice": "text",
+  "allowParams": "true",
+  "mcpToolDescription": "Update the display text. Example: 'text Hello world!'",
+  "icon": "📝"
+ },
+ {
+  "trigger": "color",
+  "command": "color",
+  "voice": "color",
+  "allowParams": "true",
+  "mcpToolDescription": "Change the display color. Example: 'color red' or 'color #FF0000'",
+  "icon": "🔤"
+ },
+ {
+  "trigger": "textcolor",
+  "command": "textcolor",
+  "voice": "textcolor",
+  "allowParams": "true",
+  "quoteParams": "false",
+  "mcpToolDescription": "Change the text color. Example: 'textcolor blue' or 'textcolor #0000FF'",
+  "icon": "🎨"
+ },
+ {
+  "trigger": "fontsize",
+  "command": "fontsize",
+  "voice": "fontsize",
+  "allowParams": "true",
+  "mcpToolDescription": "Change the font size. Example: 'fontsize 3'",
+  "icon": "🔡"
+ },
+ {
+  "trigger": "landscape",
+  "command": "landscape",
+  "voice": "landscape",
+  "allowParams": "false",
+  "mcpToolDescription": "Set the display to landscape orientation.",
+  "icon": "↔️"
+ },
+ {
+  "trigger": "portrait",
+  "command": "portrait",
+  "voice": "portrait",
+  "allowParams": "false",
+  "mcpToolDescription": "Set the display to portrait orientation.",
+  "icon": "↕️"
+ }
+]
