@@ -545,14 +545,16 @@ static esp_err_t connect_and_subscribe(void)
 {
     screen_draw_text("Connecting to server...");
 
-    char sio_url[192];
+    /* __sails_io_sdk_version=0.11.0 in the handshake URL is how Sails 0.12.x
+     * identifies a valid sails.io SDK client (checked in parseVirtualRequest). */
+    char sio_url[256];
     if (strncmp(TCMD_BASE_URL, "https://", 8) == 0) {
         snprintf(sio_url, sizeof(sio_url),
-                 "wss://%s/socket.io/?EIO=4&transport=websocket",
+                 "wss://%s/socket.io/?EIO=4&transport=websocket&__sails_io_sdk_version=0.11.0",
                  TCMD_BASE_URL + 8);
     } else {
         snprintf(sio_url, sizeof(sio_url),
-                 "ws://%s/socket.io/?EIO=4&transport=websocket",
+                 "ws://%s/socket.io/?EIO=4&transport=websocket&__sails_io_sdk_version=0.11.0",
                  TCMD_BASE_URL + 7);   /* skip "http://" */
     }
 
@@ -562,10 +564,12 @@ static esp_err_t connect_and_subscribe(void)
         return ret;
     }
 
-    /* Subscribe via Sails.io virtual GET over the active socket */
-    char sub_path[128];
+    /* Subscribe via Sails.io virtual GET over the active socket.
+     * Append __sails_io_sdk_version to the path (Python client style). */
+    char sub_path[192];
     snprintf(sub_path, sizeof(sub_path),
-             "/api/computer/subscribeToFunRoom?roomName=%s", s_computer_id);
+             "/api/computer/subscribeToFunRoom?roomName=%s&__sails_io_sdk_version=0.11.0",
+             s_computer_id);
     socketio_send_vget(sub_path, s_hw_token);
 
     screen_draw_text("Connected!\nWaiting for\ncommands...");

@@ -255,21 +255,19 @@ esp_err_t socketio_send_vget(const char *path, const char *auth_token)
 {
     if (!s_client || !s_connected) return ESP_ERR_INVALID_STATE;
 
-    /* Format matches sails.io.js v1 wire format exactly:
-     * - Authorization goes in "data" (where agent.js passes it as the 2nd
-     *   argument to io.socket.get()), NOT in "headers"
-     * - No "method" field in the data object (method is only the event name)
-     * sails.io.js emits: socket.emit('get', {url, data:{Authorization:...},
-     *                                         headers:{}, _isSailsSocketRequest:true}, cb) */
+    /* Match the Python sails_websocket.py wire format exactly — no ack ID,
+     * no _isSailsSocketRequest (not recognised by sails-hook-sockets < 1.x).
+     * The __sails_io_sdk_version is already appended to the path by the caller
+     * AND to the WebSocket handshake URL, which is what Sails 0.12.x checks
+     * in parseVirtualRequest to identify a valid sails.io SDK client. */
     char msg[768];
     snprintf(msg, sizeof(msg),
-             "421[\"get\",{\"url\":\"%s\","
+             "42[\"get\",{\"url\":\"%s\","
              "\"data\":{\"Authorization\":\"Bearer %s\"},"
-             "\"headers\":{},"
-             "\"_isSailsSocketRequest\":true}]",
+             "\"headers\":{}}]",
              path, auth_token);
 
-    ESP_LOGI(TAG, "Sending vget: %.120s", msg);
+    ESP_LOGI(TAG, "Sending vget: %.150s", msg);
 
     int len = (int)strlen(msg);
     int sent = esp_websocket_client_send_text(s_client, msg, len, pdMS_TO_TICKS(3000));
