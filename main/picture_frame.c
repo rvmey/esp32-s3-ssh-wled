@@ -461,6 +461,8 @@ static void pf_event_handler(const char *event_name,
 {
     (void)ctx;
 
+    ESP_LOGI(TAG, "pf_event: name='%s' payload=%.200s", event_name, payload_json);
+
     if (strcmp(event_name, "message") != 0) return;
 
     static char s_trigger[64];
@@ -472,7 +474,8 @@ static void pf_event_handler(const char *event_name,
     json_extract_str(payload_json, "id",      s_id,      sizeof(s_id));
     json_extract_str(payload_json, "params",  s_params,  sizeof(s_params));
 
-    ESP_LOGI(TAG, "message: trigger=%s params=%s", s_trigger, s_params);
+    ESP_LOGI(TAG, "message dispatch: trigger='%s' id='%s' params='%s'",
+             s_trigger, s_id, s_params);
 
     if (strcmp(s_trigger, "text") == 0) {
         screen_draw_text(s_params[0] ? s_params : " ");

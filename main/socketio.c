@@ -55,6 +55,15 @@ static void ws_event_handler(void *arg, esp_event_base_t base,
         const char *p = d->data_ptr;
         int         n = d->data_len;
 
+        /* Log every raw frame so we can see exactly what arrives */
+        {
+            char dbg[257];
+            int  dl = n < 256 ? n : 256;
+            memcpy(dbg, p, dl);
+            dbg[dl] = '\0';
+            ESP_LOGI(TAG, "WS RX (%d bytes): %s", n, dbg);
+        }
+
         /* EIO open: "0{…}" */
         if (p[0] == '0') {
             ESP_LOGI(TAG, "EIO open received; sending SIO connect (40)");
@@ -115,6 +124,11 @@ static void ws_event_handler(void *arg, esp_event_base_t base,
                    payload_start[payload_remaining - 1] == ']') {
                 payload_remaining--;
             }
+
+            ESP_LOGI(TAG, "SIO event name='%s' payload=%.*s",
+                     event_name,
+                     payload_remaining > 200 ? 200 : payload_remaining,
+                     payload_start);
 
             if (payload_remaining > 0 && s_cb) {
                 char *payload_str = strndup(payload_start, payload_remaining);
