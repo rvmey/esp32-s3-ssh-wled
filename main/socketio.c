@@ -266,8 +266,8 @@ esp_err_t socketio_send_vget(const char *path, const char *auth_token)
     char msg[768];
     snprintf(msg, sizeof(msg),
              "421[\"get\",{\"url\":\"%s\","
-             "\"data\":{\"Authorization\":\"Bearer %s\"},"
-             "\"headers\":{}}]",
+             "\"headers\":{\"Authorization\":\"Bearer %s\"},"
+             "\"data\":{}}]",
              path, auth_token);
 
     ESP_LOGI(TAG, "Sending vget: %.150s", msg);
