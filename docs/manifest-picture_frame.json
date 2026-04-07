@@ -1,6 +1,6 @@
 {
   "name": "ESP32-S3 TriggerCMD Picture Frame — JC3248W535 (320x480 Screen)",
-  "version": "2.0.38",
+  "version": "2.0.39",
   "new_install_improv_wifi": true,
   "new_install_improv_wait_time": 20,
   "builds": [

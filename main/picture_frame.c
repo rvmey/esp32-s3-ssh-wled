@@ -88,6 +88,12 @@ static volatile bool s_pending_run        = false;
 static char          s_pending_jpeg_url[512] = {0};
 static volatile bool s_pending_jpeg          = false;
 
+/* Cached compressed JPEG — kept in PSRAM so orientation changes can redraw
+ * without re-downloading.  Freed when a non-jpeg command replaces the display. */
+static uint8_t      *s_jpeg_cache     = NULL;
+static int           s_jpeg_cache_len = 0;
+static volatile bool s_pending_jpeg_redraw = false;
+
 static bool nvs_read_str(const char *key, char *out, size_t out_sz)
 {
     nvs_handle_t h;
@@ -515,9 +521,11 @@ static void pf_event_handler(const char *event_name,
 
     } else if (strcmp(s_trigger, "landscape") == 0) {
         screen_set_landscape(true);
+        if (s_jpeg_cache) s_pending_jpeg_redraw = true;
 
     } else if (strcmp(s_trigger, "portrait") == 0) {
         screen_set_landscape(false);
+        if (s_jpeg_cache) s_pending_jpeg_redraw = true;
 
     } else if (strcmp(s_trigger, "jpeg") == 0) {
         if (s_params[0]) {
@@ -555,6 +563,57 @@ static void pf_event_handler(const char *event_name,
  * The JPEG input buffer is capped at 512 KB; most photos will be much smaller.
  */
 #define JPEG_DL_MAX   (512 * 1024)   /* max JPEG download size */
+
+/*
+ * Decode compressed JPEG bytes (buf, len) to RGB565 and blit to the screen.
+ * Called both after a fresh download and when re-blitting on orientation change.
+ */
+static void decode_and_show_jpeg(const uint8_t *buf, int len)
+{
+    esp_jpeg_image_cfg_t info_cfg = {
+        .indata      = (uint8_t *)buf,
+        .indata_size = (uint32_t)len,
+        .out_format  = JPEG_IMAGE_FORMAT_RGB565,
+        .out_scale   = JPEG_IMAGE_SCALE_0,
+    };
+    esp_jpeg_image_output_t info = {0};
+    if (esp_jpeg_get_image_info(&info_cfg, &info) != ESP_OK || info.output_len == 0) {
+        ESP_LOGE(TAG, "jpeg: get_image_info failed");
+        screen_draw_text("Image decode\nfailed");
+        return;
+    }
+    ESP_LOGI(TAG, "jpeg: image %ux%u, output_len=%zu", info.width, info.height, info.output_len);
+
+    uint8_t *rgb565_buf = heap_caps_malloc(info.output_len,
+                                           MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!rgb565_buf) rgb565_buf = malloc(info.output_len);
+    if (!rgb565_buf) {
+        ESP_LOGE(TAG, "jpeg: no memory for %zu byte RGB565 buffer", info.output_len);
+        screen_draw_text("Image decode\nfailed");
+        return;
+    }
+
+    esp_jpeg_image_cfg_t dec_cfg = {
+        .indata      = (uint8_t *)buf,
+        .indata_size = (uint32_t)len,
+        .outbuf      = rgb565_buf,
+        .outbuf_size = info.output_len,
+        .out_format  = JPEG_IMAGE_FORMAT_RGB565,
+        .out_scale   = JPEG_IMAGE_SCALE_0,
+    };
+    esp_jpeg_image_output_t out = {0};
+    esp_err_t dec_ret = esp_jpeg_decode(&dec_cfg, &out);
+    if (dec_ret != ESP_OK) {
+        ESP_LOGE(TAG, "jpeg: decode failed: %s", esp_err_to_name(dec_ret));
+        free(rgb565_buf);
+        screen_draw_text("Image decode\nfailed");
+        return;
+    }
+
+    ESP_LOGI(TAG, "jpeg: decoded %ux%u → blitting", out.width, out.height);
+    screen_draw_rgb565(rgb565_buf, (int)out.width, (int)out.height);
+    free(rgb565_buf);
+}
 
 static void download_and_show_jpeg(const char *url)
 {
@@ -627,56 +686,12 @@ static void download_and_show_jpeg(const char *url)
     }
     ESP_LOGI(TAG, "jpeg: downloaded %d bytes", total);
 
-    /* Get image dimensions without decoding — outbuf/outbuf_size not needed */
-    esp_jpeg_image_cfg_t info_cfg = {
-        .indata      = jpeg_buf,
-        .indata_size = (uint32_t)total,
-        .out_format  = JPEG_IMAGE_FORMAT_RGB565,
-        .out_scale   = JPEG_IMAGE_SCALE_0,
-    };
-    esp_jpeg_image_output_t info = {0};
-    if (esp_jpeg_get_image_info(&info_cfg, &info) != ESP_OK || info.output_len == 0) {
-        ESP_LOGE(TAG, "jpeg: get_image_info failed");
-        free(jpeg_buf);
-        screen_draw_text("Image decode\nfailed");
-        return;
-    }
-    ESP_LOGI(TAG, "jpeg: image %ux%u, output_len=%zu", info.width, info.height, info.output_len);
+    /* Replace cache — keep compressed bytes for orientation-change redraws */
+    if (s_jpeg_cache) { free(s_jpeg_cache); s_jpeg_cache = NULL; }
+    s_jpeg_cache     = jpeg_buf;   /* take ownership — do NOT free */
+    s_jpeg_cache_len = total;
 
-    uint8_t *rgb565_buf = heap_caps_malloc(info.output_len,
-                                           MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (!rgb565_buf) {
-        rgb565_buf = malloc(info.output_len);
-    }
-    if (!rgb565_buf) {
-        ESP_LOGE(TAG, "jpeg: no memory for %zu byte RGB565 buffer", info.output_len);
-        free(jpeg_buf);
-        screen_draw_text("Image decode\nfailed");
-        return;
-    }
-
-    esp_jpeg_image_cfg_t dec_cfg = {
-        .indata      = jpeg_buf,
-        .indata_size = (uint32_t)total,
-        .outbuf      = rgb565_buf,
-        .outbuf_size = info.output_len,
-        .out_format  = JPEG_IMAGE_FORMAT_RGB565,
-        .out_scale   = JPEG_IMAGE_SCALE_0,
-    };
-    esp_jpeg_image_output_t out = {0};
-    esp_err_t dec_ret = esp_jpeg_decode(&dec_cfg, &out);
-    free(jpeg_buf);
-
-    if (dec_ret != ESP_OK) {
-        ESP_LOGE(TAG, "jpeg: decode failed: %s", esp_err_to_name(dec_ret));
-        free(rgb565_buf);
-        screen_draw_text("Image decode\nfailed");
-        return;
-    }
-
-    ESP_LOGI(TAG, "jpeg: decoded %ux%u → blitting", out.width, out.height);
-    screen_draw_rgb565(rgb565_buf, (int)out.width, (int)out.height);
-    free(rgb565_buf);
+    decode_and_show_jpeg(s_jpeg_cache, s_jpeg_cache_len);
 }
 
 /* ── Connection step: Socket.IO + subscribeToFunRoom ────────────────────── */
@@ -947,6 +962,13 @@ void picture_frame_run(void)
 
         while (true) {
             /* Download + display JPEG from main task — blocking HTTP + decode */
+            if (s_pending_jpeg_redraw) {
+                s_pending_jpeg_redraw = false;
+                if (s_jpeg_cache) {
+                    decode_and_show_jpeg(s_jpeg_cache, s_jpeg_cache_len);
+                }
+            }
+
             if (s_pending_jpeg) {
                 s_pending_jpeg = false;
                 char jpeg_url[512];
