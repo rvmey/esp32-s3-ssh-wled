@@ -18,7 +18,7 @@
  *   6. Socket.IO connect; subscribe via Sails.io virtual GET
  *        /api/computer/subscribeToFunRoom?roomName=<computer_id>
  *   7. Event loop — dispatches "message" events (text/color/textcolor/
- *      fontsize/landscape/portrait) to screen functions; reports back
+ *      fontsize/landscape/portrait/jpeg) to screen functions; reports back
  *      via POST /api/run/save.
  */
 
@@ -43,6 +43,8 @@
 #include "socketio.h"
 #include "http_pf_config.h"
 #include "triggercmd_ca.h"   /* embedded Go Daddy Root G2 cert for triggercmd.com */
+#include "jpeg_decoder.h"
+#include "esp_heap_caps.h"
 
 
 static const char *TAG = "pf";
@@ -81,6 +83,10 @@ static char s_computer_id[COMPUTER_ID_MAX_LEN] = {0};
 /* Pending run/save — set by the WS event task, consumed by the main loop */
 static char          s_pending_run_id[33] = {0};
 static volatile bool s_pending_run        = false;
+
+/* Pending JPEG URL — set by the WS event task, consumed by the main loop */
+static char          s_pending_jpeg_url[512] = {0};
+static volatile bool s_pending_jpeg          = false;
 
 static bool nvs_read_str(const char *key, char *out, size_t out_sz)
 {
@@ -418,6 +424,7 @@ static const pf_cmd_t s_pf_cmds[] = {
     { "fontsize",  "fontsize",  "true",  "Change the font size. Example: 'fontsize 3'",                     "\xF0\x9F\x94\xA1" /* 🔡 */ },
     { "landscape", "landscape", "false", "Set the display to landscape orientation.",                        "\xE2\x86\x94\xEF\xB8\x8F" /* ↔️ */ },
     { "portrait",  "portrait",  "false", "Set the display to portrait orientation.",                         "\xE2\x86\x95\xEF\xB8\x8F" /* ↕️ */ },
+    { "jpeg",      "jpeg",      "true",  "Display a JPEG image. Example: 'jpeg https://example.com/image.jpg'", "\xF0\x9F\x96\xBC\xEF\xB8\x8F" /* 🖼️ */ },
 };
 #define PF_CMD_COUNT  (sizeof(s_pf_cmds) / sizeof(s_pf_cmds[0]))
 
@@ -512,6 +519,19 @@ static void pf_event_handler(const char *event_name,
     } else if (strcmp(s_trigger, "portrait") == 0) {
         screen_set_landscape(false);
 
+    } else if (strcmp(s_trigger, "jpeg") == 0) {
+        if (s_params[0]) {
+            /* Trim leading whitespace from URL */
+            const char *url = s_params;
+            while (*url == ' ') url++;
+            strncpy(s_pending_jpeg_url, url, sizeof(s_pending_jpeg_url) - 1);
+            s_pending_jpeg_url[sizeof(s_pending_jpeg_url) - 1] = '\0';
+            s_pending_jpeg = true;
+        } else {
+            ESP_LOGW(TAG, "jpeg: no URL in params");
+            return;  /* don't report run/save for empty command */
+        }
+
     } else {
         ESP_LOGW(TAG, "message: unknown trigger '%s'", s_trigger);
         return;
@@ -526,6 +546,136 @@ static void pf_event_handler(const char *event_name,
         s_pending_run_id[sizeof(s_pending_run_id) - 1] = '\0';
         s_pending_run = true;
     }
+}
+
+/* ── JPEG download + decode + display ───────────────────────────────────── */
+/*
+ * Downloads a JPEG from url, decodes it to RGB565, and blits it to the
+ * screen.  All large allocations use PSRAM so heap fragmentation is avoided.
+ * The JPEG input buffer is capped at 512 KB; most photos will be much smaller.
+ */
+#define JPEG_DL_MAX   (512 * 1024)   /* max JPEG download size */
+
+static void download_and_show_jpeg(const char *url)
+{
+    screen_draw_text("Loading image...");
+
+    esp_http_client_config_t cfg = {
+        .url        = url,
+        .method     = HTTP_METHOD_GET,
+        .timeout_ms = 15000,
+    };
+    if (strncmp(url, "https://", 8) == 0) {
+        cfg.crt_bundle_attach = esp_crt_bundle_attach;
+    }
+
+    esp_http_client_handle_t client = esp_http_client_init(&cfg);
+    if (!client) {
+        ESP_LOGE(TAG, "jpeg: http_client_init failed");
+        screen_draw_text("Image load\nfailed");
+        return;
+    }
+
+    esp_err_t ret = esp_http_client_open(client, 0);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "jpeg: HTTP open failed: %s", esp_err_to_name(ret));
+        esp_http_client_cleanup(client);
+        screen_draw_text("Image load\nfailed");
+        return;
+    }
+
+    int64_t cl = esp_http_client_fetch_headers(client);
+    int status = esp_http_client_get_status_code(client);
+    if (status < 200 || status >= 300) {
+        ESP_LOGE(TAG, "jpeg: HTTP %d for %s", status, url);
+        esp_http_client_close(client);
+        esp_http_client_cleanup(client);
+        screen_draw_text("Image load\nfailed");
+        return;
+    }
+
+    int max_dl = JPEG_DL_MAX;
+    if (cl > 0 && cl < max_dl) max_dl = (int)cl;
+
+    uint8_t *jpeg_buf = heap_caps_malloc(max_dl, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!jpeg_buf) {
+        /* fall back to internal heap for small content-lengths */
+        jpeg_buf = malloc(max_dl);
+    }
+    if (!jpeg_buf) {
+        ESP_LOGE(TAG, "jpeg: no memory for %d byte download", max_dl);
+        esp_http_client_close(client);
+        esp_http_client_cleanup(client);
+        screen_draw_text("Image load\nfailed");
+        return;
+    }
+
+    int total = 0;
+    while (total < max_dl) {
+        int n = esp_http_client_read(client, (char *)jpeg_buf + total, max_dl - total);
+        if (n <= 0) break;
+        total += n;
+    }
+    esp_http_client_close(client);
+    esp_http_client_cleanup(client);
+
+    if (total == 0) {
+        ESP_LOGE(TAG, "jpeg: empty response from %s", url);
+        free(jpeg_buf);
+        screen_draw_text("Image load\nfailed");
+        return;
+    }
+    ESP_LOGI(TAG, "jpeg: downloaded %d bytes", total);
+
+    /* Probe the image dimensions first to allocate the exact output buffer */
+    esp_jpeg_image_cfg_t probe_cfg = {
+        .indata      = jpeg_buf,
+        .indata_size = (uint32_t)total,
+        .out_format  = JPEG_IMAGE_FORMAT_RGB565,
+        .out_scale   = JPEG_IMAGE_SCALE_0,
+    };
+    esp_jpeg_image_output_t info = {0};
+    if (esp_jpeg_decode(&probe_cfg, &info) != ESP_OK || info.output_len == 0) {
+        ESP_LOGE(TAG, "jpeg: decode probe failed");
+        free(jpeg_buf);
+        screen_draw_text("Image decode\nfailed");
+        return;
+    }
+
+    uint8_t *rgb565_buf = heap_caps_malloc(info.output_len,
+                                           MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!rgb565_buf) {
+        rgb565_buf = malloc(info.output_len);
+    }
+    if (!rgb565_buf) {
+        ESP_LOGE(TAG, "jpeg: no memory for %zu byte RGB565 buffer", info.output_len);
+        free(jpeg_buf);
+        screen_draw_text("Image decode\nfailed");
+        return;
+    }
+
+    esp_jpeg_image_cfg_t dec_cfg = {
+        .indata      = jpeg_buf,
+        .indata_size = (uint32_t)total,
+        .outbuf      = rgb565_buf,
+        .outbuf_size = info.output_len,
+        .out_format  = JPEG_IMAGE_FORMAT_RGB565,
+        .out_scale   = JPEG_IMAGE_SCALE_0,
+    };
+    esp_jpeg_image_output_t out = {0};
+    esp_err_t dec_ret = esp_jpeg_decode(&dec_cfg, &out);
+    free(jpeg_buf);
+
+    if (dec_ret != ESP_OK) {
+        ESP_LOGE(TAG, "jpeg: decode failed: %s", esp_err_to_name(dec_ret));
+        free(rgb565_buf);
+        screen_draw_text("Image decode\nfailed");
+        return;
+    }
+
+    ESP_LOGI(TAG, "jpeg: decoded %ux%u → blitting", out.width, out.height);
+    screen_draw_rgb565(rgb565_buf, (int)out.width, (int)out.height);
+    free(rgb565_buf);
 }
 
 /* ── Connection step: Socket.IO + subscribeToFunRoom ────────────────────── */
@@ -795,6 +945,15 @@ void picture_frame_run(void)
         TickType_t last_ping_tick = xTaskGetTickCount();
 
         while (true) {
+            /* Download + display JPEG from main task — blocking HTTP + decode */
+            if (s_pending_jpeg) {
+                s_pending_jpeg = false;
+                char jpeg_url[512];
+                strncpy(jpeg_url, s_pending_jpeg_url, sizeof(jpeg_url) - 1);
+                jpeg_url[sizeof(jpeg_url) - 1] = '\0';
+                download_and_show_jpeg(jpeg_url);
+            }
+
             /* Post run/save from the main task — never from the WS callback task */
             if (s_pending_run) {
                 s_pending_run = false;   /* clear before HTTP so new events can re-queue */
