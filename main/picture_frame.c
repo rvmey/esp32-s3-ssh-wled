@@ -627,20 +627,21 @@ static void download_and_show_jpeg(const char *url)
     }
     ESP_LOGI(TAG, "jpeg: downloaded %d bytes", total);
 
-    /* Probe the image dimensions first to allocate the exact output buffer */
-    esp_jpeg_image_cfg_t probe_cfg = {
+    /* Get image dimensions without decoding — outbuf/outbuf_size not needed */
+    esp_jpeg_image_cfg_t info_cfg = {
         .indata      = jpeg_buf,
         .indata_size = (uint32_t)total,
         .out_format  = JPEG_IMAGE_FORMAT_RGB565,
         .out_scale   = JPEG_IMAGE_SCALE_0,
     };
     esp_jpeg_image_output_t info = {0};
-    if (esp_jpeg_decode(&probe_cfg, &info) != ESP_OK || info.output_len == 0) {
-        ESP_LOGE(TAG, "jpeg: decode probe failed");
+    if (esp_jpeg_get_image_info(&info_cfg, &info) != ESP_OK || info.output_len == 0) {
+        ESP_LOGE(TAG, "jpeg: get_image_info failed");
         free(jpeg_buf);
         screen_draw_text("Image decode\nfailed");
         return;
     }
+    ESP_LOGI(TAG, "jpeg: image %ux%u, output_len=%zu", info.width, info.height, info.output_len);
 
     uint8_t *rgb565_buf = heap_caps_malloc(info.output_len,
                                            MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
