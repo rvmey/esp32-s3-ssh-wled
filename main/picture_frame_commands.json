@@ -47,5 +47,12 @@
   "allowParams": "false",
   "mcpToolDescription": "Set the display to portrait orientation.",
   "icon": "↕️"
+ },
+ {
+  "trigger": "jpeg",
+  "command": "jpeg",
+  "allowParams": "true",
+  "mcpToolDescription": "Display a JPEG image. Example: 'jpeg https://example.com/image.jpg'",
+  "icon": "🖼️"
  }
 ]
