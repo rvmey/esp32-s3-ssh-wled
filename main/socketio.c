@@ -140,9 +140,12 @@ static void ws_event_handler(void *arg, esp_event_base_t base,
             break;
         }
 
-        /* SIO ack reply to virtual GET: "43[...]" — log and ignore */
+        /* SIO ack reply to virtual GET: "43[...]" — log full content so we can
+         * see whether subscribeToFunRoom returned 200 or an error status. */
         if (n >= 2 && p[0] == '4' && p[1] == '3') {
-            ESP_LOGI(TAG, "SIO ack (virtual GET response — ignored)");
+            /* Log up to 400 bytes of the ack body */
+            int log_len = n < 400 ? n : 400;
+            ESP_LOGI(TAG, "SIO ack (vget response, %d bytes): %.*s", n, log_len, p);
             break;
         }
 
@@ -262,7 +265,7 @@ esp_err_t socketio_send_vget(const char *path, const char *auth_token)
      * in parseVirtualRequest to identify a valid sails.io SDK client. */
     char msg[768];
     snprintf(msg, sizeof(msg),
-             "42[\"get\",{\"url\":\"%s\","
+             "421[\"get\",{\"url\":\"%s\","
              "\"data\":{\"Authorization\":\"Bearer %s\"},"
              "\"headers\":{}}]",
              path, auth_token);
