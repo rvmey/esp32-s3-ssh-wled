@@ -78,6 +78,10 @@ static const char *tcmd_display_host(void)
 static char s_hw_token[HW_TOKEN_MAX_LEN]      = {0};
 static char s_computer_id[COMPUTER_ID_MAX_LEN] = {0};
 
+/* Pending run/save — set by the WS event task, consumed by the main loop */
+static char          s_pending_run_id[33] = {0};
+static volatile bool s_pending_run        = false;
+
 static bool nvs_read_str(const char *key, char *out, size_t out_sz)
 {
     nvs_handle_t h;
@@ -513,29 +517,14 @@ static void pf_event_handler(const char *event_name,
         return;
     }
 
-    /* Report back: POST /api/run/save */
+    /* Queue run/save to the main loop — do NOT call https_post_form here.
+     * This callback runs in the esp_websocket_client internal task; blocking
+     * it with an HTTP request prevents ping/pong processing and causes the
+     * server to close the WebSocket connection. */
     if (s_id[0] && s_computer_id[0]) {
-        char run_url[192];
-        snprintf(run_url, sizeof(run_url), "%s/api/run/save", TCMD_BASE_URL);
-
-        char form[256];
-        char *p = form;
-        char *end = form + sizeof(form);
-        p = url_encode_append(p, (size_t)(end - p), "status");
-        if (p < end) *p++ = '=';
-        p = url_encode_append(p, (size_t)(end - p), "Command ran");
-        if (p < end) *p++ = '&';
-        p = url_encode_append(p, (size_t)(end - p), "computer");
-        if (p < end) *p++ = '=';
-        p = url_encode_append(p, (size_t)(end - p), s_computer_id);
-        if (p < end) *p++ = '&';
-        p = url_encode_append(p, (size_t)(end - p), "command");
-        if (p < end) *p++ = '=';
-        p = url_encode_append(p, (size_t)(end - p), s_id);
-        *p = '\0';
-
-        int status = https_post_form(run_url, s_hw_token, form, NULL);
-        ESP_LOGI(TAG, "run/save → HTTP %d", status);
+        strncpy(s_pending_run_id, s_id, sizeof(s_pending_run_id) - 1);
+        s_pending_run_id[sizeof(s_pending_run_id) - 1] = '\0';
+        s_pending_run = true;
     }
 }
 
@@ -804,7 +793,32 @@ void picture_frame_run(void)
         }
 
         while (true) {
-            vTaskDelay(pdMS_TO_TICKS(1000));
+            /* Post run/save from the main task — never from the WS callback task */
+            if (s_pending_run) {
+                s_pending_run = false;   /* clear before HTTP so new events can re-queue */
+                char run_url[192];
+                snprintf(run_url, sizeof(run_url), "%s/api/run/save", TCMD_BASE_URL);
+                char form[256];
+                char *p   = form;
+                char *end = form + sizeof(form);
+                p = url_encode_append(p, (size_t)(end - p), "status");
+                if (p < end) *p++ = '=';
+                p = url_encode_append(p, (size_t)(end - p), "Command ran");
+                if (p < end) *p++ = '&';
+                p = url_encode_append(p, (size_t)(end - p), "computer");
+                if (p < end) *p++ = '=';
+                p = url_encode_append(p, (size_t)(end - p), s_computer_id);
+                if (p < end) *p++ = '&';
+                p = url_encode_append(p, (size_t)(end - p), "command");
+                if (p < end) *p++ = '=';
+                p = url_encode_append(p, (size_t)(end - p), s_pending_run_id);
+                *p = '\0';
+                int http_status = https_post_form(run_url, s_hw_token, form, NULL);
+                ESP_LOGI(TAG, "run/save \u2192 HTTP %d", http_status);
+            }
+
+            vTaskDelay(pdMS_TO_TICKS(200));   /* poll every 200 ms */
+
             if (!socketio_connected()) {
                 ESP_LOGW(TAG, "Socket.IO disconnected — reconnecting");
                 screen_draw_text("Reconnecting...");
