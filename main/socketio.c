@@ -126,6 +126,12 @@ static void ws_event_handler(void *arg, esp_event_base_t base,
             break;
         }
 
+        /* SIO ack reply to virtual GET: "43[...]" — log and ignore */
+        if (n >= 2 && p[0] == '4' && p[1] == '3') {
+            ESP_LOGI(TAG, "SIO ack (virtual GET response — ignored)");
+            break;
+        }
+
         /* SIO disconnect: "41" */
         if (p[0] == '4' && p[1] == '1') {
             s_connected = false;
@@ -229,4 +235,20 @@ void socketio_disconnect(void)
 bool socketio_connected(void)
 {
     return s_connected;
+}
+
+esp_err_t socketio_send_vget(const char *path, const char *auth_token)
+{
+    if (!s_client || !s_connected) return ESP_ERR_INVALID_STATE;
+
+    char msg[768];
+    snprintf(msg, sizeof(msg),
+             "421[\"get\",{\"method\":\"get\",\"url\":\"%s\","
+             "\"data\":{},\"headers\":{\"Authorization\":\"Bearer %s\"},"
+             "\"_isSailsSocketRequest\":true}]",
+             path, auth_token);
+
+    int len = (int)strlen(msg);
+    int sent = esp_websocket_client_send_text(s_client, msg, len, pdMS_TO_TICKS(3000));
+    return (sent >= 0) ? ESP_OK : ESP_FAIL;
 }

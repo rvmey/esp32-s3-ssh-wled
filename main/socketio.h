@@ -58,3 +58,14 @@ void socketio_disconnect(void);
  * @brief Return true if an active Socket.IO session exists.
  */
 bool socketio_connected(void);
+
+/**
+ * @brief Send a Sails.io virtual GET over the active Socket.IO connection.
+ *
+ * Sends: 421["get",{"method":"get","url":"<path>","data":{},
+ *              "headers":{"Authorization":"Bearer <token>"},
+ *              "_isSailsSocketRequest":true}]
+ *
+ * Must be called after socketio_connect() succeeds.
+ */
+esp_err_t socketio_send_vget(const char *path, const char *auth_token);

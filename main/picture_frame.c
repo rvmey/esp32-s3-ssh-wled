@@ -6,32 +6,36 @@
  * Boot sequence:
  *   1. screen_init()
  *   2. WiFi — Improv-WiFi BLE provisioning if no stored credentials.
- *   3. Hardware token — obtained via pair code flow:
+ *   3. User JWT — obtained via pair code flow:
  *        GET /pair?model=TCMDSCREEN → {pairCode, pairToken}
  *        Display code; poll GET /pair/lookup every 5 s (up to 10 min).
  *        On authorisation, token is saved to NVS and device reboots.
  *        On timeout, a fresh pair code is fetched automatically.
- *   4. Provisioning — GET /api/hardware/provision with the stored JWT,
+ *   4. Provisioning — POST /api/computer/save with name TCMDSCREEN-<MAC>,
  *      receiving back a computer ID stored in NVS.
- *   5. Socket.IO connect to wss://www.triggercmd.com
- *   6. GET /api/hardware/subscribeToDisplay?hardwareId=<computer_id>
- *   7. Event loop — waits for "display" events and renders received JPEGs.
+ *   5. Command sync — GET /api/command/list, then POST /api/command/save
+ *      for any commands from picture_frame_commands.json not yet online.
+ *   6. Socket.IO connect; subscribe via Sails.io virtual GET
+ *        /api/computer/subscribeToFunRoom?roomName=<computer_id>
+ *   7. Event loop — dispatches "message" events (text/color/textcolor/
+ *      fontsize/landscape/portrait) to screen functions; reports back
+ *      via POST /api/run/save.
  */
 
 #include "picture_frame.h"
 
 #include <string.h>
 #include <stdlib.h>
+#include <ctype.h>
 #include "esp_log.h"
 #include "esp_err.h"
 #include "esp_system.h"
+#include "esp_mac.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "nvs.h"
 #include "esp_http_client.h"
 #include "esp_crt_bundle.h"
-#include "esp_heap_caps.h"
-#include <inttypes.h>
 
 #include "wifi_manager.h"
 #include "improv_wifi.h"
@@ -39,7 +43,6 @@
 #include "socketio.h"
 #include "http_pf_config.h"
 #include "triggercmd_ca.h"   /* embedded Go Daddy Root G2 cert for triggercmd.com */
-#include "jpeg_decoder.h"    /* espressif/esp_jpeg managed component */
 
 
 static const char *TAG = "pf";
@@ -67,8 +70,13 @@ static const char *tcmd_display_host(void)
 #define NVS_KEY_TOKEN   "hw_token"
 #define NVS_KEY_COMPID  "computer_id"
 
-#define HW_TOKEN_MAX_LEN   513   /* 512 payload + NUL */
-#define COMPUTER_ID_MAX_LEN 33   /* 32 payload + NUL  */
+#define HW_TOKEN_MAX_LEN    513   /* 512 payload + NUL */
+#define COMPUTER_ID_MAX_LEN  33   /* 32 payload + NUL  */
+#define COMPUTER_NAME_LEN    32   /* "TCMDSCREEN-AABBCCDDEEFF" + NUL */
+
+/* ── Module-level statics shared with event handler ────────────────────── */
+static char s_hw_token[HW_TOKEN_MAX_LEN]      = {0};
+static char s_computer_id[COMPUTER_ID_MAX_LEN] = {0};
 
 static bool nvs_read_str(const char *key, char *out, size_t out_sz)
 {
@@ -89,16 +97,6 @@ static esp_err_t nvs_write_str(const char *key, const char *val)
     nvs_close(h);
     return err;
 }
-
-/* ── Persistent buffers (allocated in PSRAM at startup) ─────────────────── */
-
-static uint8_t *s_dl_buf  = NULL;  /* compressed JPEG download  */
-static uint8_t *s_px_buf  = NULL;  /* decoded RGB565 pixels     */
-
-#define DL_BUF_BYTES   CONFIG_PICTURE_FRAME_MAX_IMAGE_BYTES
-/* Decoded RGB565: assume up to 1024×1024 pixels (2 MB).
- * Larger source images will be rejected gracefully. */
-#define PX_BUF_BYTES   (2 * 1024 * 1024)
 
 
 /*
@@ -171,6 +169,79 @@ static int https_get_auth(const char *url, const char *token, char **body)
 }
 
 /*
+ * HTTPS POST with url-encoded form body and Bearer token auth.
+ * body_form is a pre-encoded "key=val&key2=val2" string.
+ * Returns HTTP status code, or -1 on network/TLS error.
+ * Response body written into malloc'd *resp_body (caller frees), or NULL on failure.
+ */
+static int https_post_form(const char *url, const char *token,
+                           const char *body_form, char **resp_body)
+{
+    if (resp_body) *resp_body = NULL;
+
+    char bearer[560];
+    snprintf(bearer, sizeof(bearer), "Bearer %s", token);
+
+    int body_len = (int)strlen(body_form);
+
+    esp_http_client_config_t cfg = {
+        .url        = url,
+        .method     = HTTP_METHOD_POST,
+        .timeout_ms = 15000,
+    };
+    if (strstr(TCMD_BASE_URL, "triggercmd.com")) {
+        cfg.cert_pem = TRIGGERCMD_CA_PEM;
+    } else if (strncmp(TCMD_BASE_URL, "https://", 8) == 0) {
+        cfg.crt_bundle_attach = esp_crt_bundle_attach;
+    }
+
+    esp_http_client_handle_t client = esp_http_client_init(&cfg);
+    if (!client) return -1;
+
+    esp_http_client_set_header(client, "Authorization", bearer);
+    esp_http_client_set_header(client, "Content-Type",
+                               "application/x-www-form-urlencoded");
+
+    esp_err_t ret = esp_http_client_open(client, body_len);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "https_post_form open failed: %s", esp_err_to_name(ret));
+        esp_http_client_cleanup(client);
+        return -1;
+    }
+
+    int written = esp_http_client_write(client, body_form, body_len);
+    if (written < 0) {
+        ESP_LOGE(TAG, "https_post_form write failed");
+        esp_http_client_close(client);
+        esp_http_client_cleanup(client);
+        return -1;
+    }
+
+    int64_t cl = esp_http_client_fetch_headers(client);
+    int max_resp = 2048;
+    if (cl > 0 && cl < max_resp) max_resp = (int)cl;
+
+    if (resp_body) {
+        char *buf = malloc(max_resp + 1);
+        if (buf) {
+            int total = 0;
+            while (total < max_resp) {
+                int n = esp_http_client_read(client, buf + total, max_resp - total);
+                if (n <= 0) break;
+                total += n;
+            }
+            buf[total] = '\0';
+            *resp_body = buf;
+        }
+    }
+
+    int status = esp_http_client_get_status_code(client);
+    esp_http_client_close(client);
+    esp_http_client_cleanup(client);
+    return status;
+}
+
+/*
  * HTTPS GET without auth headers. Returns body length or -1 on failure.
  * Caller must free *body.
  */
@@ -233,52 +304,6 @@ static int https_get_simple(const char *url, char **body)
     return total;
 }
 
-/* ── JPEG download into PSRAM buffer ────────────────────────────────────── */
-
-static int download_jpeg(const char *url)
-{
-    esp_http_client_config_t cfg = {
-        .url               = url,
-        .method            = HTTP_METHOD_GET,
-        .timeout_ms        = 30000,
-        .crt_bundle_attach = esp_crt_bundle_attach,
-    };
-
-    esp_http_client_handle_t client = esp_http_client_init(&cfg);
-    if (!client) return -1;
-
-    esp_err_t ret = esp_http_client_open(client, 0);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "download_jpeg open failed: %s", esp_err_to_name(ret));
-        esp_http_client_cleanup(client);
-        return -1;
-    }
-
-    esp_http_client_fetch_headers(client);
-
-    int total = 0;
-    int max   = DL_BUF_BYTES;
-    while (total < max) {
-        int n = esp_http_client_read(client,
-                                     (char *)s_dl_buf + total,
-                                     max - total);
-        if (n <= 0) break;
-        total += n;
-    }
-
-    int status = esp_http_client_get_status_code(client);
-    esp_http_client_close(client);
-    esp_http_client_cleanup(client);
-
-    if (status < 200 || status >= 300) {
-        ESP_LOGE(TAG, "download_jpeg %s → HTTP %d", url, status);
-        return -1;
-    }
-
-    ESP_LOGI(TAG, "Downloaded %d bytes from %s (HTTP %d)", total, url, status);
-    return total;
-}
-
 /* ── Minimal JSON string-value extractor ────────────────────────────────── */
 /*
  * Extracts a string value from a flat JSON object for the given key.
@@ -319,7 +344,116 @@ static bool json_extract_str(const char *json, const char *key,
     return i > 0;
 }
 
-/* ── Socket.IO event handler ─────────────────────────────────────────────── */
+/*
+ * Two-step nested JSON extractor: finds "outer":{...} then extracts key
+ * inside that block.  e.g. json_extract_nested("...", "data", "id", ...).
+ */
+static bool json_extract_nested(const char *json, const char *outer,
+                                 const char *key, char *out, size_t out_sz)
+{
+    char pat[64];
+    snprintf(pat, sizeof(pat), "\"%s\"", outer);
+    const char *p = strstr(json, pat);
+    if (!p) return false;
+    p += strlen(pat);
+    while (*p == ' ' || *p == '\t' || *p == ':') p++;
+    if (*p != '{') return false;
+    /* find closing brace — simple scan, not bracket-aware beyond one level */
+    const char *end = strchr(p, '}');
+    if (!end) return false;
+    /* extract key from the sub-object */
+    char sub[256];
+    size_t sub_len = (size_t)(end - p + 1);
+    if (sub_len >= sizeof(sub)) sub_len = sizeof(sub) - 1;
+    memcpy(sub, p, sub_len);
+    sub[sub_len] = '\0';
+    return json_extract_str(sub, key, out, out_sz);
+}
+
+/* ── URL percent-encoding helpers ──────────────────────────────────────── */
+/*
+ * Append a URL-encoded version of src into dst (remaining capacity rem).
+ * Spaces → '+', other non-unreserved bytes → %XX.
+ * Returns pointer past the last written byte.
+ */
+static char *url_encode_append(char *dst, size_t rem, const char *src)
+{
+    static const char hex[] = "0123456789ABCDEF";
+    while (*src && rem > 1) {
+        unsigned char c = (unsigned char)*src++;
+        if (c == ' ') {
+            if (rem > 1) { *dst++ = '+'; rem--; }
+        } else if (isalnum(c) || c == '-' || c == '_' || c == '.' || c == '~') {
+            *dst++ = (char)c; rem--;
+        } else {
+            if (rem > 3) {
+                *dst++ = '%';
+                *dst++ = hex[c >> 4];
+                *dst++ = hex[c & 0xF];
+                rem -= 3;
+            }
+        }
+    }
+    return dst;
+}
+
+/* ── Embedded command definitions ──────────────────────────────────────── */
+
+typedef struct {
+    const char *trigger;
+    const char *voice;
+    const char *allow_params;   /* "true" or "false" */
+    const char *mcp_desc;
+    const char *icon;           /* UTF-8 emoji */
+} pf_cmd_t;
+
+static const pf_cmd_t s_pf_cmds[] = {
+    { "text",      "text",      "true",  "Update the display text. Example: 'text Hello world!'",           "\xF0\x9F\x93\x9D" /* 📝 */ },
+    { "color",     "color",     "true",  "Change the display color. Example: 'color red' or 'color #FF0000'", "\xF0\x9F\x94\xA4" /* 🔤 */ },
+    { "textcolor", "textcolor", "true",  "Change the text color. Example: 'textcolor blue' or 'textcolor #0000FF'", "\xF0\x9F\x8E\xA8" /* 🎨 */ },
+    { "fontsize",  "fontsize",  "true",  "Change the font size. Example: 'fontsize 3'",                     "\xF0\x9F\x94\xA1" /* 🔡 */ },
+    { "landscape", "landscape", "false", "Set the display to landscape orientation.",                        "\xE2\x86\x94\xEF\xB8\x8F" /* ↔️ */ },
+    { "portrait",  "portrait",  "false", "Set the display to portrait orientation.",                         "\xE2\x86\x95\xEF\xB8\x8F" /* ↕️ */ },
+};
+#define PF_CMD_COUNT  (sizeof(s_pf_cmds) / sizeof(s_pf_cmds[0]))
+
+/* ── Color parser ──────────────────────────────────────────────────────── */
+
+static bool parse_color(const char *s, uint8_t *r, uint8_t *g, uint8_t *b)
+{
+    /* skip leading whitespace */
+    while (*s == ' ') s++;
+
+    /* Named colours */
+    struct { const char *name; uint8_t r, g, b; } named[] = {
+        {"red",     255,   0,   0}, {"green",   0, 200,   0},
+        {"blue",      0,   0, 255}, {"white",  255, 255, 255},
+        {"black",     0,   0,   0}, {"yellow", 255, 255,   0},
+        {"cyan",      0, 255, 255}, {"magenta",255,   0, 255},
+        {"orange",  255, 165,   0}, {"purple", 128,   0, 128},
+        {"pink",    255, 105, 180}, {"gray",   128, 128, 128},
+        {"grey",    128, 128, 128},
+    };
+    for (int i = 0; i < (int)(sizeof(named)/sizeof(named[0])); i++) {
+        if (strcasecmp(s, named[i].name) == 0) {
+            *r = named[i].r; *g = named[i].g; *b = named[i].b;
+            return true;
+        }
+    }
+
+    /* Hex: #RRGGBB or RRGGBB */
+    if (*s == '#') s++;
+    if (strlen(s) >= 6) {
+        unsigned int rv, gv, bv;
+        if (sscanf(s, "%02x%02x%02x", &rv, &gv, &bv) == 3) {
+            *r = (uint8_t)rv; *g = (uint8_t)gv; *b = (uint8_t)bv;
+            return true;
+        }
+    }
+    return false;
+}
+
+/* ── Socket.IO event handler ────────────────────────────────────────────── */
 
 static void pf_event_handler(const char *event_name,
                               const char *payload_json,
@@ -327,72 +461,88 @@ static void pf_event_handler(const char *event_name,
 {
     (void)ctx;
 
-    if (strcmp(event_name, "display") != 0) return;
+    if (strcmp(event_name, "message") != 0) return;
 
-    /* Extract "url" and optional "caption" from payload JSON without cJSON.
-     * Payload format: {"url":"https://...","caption":"optional text"}   */
-    static char s_url[512];
-    static char s_caption[128];
-    s_caption[0] = '\0';
+    static char s_trigger[64];
+    static char s_id[32];
+    static char s_params[256];
 
-    if (!json_extract_str(payload_json, "url", s_url, sizeof(s_url)) ||
-            s_url[0] == '\0') {
-        ESP_LOGE(TAG, "display event missing 'url'");
+    s_trigger[0] = s_id[0] = s_params[0] = '\0';
+    json_extract_str(payload_json, "trigger", s_trigger, sizeof(s_trigger));
+    json_extract_str(payload_json, "id",      s_id,      sizeof(s_id));
+    json_extract_str(payload_json, "params",  s_params,  sizeof(s_params));
+
+    ESP_LOGI(TAG, "message: trigger=%s params=%s", s_trigger, s_params);
+
+    if (strcmp(s_trigger, "text") == 0) {
+        screen_draw_text(s_params[0] ? s_params : " ");
+
+    } else if (strcmp(s_trigger, "color") == 0) {
+        uint8_t r = 0, g = 0, b = 0;
+        if (parse_color(s_params, &r, &g, &b)) {
+            screen_set_color(r, g, b);
+        } else {
+            ESP_LOGW(TAG, "color: unrecognised '%s'", s_params);
+        }
+
+    } else if (strcmp(s_trigger, "textcolor") == 0) {
+        uint8_t r = 255, g = 255, b = 255;
+        if (parse_color(s_params, &r, &g, &b)) {
+            screen_set_text_color(r, g, b);
+        } else {
+            ESP_LOGW(TAG, "textcolor: unrecognised '%s'", s_params);
+        }
+
+    } else if (strcmp(s_trigger, "fontsize") == 0) {
+        int scale = atoi(s_params);
+        if (scale < 1) scale = 1;
+        if (scale > 4) scale = 4;
+        screen_set_font_scale(scale);
+
+    } else if (strcmp(s_trigger, "landscape") == 0) {
+        screen_set_landscape(true);
+
+    } else if (strcmp(s_trigger, "portrait") == 0) {
+        screen_set_landscape(false);
+
+    } else {
+        ESP_LOGW(TAG, "message: unknown trigger '%s'", s_trigger);
         return;
     }
-    json_extract_str(payload_json, "caption", s_caption, sizeof(s_caption));
 
-    const char *url = s_url;
-    ESP_LOGI(TAG, "display event: url=%s", url);
+    /* Report back: POST /api/run/save */
+    if (s_id[0] && s_computer_id[0]) {
+        char run_url[192];
+        snprintf(run_url, sizeof(run_url), "%s/api/run/save", TCMD_BASE_URL);
 
-    /* Download JPEG */
-    int dl_bytes = download_jpeg(url);
-    if (dl_bytes <= 0) {
-        screen_draw_text("Image download\nfailed");
-        return;
-    }
+        char form[256];
+        char *p = form;
+        char *end = form + sizeof(form);
+        p = url_encode_append(p, (size_t)(end - p), "status");
+        if (p < end) *p++ = '=';
+        p = url_encode_append(p, (size_t)(end - p), "Command ran");
+        if (p < end) *p++ = '&';
+        p = url_encode_append(p, (size_t)(end - p), "computer");
+        if (p < end) *p++ = '=';
+        p = url_encode_append(p, (size_t)(end - p), s_computer_id);
+        if (p < end) *p++ = '&';
+        p = url_encode_append(p, (size_t)(end - p), "command");
+        if (p < end) *p++ = '=';
+        p = url_encode_append(p, (size_t)(end - p), s_id);
+        *p = '\0';
 
-    /* Decode JPEG → RGB565 (little-endian uint16_t, swap_color_bytes = 0) */
-    esp_jpeg_image_cfg_t jpeg_cfg = {
-        .indata      = s_dl_buf,
-        .indata_size = (uint32_t)dl_bytes,
-        .outbuf      = s_px_buf,
-        .outbuf_size = PX_BUF_BYTES,
-        .out_format  = JPEG_IMAGE_FORMAT_RGB565,
-        .out_scale   = JPEG_IMAGE_SCALE_0,
-        .flags       = {
-            .swap_color_bytes = 0,  /* keep little-endian: LSByte first */
-        },
-    };
-
-    esp_jpeg_image_output_t outimg = {0};
-    esp_err_t dec_ret = esp_jpeg_decode(&jpeg_cfg, &outimg);
-    if (dec_ret != ESP_OK) {
-        ESP_LOGE(TAG, "JPEG decode failed: %s", esp_err_to_name(dec_ret));
-        screen_draw_text("Image decode\nfailed");
-        return;
-    }
-
-    ESP_LOGI(TAG, "JPEG decoded: %"PRIu32"x%"PRIu32, outimg.width, outimg.height);
-
-    /* Render scaled to full panel */
-    screen_draw_rgb565(s_px_buf, (int)outimg.width, (int)outimg.height);
-
-    /* Overlay caption if present */
-    if (s_caption[0]) {
-        screen_draw_text(s_caption);
+        int status = https_post_form(run_url, s_hw_token, form, NULL);
+        ESP_LOGI(TAG, "run/save → HTTP %d", status);
     }
 }
 
-/* ── Connection step: Socket.IO + subscribeToDisplay ───────────────────── */
+/* ── Connection step: Socket.IO + subscribeToFunRoom ────────────────────── */
 
-static esp_err_t connect_and_subscribe(const char *hw_token,
-                                       const char *computer_id)
+static esp_err_t connect_and_subscribe(void)
 {
     screen_draw_text("Connecting to server...");
 
     char sio_url[192];
-    /* Derive WebSocket scheme from TCMD_BASE_URL scheme */
     if (strncmp(TCMD_BASE_URL, "https://", 8) == 0) {
         snprintf(sio_url, sizeof(sio_url),
                  "wss://%s/socket.io/?EIO=4&transport=websocket",
@@ -403,38 +553,19 @@ static esp_err_t connect_and_subscribe(const char *hw_token,
                  TCMD_BASE_URL + 7);   /* skip "http://" */
     }
 
-    esp_err_t ret = socketio_connect(
-            sio_url,
-            hw_token,
-            pf_event_handler,
-            NULL);
-
+    esp_err_t ret = socketio_connect(sio_url, s_hw_token, pf_event_handler, NULL);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "socketio_connect failed: %s", esp_err_to_name(ret));
         return ret;
     }
 
-    /* Socket.IO is now connected; call subscribeToDisplay */
-    char sub_url[256];
-    snprintf(sub_url, sizeof(sub_url),
-             "%s/api/hardware/subscribeToDisplay?hardwareId=%s",
-             TCMD_BASE_URL, computer_id);
+    /* Subscribe via Sails.io virtual GET over the active socket */
+    char sub_path[128];
+    snprintf(sub_path, sizeof(sub_path),
+             "/api/computer/subscribeToFunRoom?roomName=%s", s_computer_id);
+    socketio_send_vget(sub_path, s_hw_token);
 
-    char *body = NULL;
-    int body_len = https_get_auth(sub_url, hw_token, &body);
-    if (body_len > 0 && body) {
-        char sub_msg[128] = {0};
-        if (json_extract_str(body, "message", sub_msg, sizeof(sub_msg)) &&
-                sub_msg[0]) {
-            screen_draw_text(sub_msg);
-            ESP_LOGI(TAG, "subscribeToDisplay: %s", sub_msg);
-        }
-        free(body);
-    } else {
-        ESP_LOGW(TAG, "subscribeToDisplay request failed");
-        screen_draw_text("Subscribe failed\n(will retry)");
-    }
-
+    screen_draw_text("Connected!\nWaiting for\ncommands...");
     return ESP_OK;
 }
 
@@ -445,16 +576,6 @@ void picture_frame_run(void)
     /* Initialise display first — screen_init() creates s_draw_mutex which all
      * screen_draw_*() helpers require.  Must happen before any screen call. */
     screen_init();
-
-    /* Allocate persistent PSRAM buffers */
-    s_dl_buf = heap_caps_malloc(DL_BUF_BYTES, MALLOC_CAP_SPIRAM);
-    s_px_buf = heap_caps_malloc(PX_BUF_BYTES, MALLOC_CAP_SPIRAM);
-    if (!s_dl_buf || !s_px_buf) {
-        ESP_LOGE(TAG, "Failed to allocate PSRAM buffers (dl=%p px=%p)",
-                 s_dl_buf, s_px_buf);
-        screen_draw_text("PSRAM alloc\nfailed — halting");
-        vTaskSuspend(NULL);
-    }
 
     /* ── WiFi ────────────────────────────────────────────────────────────── */
     screen_draw_text("Waiting for WiFi...");
@@ -479,24 +600,18 @@ void picture_frame_run(void)
     screen_off();
 
     /* ── NVS: read hw_token and computer_id ─────────────────────────────── */
-    char hw_token[HW_TOKEN_MAX_LEN]     = {0};
-    char computer_id[COMPUTER_ID_MAX_LEN] = {0};
+    bool have_token   = nvs_read_str(NVS_KEY_TOKEN,  s_hw_token,   sizeof(s_hw_token));
+    bool have_comp_id = nvs_read_str(NVS_KEY_COMPID, s_computer_id, sizeof(s_computer_id));
 
-    bool have_token    = nvs_read_str(NVS_KEY_TOKEN,  hw_token,    sizeof(hw_token));
-    bool have_comp_id  = nvs_read_str(NVS_KEY_COMPID, computer_id, sizeof(computer_id));
-
-    /* If no hardware token, run the pair code flow until authorised */
+    /* ── Pair code flow — runs until a user JWT is obtained ─────────────── */
     if (!have_token) {
         while (true) {  /* pair_loop — retries on network failure or 10-min timeout */
 
-            /* Step 1: obtain a fresh pair code from TriggerCMD */
             char *pair_body = NULL;
             char pair_url[192];
             snprintf(pair_url, sizeof(pair_url),
                      "%s/pair?model=TCMDSCREEN", TCMD_BASE_URL);
-            int pair_len = https_get_simple(
-                    pair_url,
-                    &pair_body);
+            int pair_len = https_get_simple(pair_url, &pair_body);
 
             if (pair_len <= 0 || !pair_body) {
                 ESP_LOGE(TAG, "GET /pair failed — retrying in 10s");
@@ -520,7 +635,6 @@ void picture_frame_run(void)
 
             ESP_LOGI(TAG, "Pair code: %s", pair_code);
 
-            /* Step 2: show code on screen and serve it via local web page */
             char pair_disp[192];
             snprintf(pair_disp, sizeof(pair_disp),
                      "Visit %s\nSign in -> click name\n"
@@ -528,24 +642,20 @@ void picture_frame_run(void)
             screen_draw_text(pair_disp);
             http_pf_config_start(pair_code);
 
-            /* Step 3: poll /pair/lookup every 5 s for up to 10 minutes */
             char lookup_url[900];
             snprintf(lookup_url, sizeof(lookup_url),
-                     "%s/pair/lookup?token=%s",
-                     TCMD_BASE_URL, pair_token);
+                     "%s/pair/lookup?token=%s", TCMD_BASE_URL, pair_token);
 
             bool paired = false;
             for (int i = 0; i < 120 && !paired; i++) {
                 vTaskDelay(pdMS_TO_TICKS(5000));
-
                 char *lk_body = NULL;
                 int lk_len = https_get_simple(lookup_url, &lk_body);
                 if (lk_len > 0 && lk_body) {
-                    char hw_tok_new[HW_TOKEN_MAX_LEN] = {0};
-                    if (json_extract_str(lk_body, "token",
-                                        hw_tok_new, sizeof(hw_tok_new)) &&
-                            hw_tok_new[0] != '\0') {
-                        nvs_write_str(NVS_KEY_TOKEN, hw_tok_new);
+                    char tok_new[HW_TOKEN_MAX_LEN] = {0};
+                    if (json_extract_str(lk_body, "token", tok_new, sizeof(tok_new)) &&
+                            tok_new[0] != '\0') {
+                        nvs_write_str(NVS_KEY_TOKEN, tok_new);
                         ESP_LOGI(TAG, "Paired — token saved; rebooting");
                         paired = true;
                     }
@@ -560,55 +670,125 @@ void picture_frame_run(void)
                 esp_restart();
             }
 
-            /* 10-minute timeout — fetch a fresh pair code */
             ESP_LOGI(TAG, "Pair code timed out — fetching new code");
         }
     }
 
-    /* ── Provisioning: get computer_id if not already stored ────────────── */
+    /* ── Create computer if not already provisioned ──────────────────────── */
     if (!have_comp_id) {
-        ESP_LOGI(TAG, "No computer_id — calling provision API");
-        screen_draw_text("Provisioning...");
+        /* Build a unique computer name from the WiFi base MAC */
+        uint8_t mac[6] = {0};
+        esp_read_mac(mac, ESP_MAC_WIFI_STA);
+        char computer_name[COMPUTER_NAME_LEN];
+        snprintf(computer_name, sizeof(computer_name),
+                 "TCMDSCREEN-%02X%02X%02X%02X%02X%02X",
+                 mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
 
-        char *body = NULL;
-        char prov_url[192];
-        snprintf(prov_url, sizeof(prov_url),
-                 "%s/api/hardware/provision", TCMD_BASE_URL);
-        int body_len = https_get_auth(
-                prov_url,
-                hw_token, &body);
+        ESP_LOGI(TAG, "Creating computer: %s", computer_name);
+        screen_draw_text("Creating computer...");
 
-        if (body_len > 0 && body) {
-            char prov_computer[COMPUTER_ID_MAX_LEN] = {0};
-            char prov_msg[128] = {0};
+        char save_url[192];
+        snprintf(save_url, sizeof(save_url), "%s/api/computer/save", TCMD_BASE_URL);
 
-            if (json_extract_str(body, "computer",
-                                 prov_computer, sizeof(prov_computer)) &&
-                    prov_computer[0]) {
-                strncpy(computer_id, prov_computer, sizeof(computer_id) - 1);
-                nvs_write_str(NVS_KEY_COMPID, computer_id);
-                ESP_LOGI(TAG, "computer_id stored: %s", computer_id);
+        /* Body: name=TCMDSCREEN-AABBCCDDEEFF (no special encoding needed) */
+        char form[64];
+        snprintf(form, sizeof(form), "name=%s", computer_name);
+
+        char *resp = NULL;
+        int status = https_post_form(save_url, s_hw_token, form, &resp);
+        if (status >= 200 && status < 300 && resp) {
+            char cid[COMPUTER_ID_MAX_LEN] = {0};
+            if (json_extract_nested(resp, "data", "id", cid, sizeof(cid)) && cid[0]) {
+                strncpy(s_computer_id, cid, sizeof(s_computer_id) - 1);
+                nvs_write_str(NVS_KEY_COMPID, s_computer_id);
+                ESP_LOGI(TAG, "computer_id stored: %s", s_computer_id);
+
+                char msg[64];
+                snprintf(msg, sizeof(msg), "Ready!\n%s", computer_name);
+                screen_draw_text(msg);
+            } else {
+                ESP_LOGE(TAG, "computer/save: could not parse data.id from: %s", resp);
+                free(resp);
+                screen_draw_text("Provision failed\nRetrying in 10s");
+                vTaskDelay(pdMS_TO_TICKS(10000));
+                esp_restart();
             }
-
-            if (json_extract_str(body, "message",
-                                 prov_msg, sizeof(prov_msg)) && prov_msg[0]) {
-                screen_draw_text(prov_msg);
-            }
-
-            free(body);
         } else {
-            ESP_LOGE(TAG, "Provision request failed");
+            ESP_LOGE(TAG, "computer/save → HTTP %d", status);
+            if (resp) free(resp);
             screen_draw_text("Provision failed\nRetrying in 10s");
             vTaskDelay(pdMS_TO_TICKS(10000));
             esp_restart();
         }
+        if (resp) free(resp);
 
-        vTaskDelay(pdMS_TO_TICKS(2000));
+        vTaskDelay(pdMS_TO_TICKS(1500));
+
+        /* ── Sync commands ────────────────────────────────────────────────── */
+        screen_draw_text("Syncing commands...");
+
+        char list_url[192];
+        snprintf(list_url, sizeof(list_url),
+                 "%s/api/command/list?computer_id=%s",
+                 TCMD_BASE_URL, s_computer_id);
+
+        char *list_body = NULL;
+        int list_len = https_get_auth(list_url, s_hw_token, &list_body);
+        /* list_body may be NULL if request fails — we'll still attempt adds */
+
+        char cmd_url[192];
+        snprintf(cmd_url, sizeof(cmd_url), "%s/api/command/save", TCMD_BASE_URL);
+
+        for (size_t i = 0; i < PF_CMD_COUNT; i++) {
+            const pf_cmd_t *cmd = &s_pf_cmds[i];
+
+            /* Check if trigger name already exists in online list */
+            bool found = false;
+            if (list_len > 0 && list_body) {
+                /* Search for "name":"<trigger>" in the JSON response */
+                char needle[96];
+                snprintf(needle, sizeof(needle), "\"name\":\"%s\"", cmd->trigger);
+                if (strstr(list_body, needle)) found = true;
+            }
+
+            if (found) {
+                ESP_LOGI(TAG, "cmd '%s' already online — skip", cmd->trigger);
+                continue;
+            }
+
+            /* Build url-encoded form body */
+            char body[512];
+            char *p    = body;
+            char *bend = body + sizeof(body);
+
+#define APPEND_FIELD(k, v) \
+            p = url_encode_append(p, (size_t)(bend - p), (k)); \
+            if (p < bend) *p++ = '='; \
+            p = url_encode_append(p, (size_t)(bend - p), (v)); \
+            if (p < bend) *p++ = '&';
+
+            APPEND_FIELD("name",               cmd->trigger)
+            APPEND_FIELD("computer",           s_computer_id)
+            APPEND_FIELD("voice",              cmd->voice)
+            APPEND_FIELD("voiceReply",         "")
+            APPEND_FIELD("allowParams",        cmd->allow_params)
+            APPEND_FIELD("mcpToolDescription", cmd->mcp_desc)
+            APPEND_FIELD("icon",               cmd->icon)
+#undef APPEND_FIELD
+            /* remove trailing '&' */
+            if (p > body && *(p-1) == '&') p--;
+            *p = '\0';
+
+            int cs = https_post_form(cmd_url, s_hw_token, body, NULL);
+            ESP_LOGI(TAG, "cmd/save '%s' → HTTP %d", cmd->trigger, cs);
+        }
+
+        if (list_body) free(list_body);
     }
 
     /* ── Connect + subscribe loop ────────────────────────────────────────── */
     while (true) {
-        esp_err_t ret = connect_and_subscribe(hw_token, computer_id);
+        esp_err_t ret = connect_and_subscribe();
         if (ret != ESP_OK) {
             screen_draw_text("Server connect\nfailed\nRetrying in 10s");
             vTaskDelay(pdMS_TO_TICKS(10000));
@@ -616,7 +796,6 @@ void picture_frame_run(void)
             continue;
         }
 
-        /* Monitor connection and reconnect on drop */
         while (true) {
             vTaskDelay(pdMS_TO_TICKS(1000));
             if (!socketio_connected()) {
@@ -624,7 +803,7 @@ void picture_frame_run(void)
                 screen_draw_text("Reconnecting...");
                 vTaskDelay(pdMS_TO_TICKS(5000));
                 socketio_disconnect();
-                break;   /* outer loop will reconnect */
+                break;
             }
         }
     }
