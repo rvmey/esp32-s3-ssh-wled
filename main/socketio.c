@@ -255,12 +255,21 @@ esp_err_t socketio_send_vget(const char *path, const char *auth_token)
 {
     if (!s_client || !s_connected) return ESP_ERR_INVALID_STATE;
 
+    /* Format matches sails.io.js v1 wire format exactly:
+     * - Authorization goes in "data" (where agent.js passes it as the 2nd
+     *   argument to io.socket.get()), NOT in "headers"
+     * - No "method" field in the data object (method is only the event name)
+     * sails.io.js emits: socket.emit('get', {url, data:{Authorization:...},
+     *                                         headers:{}, _isSailsSocketRequest:true}, cb) */
     char msg[768];
     snprintf(msg, sizeof(msg),
-             "421[\"get\",{\"method\":\"get\",\"url\":\"%s\","
-             "\"data\":{},\"headers\":{\"Authorization\":\"Bearer %s\"},"
+             "421[\"get\",{\"url\":\"%s\","
+             "\"data\":{\"Authorization\":\"Bearer %s\"},"
+             "\"headers\":{},"
              "\"_isSailsSocketRequest\":true}]",
              path, auth_token);
+
+    ESP_LOGI(TAG, "Sending vget: %.120s", msg);
 
     int len = (int)strlen(msg);
     int sent = esp_websocket_client_send_text(s_client, msg, len, pdMS_TO_TICKS(3000));
