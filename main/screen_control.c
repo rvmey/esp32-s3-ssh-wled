@@ -323,6 +323,25 @@ void screen_draw_rgb565(const uint8_t *rgb565, int src_w, int src_h)
 {
     xSemaphoreTake(s_draw_mutex, portMAX_DELAY);
 
+    /* Logical screen dimensions (respects orientation) */
+    int dst_w = lcd_w();
+    int dst_h = lcd_h();
+
+    /* Scale-to-fit: compute letterbox/pillarbox so the image fills as much
+     * of the logical screen as possible while preserving aspect ratio.    */
+    int img_w, img_h, img_x0, img_y0;
+    if (src_w * dst_h > src_h * dst_w) {
+        /* image is wider than screen — constrained by width */
+        img_w = dst_w;
+        img_h = (src_h * dst_w) / src_w;
+    } else {
+        /* image is taller than screen — constrained by height */
+        img_h = dst_h;
+        img_w = (src_w * dst_h) / src_h;
+    }
+    img_x0 = (dst_w - img_w) / 2;
+    img_y0 = (dst_h - img_h) / 2;
+
     /* Address the full physical panel (always portrait: 320 × 480). */
     uint8_t caset[] = { 0x00, 0x00,
                         (uint8_t)((LCD_PHYS_W - 1) >> 8),
@@ -333,21 +352,42 @@ void screen_draw_rgb565(const uint8_t *rgb565, int src_w, int src_h)
     axs_cmd(0x2A, caset, sizeof(caset));
     axs_cmd(0x2B, raset, sizeof(raset));
 
-    /*
-     * Nearest-neighbour scale to fill LCD_PHYS_W × LCD_PHYS_H.
-     *
-     * The source buffer holds RGB565 pixels as little-endian uint16_t values
-     * (as produced by esp_jpeg_decode with swap_color_bytes = 0):
-     *   memory layout per pixel: [LSByte, MSByte]
-     *   reading as uint16_t on little-endian CPU: value = (MSByte<<8)|LSByte
-     *   so (value >> 8) == MSByte  →  sent first on SPI (big-endian to display)
-     */
+    /* Background colour (letterbox bars) in RGB565 big-endian */
+    uint16_t bg_px = ((uint16_t)(s_r & 0xF8) << 8)
+                   | ((uint16_t)(s_g & 0xFC) << 3)
+                   | (s_b >> 3);
+    uint8_t bg_h = (uint8_t)(bg_px >> 8);
+    uint8_t bg_l = (uint8_t)(bg_px & 0xFF);
+
     const uint16_t *src = (const uint16_t *)rgb565;
 
     for (int y = 0; y < LCD_PHYS_H; y++) {
-        int src_row = (y * src_h) / LCD_PHYS_H;
+        /* Fill row with background first */
+        for (int i = 0; i < LCD_PHYS_W * 2; i += 2) {
+            s_row_buf[i]     = bg_h;
+            s_row_buf[i + 1] = bg_l;
+        }
+
         for (int x = 0; x < LCD_PHYS_W; x++) {
-            int src_col = (x * src_w) / LCD_PHYS_W;
+            /* Map physical (x,y) to logical (lx,ly) — mirrors text rendering */
+            int lx, ly;
+            if (s_landscape) {
+                lx = (LCD_PHYS_H - 1) - y;
+                ly = x;
+            } else {
+                lx = x;
+                ly = y;
+            }
+
+            /* Skip pixels outside the image rectangle (letterbox bars) */
+            if (lx < img_x0 || lx >= img_x0 + img_w ||
+                ly < img_y0 || ly >= img_y0 + img_h) {
+                continue;
+            }
+
+            /* Map logical image pixel to source pixel (nearest-neighbour) */
+            int src_col = ((lx - img_x0) * src_w) / img_w;
+            int src_row = ((ly - img_y0) * src_h) / img_h;
             uint16_t pixel = src[src_row * src_w + src_col];
             s_row_buf[x * 2]     = (uint8_t)(pixel >> 8);
             s_row_buf[x * 2 + 1] = (uint8_t)(pixel & 0xFF);
