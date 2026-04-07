@@ -164,6 +164,11 @@ static void ws_event_handler(void *arg, esp_event_base_t base,
         s_connected = false;
         break;
 
+    case WEBSOCKET_EVENT_CLOSED:
+        ESP_LOGW(TAG, "WS closed by server");
+        s_connected = false;
+        break;
+
     case WEBSOCKET_EVENT_ERROR:
         ESP_LOGE(TAG, "WS error");
         s_connected = false;

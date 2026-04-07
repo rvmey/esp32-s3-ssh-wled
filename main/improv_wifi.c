@@ -115,7 +115,7 @@ static void send_device_info(void)
 {
     static const char * const strings[4] = {
         "ESP32-SSH-LED",        /* firmware name    */
-        "2.0.33",              /* firmware version */
+        "2.0.34",              /* firmware version */
         "ESP32-S3",            /* chip/variant     */
         "ESP32-S3 SSH Server", /* device name      */
     };
