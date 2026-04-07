@@ -4,7 +4,7 @@
 
 Whenever **any firmware source file is modified** (files under `main/`, `CMakeLists.txt`, `sdkconfig.defaults`, `sdkconfig.devkitc`, `sdkconfig.jc3248w535`, patches under `patches/`, or `managed_components/`), you **must**:
 
-1. **Bump the patch version** in all four places — increment `z` by 1 (e.g. `"2.0.1"` → `"2.0.2"`):
+1. **Bump the patch version for any changed firmware variant** in all four places — increment `z` by 1 (e.g. `"2.0.1"` → `"2.0.2"`):
 
    - `main/main.c`:
      ```c
@@ -23,7 +23,7 @@ Whenever **any firmware source file is modified** (files under `main/`, `CMakeLi
      "version": "x.y.z",
      ```
 
-2. **Build both firmware variants** by running (with the ESP-IDF environment active):
+2. **Build only firmware variants that have changed** by running (with the ESP-IDF environment active):
    ```powershell
    . C:\esp\v6.0\esp-idf\export.ps1 2>&1 | Out-Null ; .\build.ps1
    ```
