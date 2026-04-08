@@ -503,6 +503,8 @@ static void pf_event_handler(const char *event_name,
         uint8_t r = 0, g = 0, b = 0;
         if (parse_color(s_params, &r, &g, &b)) {
             screen_set_color(r, g, b);
+            /* If a JPEG is cached, re-blit it over the new background color */
+            if (s_jpeg_cache) s_pending_jpeg_redraw = true;
         } else {
             ESP_LOGW(TAG, "color: unrecognised '%s'", s_params);
         }
