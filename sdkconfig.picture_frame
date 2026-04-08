@@ -1,6 +1,10 @@
 # Hardware variant: TriggerCMD Picture Frame (Guition JC3248W535)
 CONFIG_HARDWARE_PICTURE_FRAME=y
 
+# WebSocket transport buffer — must be large enough for the HTTP upgrade
+# response headers from triggercmd.com (default 1024 is too small)
+CONFIG_WS_BUFFER_SIZE=2048
+
 # Console via USB Serial/JTAG (board has no UART-to-USB bridge)
 CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
 CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
