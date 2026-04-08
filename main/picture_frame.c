@@ -495,6 +495,8 @@ static void pf_event_handler(const char *event_name,
              s_trigger, s_id, s_params);
 
     if (strcmp(s_trigger, "text") == 0) {
+        /* Discard any cached JPEG so orientation changes redraw text, not image */
+        if (s_jpeg_cache) { free(s_jpeg_cache); s_jpeg_cache = NULL; s_jpeg_cache_len = 0; }
         screen_draw_text(s_params[0] ? s_params : " ");
 
     } else if (strcmp(s_trigger, "color") == 0) {
