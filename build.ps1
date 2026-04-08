@@ -16,9 +16,16 @@
 
 .PARAMETER Clean
     Delete both build directories before building (forces a full rebuild).
+
+.PARAMETER Variant
+    One or more variant names to build (devkitc, jc3248w535, bike_tracker,
+    picture_frame).  Defaults to all variants.  Examples:
+        .\build.ps1 -Variant devkitc
+        .\build.ps1 -Variant devkitc, jc3248w535
 #>
 param(
-    [switch]$Clean
+    [switch]$Clean,
+    [string[]]$Variant = @()
 )
 
 Set-StrictMode -Version Latest
@@ -180,6 +187,18 @@ if ($Clean) {
             Remove-Item $v.BuildDir -Recurse -Force
         }
     }
+}
+
+# Filter to requested variants (if -Variant was supplied)
+if ($Variant.Count -gt 0) {
+    $validNames = $variants | Select-Object -ExpandProperty Name
+    foreach ($requested in $Variant) {
+        if ($requested -notin $validNames) {
+            Write-Error "Unknown variant '$requested'. Valid values: $($validNames -join ', ')"
+            exit 1
+        }
+    }
+    $variants = $variants | Where-Object { $_.Name -in $Variant }
 }
 
 # Build each variant (skip if sources are unchanged)

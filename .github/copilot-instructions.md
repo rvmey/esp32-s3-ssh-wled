@@ -23,27 +23,46 @@ Whenever **any firmware source file is modified** (files under `main/`, `CMakeLi
      "version": "x.y.z",
      ```
 
-2. **Build only firmware variants that have changed** by running (with the ESP-IDF environment active):
+2. **Build only the firmware variant currently being worked on.** If the active variant is not clear from context, ask before building. Run (with the ESP-IDF environment active):
    ```powershell
-   . C:\esp\v6.0\esp-idf\export.ps1 2>&1 | Out-Null ; .\build.ps1
+   . C:\esp\v6.0\esp-idf\export.ps1 2>&1 | Out-Null ; .\build.ps1 -Variant <name>
    ```
-   This builds `build_devkitc/` and `build_jc3248w535/` and copies the output binaries to `docs/firmware/`:
-   - `docs/firmware/esp32_ssh_devkitc.bin`
-   - `docs/firmware/esp32_ssh_screen.bin`
-   - `docs/firmware/bootloader.bin`
-   - `docs/firmware/partition-table.bin`
+   Valid variant names: `devkitc`, `jc3248w535`, `bike_tracker`, `picture_frame`.
 
-3. **Stage and commit everything**, including the source changes, version bump, and updated binaries:
+   Example — working on the DevKitC variant:
    ```powershell
-   git add main/main.c main/improv_wifi.c docs/manifest-devkitc.json docs/manifest-jc3248w535.json docs/firmware/esp32_ssh_devkitc.bin docs/firmware/esp32_ssh_screen.bin docs/firmware/bootloader.bin docs/firmware/partition-table.bin
+   . C:\esp\v6.0\esp-idf\export.ps1 2>&1 | Out-Null ; .\build.ps1 -Variant devkitc
+   ```
+   Example — working on both SSH-screen variants at once:
+   ```powershell
+   . C:\esp\v6.0\esp-idf\export.ps1 2>&1 | Out-Null ; .\build.ps1 -Variant devkitc, jc3248w535
+   ```
+
+   Output binaries are written to `docs/firmware/`:
+   - `docs/firmware/esp32_ssh_devkitc.bin` — DevKitC-1 variant
+   - `docs/firmware/esp32_ssh_screen.bin`  — JC3248W535 variant
+   - `docs/firmware/esp32_bike_tracker.bin` — Bike Tracker variant
+   - `docs/firmware/esp32_picture_frame.bin` — Picture Frame variant
+   - `docs/firmware/bootloader.bin` and `docs/firmware/partition-table.bin` — shared, taken from the last built variant
+
+3. **Stage and commit everything**, including only the binaries for the variant(s) that were built. For example, if only the DevKitC variant was built:
+   ```powershell
+   git add main/main.c main/improv_wifi.c docs/manifest-devkitc.json docs/firmware/esp32_ssh_devkitc.bin docs/firmware/bootloader.bin docs/firmware/partition-table.bin
    git commit -m "<short description of change>"
    git push
    ```
+   If only the JC3248W535 variant was built:
+   ```powershell
+   git add main/main.c main/improv_wifi.c docs/manifest-jc3248w535.json docs/firmware/esp32_ssh_screen.bin docs/firmware/bootloader.bin docs/firmware/partition-table.bin
+   git commit -m "<short description of change>"
+   git push
+   ```
+   Only include `docs/manifest-*.json` files for the variant(s) whose version was bumped.
 
 ## Project structure notes
 
 - `main/main.c` — defines `APP_VERSION` (single source of truth for the version string)
-- `build.ps1` — builds both hardware variants; pass `-Clean` to force a full rebuild
+- `build.ps1` — builds one or more variants via `-Variant <name>`; pass `-Clean` to force a full rebuild
 - `docs/firmware/` — pre-built binaries committed to the repo for easy flashing
 - Two hardware variants:
   - **DevKitC-1** — no display, uses `sdkconfig.devkitc`, outputs `esp32_ssh_devkitc.bin`
