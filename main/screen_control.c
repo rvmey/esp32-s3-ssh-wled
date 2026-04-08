@@ -323,6 +323,10 @@ void screen_draw_rgb565(const uint8_t *rgb565, int src_w, int src_h)
 {
     xSemaphoreTake(s_draw_mutex, portMAX_DELAY);
 
+    /* A pixel image takes over the display — clear any remembered text so
+     * screen_set_text_color / screen_set_font_scale don't redraw stale text. */
+    s_text[0] = '\0';
+
     /* Logical screen dimensions (respects orientation) */
     int dst_w = lcd_w();
     int dst_h = lcd_h();
