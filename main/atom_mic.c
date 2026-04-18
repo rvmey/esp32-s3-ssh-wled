@@ -74,7 +74,8 @@ void atom_mic_init(void)
     };
 
     ESP_ERROR_CHECK(i2s_channel_init_pdm_rx_mode(s_rx_chan, &pdm_cfg));
-    ESP_ERROR_CHECK(i2s_channel_enable(s_rx_chan));
+    /* Channel is NOT enabled here — enabled on-demand in atom_mic_record()
+     * to avoid DMA ring buffer overflow during idle periods. */
 
     ESP_LOGI(TAG, "PDM RX ready: CLK=%d DATA=%d @ %d Hz",
              MIC_CLK_PIN, MIC_DATA_PIN, MIC_SAMPLE_RATE);
@@ -89,16 +90,9 @@ size_t atom_mic_record(uint8_t **wav_out, int button_gpio, uint32_t max_ms)
 
     if (max_ms > MIC_MAX_MS) max_ms = MIC_MAX_MS;
 
-    /* Restart the I2S channel to flush any stale data in the DMA ring buffer.
-     * The channel runs continuously since init; if nobody reads it the ring
-     * buffer overflows and the DMA stalls, yielding only 1-2 buffers of old
-     * data before timing out for the rest of the recording window. */
-    i2s_channel_disable(s_rx_chan);
+    /* Enable the channel now (was left disabled at init to avoid DMA overflow).
+     * The SPM1423 PDM mic needs ~150ms of clock before it outputs valid data. */
     i2s_channel_enable(s_rx_chan);
-
-    /* The SPM1423 PDM mic needs ~100ms of PDM clock pulses after the clock
-     * restarts before it begins outputting valid data.  Without this delay
-     * every i2s_channel_read times out during the warmup window. */
     vTaskDelay(pdMS_TO_TICKS(150));
 
     /* Calculate maximum PCM bytes and allocate buffer including WAV header.
@@ -156,6 +150,9 @@ size_t atom_mic_record(uint8_t **wav_out, int button_gpio, uint32_t max_ms)
         }
         pcm_written += (uint32_t)bytes_read;
     }
+
+    /* Disable the channel so the DMA ring cannot overflow during idle time */
+    i2s_channel_disable(s_rx_chan);
 
     if (pcm_written == 0) {
         free(pcm_buf);
