@@ -77,7 +77,7 @@
 #define MAX_BODY            2048
 #define HW_TOKEN_MAX        512
 #define CONV_ID_MAX         64
-#define STT_KEY_MAX         128
+#define STT_KEY_MAX         256
 #define TRANSCRIPT_MAX      512
 
 /* ── SoftAP provisioning ─────────────────────────────────────────────────── */
@@ -191,7 +191,7 @@ static esp_err_t prov_get_handler(httpd_req_t *req)
 
 static esp_err_t prov_save_handler(httpd_req_t *req)
 {
-    char body[512] = {0};
+    char body[1024] = {0};
     int  len = httpd_req_recv(req, body, sizeof(body) - 1);
     if (len <= 0) {
         httpd_resp_send_500(req);
@@ -201,7 +201,7 @@ static esp_err_t prov_save_handler(httpd_req_t *req)
 
     char ssid[64]  = {0};
     char pass[64]  = {0};
-    char stt[128]  = {0};
+    char stt[STT_KEY_MAX]  = {0};
 
     form_get_field(body, "ssid", ssid, sizeof(ssid));
     form_get_field(body, "pass", pass, sizeof(pass));
