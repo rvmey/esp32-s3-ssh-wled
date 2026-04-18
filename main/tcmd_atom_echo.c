@@ -591,7 +591,7 @@ static bool stt_transcribe(const uint8_t *wav, size_t wav_len,
 
     char content_type[80];
     snprintf(content_type, sizeof(content_type),
-             "multipart/form-data; boundary=--%s", BOUNDARY);
+             "multipart/form-data; boundary=%s", BOUNDARY);
 
     esp_http_client_config_t cfg = {
         .url               = STT_URL,
