@@ -103,14 +103,16 @@ size_t atom_mic_record(uint8_t **wav_out, int button_gpio, uint32_t max_ms)
     uint8_t *pcm_start  = pcm_buf + 44;  /* WAV header lives in first 44 bytes */
     uint32_t pcm_written = 0;
     uint32_t deadline_ms = max_ms;
+#define MIC_MIN_MS  300   /* minimum recording — OpenAI requires ≥ 0.1 s; use 300 ms for safety */
     TickType_t start_tick = xTaskGetTickCount();
 
     while (1) {
-        /* Stop if button released (GPIO goes high — active-low button) */
-        if (gpio_get_level(button_gpio) == 1) break;
+        TickType_t elapsed = (xTaskGetTickCount() - start_tick) * portTICK_PERIOD_MS;
+
+        /* Stop if button released — but only after minimum duration to satisfy STT API */
+        if (gpio_get_level(button_gpio) == 1 && elapsed >= MIC_MIN_MS) break;
 
         /* Stop if max duration reached */
-        TickType_t elapsed = (xTaskGetTickCount() - start_tick) * portTICK_PERIOD_MS;
         if (elapsed >= deadline_ms) break;
 
         /* Stop if no more room in the buffer */
