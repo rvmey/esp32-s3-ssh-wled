@@ -89,6 +89,13 @@ size_t atom_mic_record(uint8_t **wav_out, int button_gpio, uint32_t max_ms)
 
     if (max_ms > MIC_MAX_MS) max_ms = MIC_MAX_MS;
 
+    /* Restart the I2S channel to flush any stale data in the DMA ring buffer.
+     * The channel runs continuously since init; if nobody reads it the ring
+     * buffer overflows and the DMA stalls, yielding only 1-2 buffers of old
+     * data before timing out for the rest of the recording window. */
+    i2s_channel_disable(s_rx_chan);
+    i2s_channel_enable(s_rx_chan);
+
     /* Calculate maximum PCM bytes and allocate buffer including WAV header.
      * Use ceiling division so e.g. 2000 ms → 2 s (not 3). */
     uint32_t max_seconds   = (max_ms + 999) / 1000;
