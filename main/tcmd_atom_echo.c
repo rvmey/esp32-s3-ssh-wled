@@ -498,24 +498,37 @@ static void speak_pair_code(const char *code)
 typedef enum { BTN_NONE, BTN_SHORT, BTN_LONG } btn_press_t;
 
 /* Non-blocking poll: checks current button state.
- * Call once per loop iteration.  On rising edge (button released after
- * press), returns BTN_SHORT or BTN_LONG based on how long it was held. */
+ * BTN_SHORT — returned on release after a short press.
+ * BTN_LONG  — returned while the button is STILL HELD (once the long-press
+ *             threshold is crossed).  This lets the caller (do_voice_query)
+ *             start recording immediately and use the physical button release
+ *             to stop it. */
 static btn_press_t poll_button(void)
 {
-    static bool     s_pressed      = false;
-    static uint32_t s_press_start  = 0;
+    static bool     s_pressed     = false;
+    static uint32_t s_press_start = 0;
+    static bool     s_long_fired  = false;
 
     bool currently_pressed = (gpio_get_level(BUTTON_GPIO) == 0);
 
     if (currently_pressed && !s_pressed) {
         /* Falling edge — button just pressed */
         s_pressed     = true;
+        s_long_fired  = false;
         s_press_start = xTaskGetTickCount() * portTICK_PERIOD_MS;
+    } else if (currently_pressed && s_pressed && !s_long_fired) {
+        /* Still held — fire BTN_LONG as soon as threshold is crossed */
+        uint32_t held_ms = xTaskGetTickCount() * portTICK_PERIOD_MS - s_press_start;
+        if (held_ms >= LONG_PRESS_MS) {
+            s_long_fired = true;
+            return BTN_LONG;   /* button is still down — mic loop will wait for release */
+        }
     } else if (!currently_pressed && s_pressed) {
         /* Rising edge — button released */
         s_pressed = false;
-        uint32_t held_ms = xTaskGetTickCount() * portTICK_PERIOD_MS - s_press_start;
-        return (held_ms >= LONG_PRESS_MS) ? BTN_LONG : BTN_SHORT;
+        if (!s_long_fired) {
+            return BTN_SHORT;  /* released before long-press threshold */
+        }
     }
     return BTN_NONE;
 }
