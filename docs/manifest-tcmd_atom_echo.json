@@ -1,6 +1,6 @@
 {
   "name": "TRIGGERcmd ATOM Echo (M5Stack ATOM Echo)",
-  "version": "2.0.58",
+  "version": "2.0.59",
   "new_install_improv_wifi": false,
   "builds": [
     {

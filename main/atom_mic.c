@@ -96,6 +96,11 @@ size_t atom_mic_record(uint8_t **wav_out, int button_gpio, uint32_t max_ms)
     i2s_channel_disable(s_rx_chan);
     i2s_channel_enable(s_rx_chan);
 
+    /* The SPM1423 PDM mic needs ~100ms of PDM clock pulses after the clock
+     * restarts before it begins outputting valid data.  Without this delay
+     * every i2s_channel_read times out during the warmup window. */
+    vTaskDelay(pdMS_TO_TICKS(150));
+
     /* Calculate maximum PCM bytes and allocate buffer including WAV header.
      * Use ceiling division so e.g. 2000 ms → 2 s (not 3). */
     uint32_t max_seconds   = (max_ms + 999) / 1000;
