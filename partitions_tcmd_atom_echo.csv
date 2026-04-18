@@ -1,0 +1,13 @@
+# Partition table for tcmd_atom_echo variant (4 MB flash, classic ESP32-PICO-D4)
+#
+# Layout:
+#   nvs       24 KB  — WiFi credentials, TRIGGERcmd token, STT key, conversation ID
+#   phy_init   4 KB  — RF calibration data (required by WiFi)
+#   factory    2 MB  — Application firmware (large due to embedded PCM audio clips)
+#   nvs_data  ~2 MB  — Remaining flash for future use / wear levelling
+#
+# Name,     Type, SubType,  Offset,   Size
+nvs,        data, nvs,      0x9000,   0x6000,
+phy_init,   data, phy,      0xF000,   0x1000,
+factory,    app,  factory,  0x10000,  0x200000,
+nvs_data,   data, nvs,      0x210000, 0x1F0000,

@@ -14,22 +14,38 @@ elseif(CONFIG_HARDWARE_BIKE_TRACKER)
         "gps_ubx.c"
         "ride_log.c"
         "ride_upload.c")
+elseif(CONFIG_HARDWARE_TCMD_ATOM_ECHO)
+    set(VARIANT_SRCS
+        "tcmd_atom_echo.c"
+        "atom_led.c"
+        "atom_audio.c"
+        "atom_mic.c"
+        "audio_clips.c")
 else()
     set(VARIANT_SRCS "led_control.c")
 endif()
 
-# SSH/HTTP server sources are not needed for bike-tracker or picture-frame
-if(NOT CONFIG_HARDWARE_BIKE_TRACKER AND NOT CONFIG_HARDWARE_PICTURE_FRAME)
+# SSH/HTTP server sources are not needed for bike-tracker, picture-frame, or atom-echo
+if(NOT CONFIG_HARDWARE_BIKE_TRACKER AND NOT CONFIG_HARDWARE_PICTURE_FRAME
+   AND NOT CONFIG_HARDWARE_TCMD_ATOM_ECHO)
     set(SSH_SRCS "ssh_server.c" "http_config.c")
 else()
     set(SSH_SRCS "")
+endif()
+
+# improv_wifi uses driver/usb_serial_jtag.h which is ESP32-S3 only;
+# the ATOM Echo variant handles its own provisioning via SoftAP.
+if(CONFIG_HARDWARE_TCMD_ATOM_ECHO)
+    set(IMPROV_SRCS "")
+else()
+    set(IMPROV_SRCS "improv_wifi.c")
 endif()
 
 idf_component_register(
     SRCS
         "main.c"
         "wifi_manager.c"
-        "improv_wifi.c"
+        ${IMPROV_SRCS}
         ${SSH_SRCS}
         ${VARIANT_SRCS}
     INCLUDE_DIRS

@@ -18,6 +18,9 @@ menu "ESP32 SSH LED Configuration"
 
         config HARDWARE_PICTURE_FRAME
             bool "TriggerCMD Picture Frame (JC3248W535 + Socket.IO commands)"
+
+        config HARDWARE_TCMD_ATOM_ECHO
+            bool "TRIGGERcmd ATOM Echo (M5Stack ATOM Echo, ESP32-PICO-D4)"
     endchoice
 
 

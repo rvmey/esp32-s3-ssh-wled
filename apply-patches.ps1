@@ -15,6 +15,9 @@
       0002  user_settings.h    - disable wolfssl HW acceleration for ESP32-S3
                                  (PERIPH_AES_MODULE / PERIPH_RSA_MODULE removed
                                  from ESP-IDF v6.0 periph_defs.h)
+      0003  user_settings.h    - add WOLFSSL_ED25519_STREAMING_VERIFY
+      0004  user_settings.h    - disable wolfssl HW acceleration for classic ESP32
+                                 (same IDF v6.0 PERIPH_RSA_MODULE / clk_gate_ll breakage)
 #>
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -95,5 +98,20 @@ Patch-File `
     -OldText      $old03 `
     -NewText      $new03 `
     -Description  "0003 user_settings.h add WOLFSSL_ED25519_STREAMING_VERIFY for wolfssh 1.4.20"
+
+# ---------------------------------------------------------------------------
+# Patch 0004 - user_settings.h: disable wolfssl HW crypto for classic ESP32
+# Same root cause as patch 0002: PERIPH_RSA_MODULE was removed in IDF v6.0
+# and hal/clk_gate_ll.h moved to esp_hal_clock which wolfssl doesn't declare.
+# user_settings.h uses LF-only line endings (downloaded from component registry)
+# ---------------------------------------------------------------------------
+$old04 = "#if defined(CONFIG_IDF_TARGET_ESP32) || defined(WOLFSSL_ESPWROOM32SE)`n    #define WOLFSSL_ESP32`n    /*  Alternatively, if there's an ECC Secure Element present: */`n    /* #define WOLFSSL_ESPWROOM32SE */`n`n    /* wolfSSL HW Acceleration supported on ESP32. Uncomment to disable: */`n    /*  #define NO_ESP32_CRYPT                 */`n    /*  #define NO_WOLFSSL_ESP32_CRYPT_HASH    */`n    /*  #define NO_WOLFSSL_ESP32_CRYPT_AES     */`n    /*  #define NO_WOLFSSL_ESP32_CRYPT_RSA_PRI */`n    /*  #define NO_WOLFSSL_ESP32_CRYPT_RSA_PRI_MP_MUL  */`n    /*  #define NO_WOLFSSL_ESP32_CRYPT_RSA_PRI_MULMOD  */`n    /*  #define NO_WOLFSSL_ESP32_CRYPT_RSA_PRI_EXPTMOD */"
+$new04 = "#if defined(CONFIG_IDF_TARGET_ESP32) || defined(WOLFSSL_ESPWROOM32SE)`n    #define WOLFSSL_ESP32`n    /*  Alternatively, if there's an ECC Secure Element present: */`n    /* #define WOLFSSL_ESPWROOM32SE */`n`n    /* Hardware acceleration disabled for ESP-IDF v6.0 compatibility.`n     * PERIPH_RSA_MODULE was removed from periph_defs.h in IDF v6.0, and`n     * hal/clk_gate_ll.h moved to the esp_hal_clock component which wolfssl`n     * does not declare as a dependency.  Fall back to software crypto. */`n    #define NO_ESP32_CRYPT`n    #define NO_WOLFSSL_ESP32_CRYPT_HASH`n    #define NO_WOLFSSL_ESP32_CRYPT_AES`n    #define NO_WOLFSSL_ESP32_CRYPT_RSA_PRI"
+
+Patch-File `
+    -RelPath      "managed_components\wolfssl__wolfssl\include\user_settings.h" `
+    -OldText      $old04 `
+    -NewText      $new04 `
+    -Description  "0004 user_settings.h disable HW crypto for classic ESP32 / IDF v6.0"
 
 Write-Host "`nDone." -ForegroundColor Cyan

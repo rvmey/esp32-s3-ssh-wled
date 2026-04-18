@@ -21,9 +21,11 @@
 #elif CONFIG_HARDWARE_PICTURE_FRAME
 #include "picture_frame.h"
 #include "screen_control.h"
+#elif CONFIG_HARDWARE_TCMD_ATOM_ECHO
+#include "tcmd_atom_echo.h"
 #endif
 
-#define APP_VERSION "2.0.45"
+#define APP_VERSION "2.0.46"
 
 static const char *TAG = "main";
 
@@ -38,6 +40,8 @@ static inline void hw_init(void)
     /* no-op: bike_tracker_run() manages its own peripherals */
 #elif CONFIG_HARDWARE_PICTURE_FRAME
     screen_init();
+#elif CONFIG_HARDWARE_TCMD_ATOM_ECHO
+    /* no-op: tcmd_atom_echo_run() manages its own peripherals */
 #endif
 }
 
@@ -51,6 +55,8 @@ static inline void hw_set_color(uint8_t r, uint8_t g, uint8_t b)
     (void)r; (void)g; (void)b;
 #elif CONFIG_HARDWARE_PICTURE_FRAME
     screen_set_color(r, g, b);
+#elif CONFIG_HARDWARE_TCMD_ATOM_ECHO
+    (void)r; (void)g; (void)b;
 #endif
 }
 
@@ -64,6 +70,8 @@ static inline void hw_off(void)
     /* no-op */
 #elif CONFIG_HARDWARE_PICTURE_FRAME
     screen_off();
+#elif CONFIG_HARDWARE_TCMD_ATOM_ECHO
+    /* no-op */
 #endif
 }
 
@@ -87,6 +95,11 @@ void app_main(void)
     /* Picture frame manages its own WiFi / Socket.IO loop.
      * This call never returns. */
     picture_frame_run();
+    return;
+#elif CONFIG_HARDWARE_TCMD_ATOM_ECHO
+    /* ATOM Echo manages its own WiFi / button / audio loop.
+     * This call never returns. */
+    tcmd_atom_echo_run();
     return;
 #endif
 

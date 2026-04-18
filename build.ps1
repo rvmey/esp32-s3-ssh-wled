@@ -59,6 +59,13 @@ $variants = @(
         Config    = 'sdkconfig.picture_frame'
         BuildDir  = 'build_picture_frame'
         OutputBin = 'esp32_picture_frame.bin'
+    },
+    [PSCustomObject]@{
+        Name      = 'tcmd_atom_echo'
+        Config    = 'sdkconfig.tcmd_atom_echo'
+        BuildDir  = 'build_tcmd_atom_echo'
+        OutputBin = 'esp32_tcmd_atom_echo.bin'
+        Target    = 'esp32'          # classic ESP32-PICO-D4, not ESP32-S3
     }
 )
 
@@ -84,11 +91,16 @@ function Invoke-IdfBuild([PSCustomObject]$variant) {
     # temporarily relax it and rely solely on $LASTEXITCODE for failure detection.
     $savedEAP = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
-    & idf.py `
-        --build-dir $variant.BuildDir `
-        "-DSDKCONFIG_DEFAULTS=$defaults" `
-        "-DSDKCONFIG=$($variant.BuildDir)/sdkconfig" `
-        build
+    $idfArgs = @(
+        '--build-dir', $variant.BuildDir,
+        "-DSDKCONFIG_DEFAULTS=$defaults",
+        "-DSDKCONFIG=$($variant.BuildDir)/sdkconfig"
+    )
+    if ($variant.PSObject.Properties['Target']) {
+        $idfArgs += "-DIDF_TARGET=$($variant.Target)"
+    }
+    $idfArgs += 'build'
+    & idf.py @idfArgs
     $ErrorActionPreference = $savedEAP
 
     if ($LASTEXITCODE -ne 0) {
@@ -199,6 +211,8 @@ if ($Variant.Count -gt 0) {
         }
     }
     $variants = $variants | Where-Object { $_.Name -in $Variant }
+    # Ensure $variants stays an array even when filtering to a single item
+    $variants = @($variants)
 }
 
 # Build each variant (skip if sources are unchanged)
