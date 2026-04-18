@@ -10,7 +10,7 @@
 
 /* ── Hardware constants ──────────────────────────────────────────────────── */
 
-#define MIC_I2S_PORT    I2S_NUM_1
+#define MIC_I2S_PORT    I2S_NUM_0
 #define MIC_CLK_PIN     0      /* PDM CLK  */
 #define MIC_DATA_PIN    34     /* PDM DATA */
 #define MIC_SAMPLE_RATE 16000

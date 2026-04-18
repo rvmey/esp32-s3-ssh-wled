@@ -9,7 +9,7 @@
 
 /* ── Hardware constants ──────────────────────────────────────────────────── */
 
-#define I2S_PORT        I2S_NUM_0
+#define I2S_PORT        I2S_NUM_1
 #define SAMPLE_RATE     16000
 #define I2S_BCK_PIN     19
 #define I2S_LRCK_PIN    33
