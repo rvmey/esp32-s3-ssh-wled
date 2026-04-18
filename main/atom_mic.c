@@ -57,6 +57,11 @@ void atom_mic_init(void)
     if (s_rx_chan) return;  /* already installed */
 
     i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(MIC_I2S_PORT, I2S_ROLE_MASTER);
+    /* Match DMA descriptor size to our read size so each i2s_channel_read()
+     * drains exactly one descriptor — eliminates partial-read ambiguity.
+     * 8 descriptors × 1024 bytes = 8 KB ring = 256 ms at 32 KB/s. */
+    chan_cfg.dma_desc_num  = 8;
+    chan_cfg.dma_frame_num = DMA_BUF_SAMPLES;  /* 512 frames × 2 bytes = 1024 bytes/desc */
     /* RX only — pass NULL for tx_handle */
     ESP_ERROR_CHECK(i2s_new_channel(&chan_cfg, NULL, &s_rx_chan));
 
@@ -90,10 +95,11 @@ size_t atom_mic_record(uint8_t **wav_out, int button_gpio, uint32_t max_ms)
 
     if (max_ms > MIC_MAX_MS) max_ms = MIC_MAX_MS;
 
-    /* Enable the channel now (was left disabled at init to avoid DMA overflow).
-     * The SPM1423 PDM mic needs ~150ms of clock before it outputs valid data. */
+    /* Enable the channel now (left disabled at init to avoid idle overflow).
+     * No warmup delay — starting to read immediately keeps the ring from
+     * filling up and stalling the DMA.  Any initial PDM-filter transient
+     * (a few ms) is harmless for speech STT. */
     i2s_channel_enable(s_rx_chan);
-    vTaskDelay(pdMS_TO_TICKS(150));
 
     /* Calculate maximum PCM bytes and allocate buffer including WAV header.
      * Use ceiling division so e.g. 2000 ms → 2 s (not 3). */
@@ -139,7 +145,7 @@ size_t atom_mic_record(uint8_t **wav_out, int button_gpio, uint32_t max_ms)
                                          pcm_start + pcm_written,
                                          DMA_BUF_BYTES,
                                          &bytes_read,
-                                         pdMS_TO_TICKS(200));
+                                         pdMS_TO_TICKS(50));
         if (err == ESP_ERR_TIMEOUT) {
             ESP_LOGD(TAG, "i2s timeout, elapsed=%lu btn=%d pcm=%lu", (unsigned long)elapsed, btn_level, (unsigned long)pcm_written);
             continue;  /* no DMA data yet — keep looping until button released */
