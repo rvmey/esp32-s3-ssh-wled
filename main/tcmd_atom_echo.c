@@ -59,7 +59,8 @@
 #define NVS_KEY_CONV        "conversation_id"
 #define NVS_KEY_STT         "stt_key"
 
-#define TCMD_BASE_URL       "https://www.triggercmd.com"
+// #define TCMD_BASE_URL       "https://www.triggercmd.com"  /* prod server */
+#define TCMD_BASE_URL       "http://192.168.86.248:1337"  /* local dev server */
 #define PAIR_ENDPOINT       TCMD_BASE_URL "/pair/index"
 #define PAIR_LOOKUP_URL     TCMD_BASE_URL "/pair/lookup"
 #define HEALTH_URL          TCMD_BASE_URL "/api/v1/chat/conversations"
