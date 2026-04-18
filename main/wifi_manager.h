@@ -23,3 +23,9 @@ esp_err_t wifi_save_credentials(const char *ssid, const char *password);
 
 /** Fill buf with the current IPv4 address string (e.g. "192.168.1.10"). */
 esp_err_t wifi_get_ip(char *buf, size_t buf_len);
+
+/**
+ * Initialise the TCP/IP stack, event loop, and WiFi driver (idempotent).
+ * Must be called before esp_netif_create_default_wifi_ap/sta.
+ */
+void wifi_stack_init_public(void);

@@ -70,6 +70,8 @@ static void wifi_stack_init(void)
     s_stack_initialized = true;
 }
 
+void wifi_stack_init_public(void) { wifi_stack_init(); }
+
 /* -------------------------------------------------------------------------- */
 
 esp_err_t wifi_connect_with_credentials(const char *ssid, const char *password)

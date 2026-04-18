@@ -225,6 +225,9 @@ static esp_err_t prov_save_handler(httpd_req_t *req)
 /* Start SoftAP + HTTP server; block until the form is submitted */
 static void run_softap_provisioning(void)
 {
+    /* Ensure WiFi stack is initialised before using any WiFi API */
+    wifi_stack_init_public();
+
     /* Build AP name from last 3 bytes of MAC */
     uint8_t mac[6];
     esp_wifi_get_mac(WIFI_IF_AP, mac);
@@ -824,7 +827,8 @@ void tcmd_atom_echo_run(void)
     gpio_config_t btn_cfg = {
         .pin_bit_mask = 1ULL << BUTTON_GPIO,
         .mode         = GPIO_MODE_INPUT,
-        .pull_up_en   = GPIO_PULLUP_ENABLE,
+        /* GPIO 39 is input-only on ESP32-PICO-D4 — no internal pull-up/down */
+        .pull_up_en   = GPIO_PULLUP_DISABLE,
         .pull_down_en = GPIO_PULLDOWN_DISABLE,
         .intr_type    = GPIO_INTR_DISABLE,
     };
