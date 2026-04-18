@@ -122,6 +122,9 @@ size_t atom_mic_record(uint8_t **wav_out, int button_gpio, uint32_t max_ms)
                                          DMA_BUF_BYTES,
                                          &bytes_read,
                                          pdMS_TO_TICKS(100));
+        if (err == ESP_ERR_TIMEOUT) {
+            continue;  /* no DMA data yet — keep looping until button released */
+        }
         if (err != ESP_OK) {
             ESP_LOGW(TAG, "i2s_channel_read: %s", esp_err_to_name(err));
             break;
