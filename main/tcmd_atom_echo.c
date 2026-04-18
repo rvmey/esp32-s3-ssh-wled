@@ -257,7 +257,8 @@ static void run_softap_provisioning(void)
 
     /* Start HTTP server */
     httpd_config_t http_cfg = HTTPD_DEFAULT_CONFIG();
-    http_cfg.max_open_sockets = 2;  /* LWIP_MAX_SOCKETS=5, 3 used internally */
+    http_cfg.max_open_sockets = 4;  /* provisioning: AP-only, no STA sockets in use */
+    http_cfg.lru_purge_enable = true;
     httpd_handle_t server   = NULL;
     ESP_ERROR_CHECK(httpd_start(&server, &http_cfg));
 
