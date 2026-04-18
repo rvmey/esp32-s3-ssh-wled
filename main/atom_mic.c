@@ -108,27 +108,38 @@ size_t atom_mic_record(uint8_t **wav_out, int button_gpio, uint32_t max_ms)
 
     while (1) {
         TickType_t elapsed = (xTaskGetTickCount() - start_tick) * portTICK_PERIOD_MS;
+        int btn_level = gpio_get_level(button_gpio);
 
         /* Stop if button released — but only after minimum duration to satisfy STT API */
-        if (gpio_get_level(button_gpio) == 1 && elapsed >= MIC_MIN_MS) break;
+        if (btn_level == 1 && elapsed >= MIC_MIN_MS) {
+            ESP_LOGI(TAG, "Stop: btn released, elapsed=%lu ms, pcm=%lu", (unsigned long)elapsed, (unsigned long)pcm_written);
+            break;
+        }
 
         /* Stop if max duration reached */
-        if (elapsed >= deadline_ms) break;
+        if (elapsed >= deadline_ms) {
+            ESP_LOGI(TAG, "Stop: deadline, elapsed=%lu ms", (unsigned long)elapsed);
+            break;
+        }
 
         /* Stop if no more room in the buffer */
-        if (pcm_written + DMA_BUF_BYTES > max_pcm_bytes) break;
+        if (pcm_written + DMA_BUF_BYTES > max_pcm_bytes) {
+            ESP_LOGI(TAG, "Stop: buffer full, pcm=%lu", (unsigned long)pcm_written);
+            break;
+        }
 
         size_t bytes_read = 0;
         esp_err_t err = i2s_channel_read(s_rx_chan,
                                          pcm_start + pcm_written,
                                          DMA_BUF_BYTES,
                                          &bytes_read,
-                                         pdMS_TO_TICKS(100));
+                                         pdMS_TO_TICKS(200));
         if (err == ESP_ERR_TIMEOUT) {
+            ESP_LOGD(TAG, "i2s timeout, elapsed=%lu btn=%d pcm=%lu", (unsigned long)elapsed, btn_level, (unsigned long)pcm_written);
             continue;  /* no DMA data yet — keep looping until button released */
         }
         if (err != ESP_OK) {
-            ESP_LOGW(TAG, "i2s_channel_read: %s", esp_err_to_name(err));
+            ESP_LOGW(TAG, "i2s_channel_read err=%s elapsed=%lu pcm=%lu", esp_err_to_name(err), (unsigned long)elapsed, (unsigned long)pcm_written);
             break;
         }
         pcm_written += (uint32_t)bytes_read;
