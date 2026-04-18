@@ -14,7 +14,7 @@
 #define MIC_CLK_PIN     0      /* PDM CLK  */
 #define MIC_DATA_PIN    34     /* PDM DATA */
 #define MIC_SAMPLE_RATE 16000
-#define MIC_MAX_MS      4000   /* 4 s max — 128 KB PCM, feasible on classic ESP32 */
+#define MIC_MAX_MS      2000   /* 2 s max — 64 KB PCM, fits in classic ESP32 fragmented heap */
 
 /* DMA read chunk: 512 samples = 1 KB */
 #define DMA_BUF_SAMPLES  512
@@ -89,8 +89,10 @@ size_t atom_mic_record(uint8_t **wav_out, int button_gpio, uint32_t max_ms)
 
     if (max_ms > MIC_MAX_MS) max_ms = MIC_MAX_MS;
 
-    /* Calculate maximum PCM bytes and allocate buffer including WAV header */
-    uint32_t max_pcm_bytes = (uint32_t)MIC_SAMPLE_RATE * 2 * (max_ms / 1000 + 1);
+    /* Calculate maximum PCM bytes and allocate buffer including WAV header.
+     * Use ceiling division so e.g. 2000 ms → 2 s (not 3). */
+    uint32_t max_seconds   = (max_ms + 999) / 1000;
+    uint32_t max_pcm_bytes = (uint32_t)MIC_SAMPLE_RATE * 2 * max_seconds;
     uint8_t *pcm_buf = malloc(44 + max_pcm_bytes);
     if (!pcm_buf) {
         ESP_LOGE(TAG, "Failed to allocate %lu byte recording buffer",

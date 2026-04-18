@@ -715,18 +715,20 @@ static void do_voice_query(const char *token, char *conv_id)
     int   status = https_post_json(CHAT_MSG_URL, token, json_body, &resp);
 
     if (status == 200 && resp) {
-        char new_conv[CONV_ID_MAX] = {0};
-        char assistant[MAX_BODY]   = {0};
+        char  new_conv[CONV_ID_MAX] = {0};
+        char *assistant = malloc(MAX_BODY);
 
         json_extract_str(resp, "conversationId", new_conv, sizeof(new_conv));
-        json_extract_str(resp, "content", assistant, sizeof(assistant));
+        if (assistant) json_extract_str(resp, "content", assistant, MAX_BODY);
 
         if (new_conv[0] && strcmp(new_conv, conv_id) != 0) {
             strncpy(conv_id, new_conv, CONV_ID_MAX - 1);
             nvs_write_str(NVS_KEY_CONV, conv_id);
         }
 
-        ESP_LOGI(TAG, "Assistant: %s", assistant);
+        if (assistant && assistant[0])
+            ESP_LOGI(TAG, "Assistant: %s", assistant);
+        free(assistant);
 
         atom_led_set(0, 100, 0);
         atom_audio_beep_ok();
