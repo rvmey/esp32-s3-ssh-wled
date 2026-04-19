@@ -768,8 +768,13 @@ static void do_voice_query(const char *token, char *conv_id)
                  "{\"message\":\"%s\"}", transcript);
     }
 
+    ESP_LOGI(TAG, "Posting to Chat API: %s", json_body);
+    
     char *resp   = NULL;
     int   status = https_post_json(CHAT_MSG_URL, token, json_body, &resp);
+
+    ESP_LOGI(TAG, "Chat API response: HTTP %d", status);
+    if (resp) ESP_LOGI(TAG, "Response body: %.256s", resp);
 
     if (status == 200 && resp) {
         char  new_conv[CONV_ID_MAX] = {0};
