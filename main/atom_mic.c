@@ -11,8 +11,8 @@
 /* ── Hardware constants ──────────────────────────────────────────────────── */
 
 #define MIC_I2S_PORT    I2S_NUM_0
-#define MIC_CLK_PIN     0      /* PDM CLK  */
-#define MIC_DATA_PIN    34     /* PDM DATA */
+#define MIC_CLK_PIN     19     /* PDM CLK  — ATOM Echo schematic: BCLK/GPIO19 */
+#define MIC_DATA_PIN    23     /* PDM DATA — ATOM Echo schematic: DATA_IN/GPIO23 */
 #define MIC_SAMPLE_RATE 16000
 #define MIC_MAX_MS      2000   /* 2 s max — 64 KB PCM, fits in classic ESP32 fragmented heap */
 
