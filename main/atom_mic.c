@@ -5,6 +5,7 @@
 #include "driver/i2s_pdm.h"
 #include "driver/gpio.h"
 #include "esp_log.h"
+#include "esp_rom_gpio.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "soc/gpio_struct.h"
@@ -13,8 +14,8 @@
 /* ── Hardware constants ──────────────────────────────────────────────────── */
 
 #define MIC_I2S_PORT    I2S_NUM_0
-#define MIC_CLK_PIN     0      /* PDM CLK  — ATOM Echo schematic: SPM1423 CLK = GPIO0  */
-#define MIC_DATA_PIN    34     /* PDM DATA — ATOM Echo schematic: SPM1423 DATA = GPIO34 */
+#define MIC_CLK_PIN     33     /* PDM CLK  — shared with NS4168 speaker LRCK (I2S1) */
+#define MIC_DATA_PIN    23     /* PDM DATA — SPM1423 DATA output */
 #define MIC_SAMPLE_RATE 16000
 #define MIC_MAX_MS      2000   /* 2 s max — 64 KB PCM, fits in classic ESP32 fragmented heap */
 
@@ -201,6 +202,11 @@ size_t atom_mic_record(uint8_t **wav_out, int button_gpio, uint32_t max_ms)
 
     /* Disable the channel so DMA ring cannot overflow during idle */
     i2s_channel_disable(s_rx_chan);
+
+    /* GPIO33 is shared: mic CLK (I2S0 PDM) / speaker WS (I2S1 STD).
+     * After disabling the mic, re-route GPIO33 back to I2S1 WS so the
+     * speaker (NS4168) gets a proper word-select signal for beep playback. */
+    esp_rom_gpio_connect_out_signal(MIC_CLK_PIN, I2S1O_WS_OUT_IDX, false, false);
 
     /* Post-processing: IIR high-pass filter then software gain.
      *
