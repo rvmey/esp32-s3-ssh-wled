@@ -78,8 +78,20 @@ void atom_mic_init(void)
             .dn_sample_mode = I2S_PDM_DSR_16S,
             .bclk_div       = 8,
         },
-        .slot_cfg = I2S_PDM_RX_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_16BIT,
-                                                    I2S_SLOT_MODE_MONO),
+        .slot_cfg = {
+            /* Use the PCM-format default values except for slot_mask.
+             * M5Stack's own Arduino RecordPlay example uses
+             * I2S_CHANNEL_FMT_ONLY_RIGHT, which means the SPM1423 SEL pin is
+             * tied to VDD on the ATOM Echo: the mic outputs PDM data on the
+             * RISING CLK edge (right channel).  The default macro sets
+             * slot_mask = I2S_PDM_SLOT_BOTH which reads the falling/left edge
+             * and gets zero signal.  Override to RIGHT. */
+            .data_bit_width = I2S_DATA_BIT_WIDTH_16BIT,
+            .slot_bit_width = I2S_SLOT_BIT_WIDTH_AUTO,
+            .slot_mode      = I2S_SLOT_MODE_MONO,
+            .slot_mask      = I2S_PDM_SLOT_RIGHT,
+            .data_fmt       = I2S_PDM_DATA_FMT_PCM,
+        },
         .gpio_cfg = {
             .clk  = MIC_CLK_PIN,
             .din  = MIC_DATA_PIN,
