@@ -25,7 +25,7 @@
 #include "tcmd_atom_echo.h"
 #endif
 
-#define APP_VERSION "2.0.64"
+#define APP_VERSION "2.0.65"
 
 static const char *TAG = "main";
 

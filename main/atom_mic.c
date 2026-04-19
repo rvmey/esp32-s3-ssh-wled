@@ -160,6 +160,43 @@ size_t atom_mic_record(uint8_t **wav_out, int button_gpio, uint32_t max_ms)
     /* Disable the channel so the DMA ring cannot overflow during idle time */
     i2s_channel_disable(s_rx_chan);
 
+    /* Diagnostic: log pre-gain peak and RMS so we can tune the gain factor.
+     * Also log the first 8 raw sample values to verify PDM-to-PCM is working. */
+    {
+        int16_t *samples = (int16_t *)pcm_start;
+        uint32_t n = pcm_written / 2;
+        int32_t peak = 0;
+        int64_t sum_sq = 0;
+        for (uint32_t i = 0; i < n; i++) {
+            int32_t v = samples[i];
+            if (v < 0) v = -v;
+            if (v > peak) peak = v;
+            sum_sq += (int64_t)samples[i] * samples[i];
+        }
+        uint32_t rms = (n > 0) ? (uint32_t)( (int64_t)1 * (int64_t)( (sum_sq / n > 0) ? 1 : 0 ) ) : 0;
+        /* integer sqrt approximation */
+        if (n > 0) {
+            uint64_t mean_sq = (uint64_t)(sum_sq / n);
+            uint64_t r = mean_sq;
+            /* Newton's method, a few iterations */
+            if (r > 0) {
+                uint64_t x = r;
+                x = (x + mean_sq / x) / 2;
+                x = (x + mean_sq / x) / 2;
+                x = (x + mean_sq / x) / 2;
+                x = (x + mean_sq / x) / 2;
+                rms = (uint32_t)x;
+            }
+        }
+        ESP_LOGI(TAG, "Pre-gain: peak=%ld rms=%lu n=%lu",
+                 (long)peak, (unsigned long)rms, (unsigned long)n);
+        if (n >= 8) {
+            ESP_LOGI(TAG, "First 8 raw samples: %d %d %d %d %d %d %d %d",
+                     samples[0], samples[1], samples[2], samples[3],
+                     samples[4], samples[5], samples[6], samples[7]);
+        }
+    }
+
     /* Software gain: SPM1423 on classic ESP32 has no hardware amplify register.
      * Scale each sample by 8x with saturation to bring quiet mic up to normal. */
     {
