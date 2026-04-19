@@ -551,41 +551,26 @@ static bool stt_transcribe(const uint8_t *wav, size_t wav_len,
 {
     transcript_out[0] = '\0';
 
-    /* Build the multipart body manually.
-     * Boundary is a fixed string — safe because WAV binary data is opaque. */
+    /* Multipart boundary — safe because WAV binary data is opaque */
     static const char BOUNDARY[] = "----TCMDEchoBoundary7f3a2b";
 
-    /* Calculate total body size */
-    /* Part 1: model field */
+    /* Multipart parts (text header sections) */
     static const char MODEL_PART[] =
         "------TCMDEchoBoundary7f3a2b\r\n"
         "Content-Disposition: form-data; name=\"model\"\r\n\r\n"
         "whisper-1\r\n";
-    /* Part 2: file field header */
     static const char FILE_PART_HDR[] =
         "------TCMDEchoBoundary7f3a2b\r\n"
         "Content-Disposition: form-data; name=\"file\"; filename=\"audio.wav\"\r\n"
         "Content-Type: audio/wav\r\n\r\n";
-    /* Final boundary */
     static const char FINAL_BOUNDARY[] =
         "\r\n------TCMDEchoBoundary7f3a2b--\r\n";
 
+    /* Calculate total content length WITHOUT allocating the full body */
     size_t total_len = strlen(MODEL_PART)
                      + strlen(FILE_PART_HDR)
                      + wav_len
                      + strlen(FINAL_BOUNDARY);
-
-    uint8_t *body = malloc(total_len);
-    if (!body) {
-        ESP_LOGE(TAG, "STT: failed to allocate %zu byte multipart body", total_len);
-        return false;
-    }
-
-    size_t pos = 0;
-    memcpy(body + pos, MODEL_PART,    strlen(MODEL_PART));    pos += strlen(MODEL_PART);
-    memcpy(body + pos, FILE_PART_HDR, strlen(FILE_PART_HDR)); pos += strlen(FILE_PART_HDR);
-    memcpy(body + pos, wav,           wav_len);               pos += wav_len;
-    memcpy(body + pos, FINAL_BOUNDARY, strlen(FINAL_BOUNDARY)); pos += strlen(FINAL_BOUNDARY);
 
     char bearer[STT_KEY_MAX + 10];
     snprintf(bearer, sizeof(bearer), "Bearer %s", api_key);
@@ -624,20 +609,27 @@ static bool stt_transcribe(const uint8_t *wav, size_t wav_len,
             continue;
         }
 
+        /* Write multipart body in streaming fashion — no need to buffer the whole thing */
         int sent = 0;
-        while (sent < (int)total_len) {
-            int n = esp_http_client_write(client,
-                                          (const char *)body + sent,
-                                          (int)total_len - sent);
-            if (n <= 0) {
-                ESP_LOGW(TAG, "STT write failed (attempt %d/3), sent=%d/%d",
-                         attempt, sent, (int)total_len);
-                break;
-            }
-            sent += n;
-        }
+        bool write_ok = true;
 
-        if (sent == (int)total_len) {
+        /* Write model part */
+        int n = esp_http_client_write(client, (const char *)MODEL_PART, strlen(MODEL_PART));
+        if (n > 0) sent += n; else write_ok = false;
+
+        /* Write file part header */
+        n = esp_http_client_write(client, (const char *)FILE_PART_HDR, strlen(FILE_PART_HDR));
+        if (n > 0) sent += n; else write_ok = false;
+
+        /* Write WAV data (binary) */
+        n = esp_http_client_write(client, (const char *)wav, wav_len);
+        if (n > 0) sent += n; else write_ok = false;
+
+        /* Write final boundary */
+        n = esp_http_client_write(client, (const char *)FINAL_BOUNDARY, strlen(FINAL_BOUNDARY));
+        if (n > 0) sent += n; else write_ok = false;
+
+        if (write_ok && sent == (int)total_len) {
             int64_t cl       = esp_http_client_fetch_headers(client);
             int     max_resp = MAX_BODY;
             if (cl > 0 && cl < max_resp) max_resp = (int)cl;
@@ -660,6 +652,9 @@ static bool stt_transcribe(const uint8_t *wav, size_t wav_len,
                 }
                 free(resp);
             }
+        } else if (!write_ok) {
+            ESP_LOGW(TAG, "STT write failed (attempt %d/3), sent=%d/%d",
+                     attempt, sent, (int)total_len);
         }
 
         esp_http_client_close(client);
@@ -670,7 +665,6 @@ static bool stt_transcribe(const uint8_t *wav, size_t wav_len,
         }
     }
 
-    free(body);
     return ok;
 }
 
