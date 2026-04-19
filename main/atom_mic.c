@@ -73,7 +73,7 @@ void atom_mic_init(void)
             .clk  = MIC_CLK_PIN,
             .din  = MIC_DATA_PIN,
             .invert_flags = {
-                .clk_inv = true,   /* SPM1423 latches data on falling edge */
+                .clk_inv = false,
             },
         },
     };
@@ -159,6 +159,19 @@ size_t atom_mic_record(uint8_t **wav_out, int button_gpio, uint32_t max_ms)
 
     /* Disable the channel so the DMA ring cannot overflow during idle time */
     i2s_channel_disable(s_rx_chan);
+
+    /* Software gain: SPM1423 on classic ESP32 has no hardware amplify register.
+     * Scale each sample by 8x with saturation to bring quiet mic up to normal. */
+    {
+        int16_t *samples = (int16_t *)pcm_start;
+        uint32_t n = pcm_written / 2;
+        for (uint32_t i = 0; i < n; i++) {
+            int32_t s = (int32_t)samples[i] * 8;
+            if (s >  32767) s =  32767;
+            if (s < -32768) s = -32768;
+            samples[i] = (int16_t)s;
+        }
+    }
 
     if (pcm_written == 0) {
         free(pcm_buf);
