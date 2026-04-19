@@ -66,7 +66,18 @@ void atom_mic_init(void)
     ESP_ERROR_CHECK(i2s_new_channel(&chan_cfg, NULL, &s_rx_chan));
 
     i2s_pdm_rx_config_t pdm_cfg = {
-        .clk_cfg  = I2S_PDM_RX_CLK_DEFAULT_CONFIG(MIC_SAMPLE_RATE),
+        .clk_cfg  = {
+            .sample_rate_hz = MIC_SAMPLE_RATE,
+            .clk_src        = I2S_CLK_SRC_DEFAULT,
+            .mclk_multiple  = I2S_MCLK_MULTIPLE_256,
+            /* DSR_16S doubles the PDM clock: bclk = 16000 × 128 = 2.048 MHz.
+             * SPM1423 spec: 1.0–3.25 MHz.  DSR_8S gives only 1.024 MHz which
+             * is at the absolute minimum and causes the mic to output a stuck
+             * DC value.  DSR_16S puts us comfortably in the middle of the range
+             * and also improves the PDM2PCM decimation SNR. */
+            .dn_sample_mode = I2S_PDM_DSR_16S,
+            .bclk_div       = 8,
+        },
         .slot_cfg = I2S_PDM_RX_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_16BIT,
                                                     I2S_SLOT_MODE_MONO),
         .gpio_cfg = {
