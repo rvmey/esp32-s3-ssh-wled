@@ -648,6 +648,10 @@ static bool stt_transcribe(const uint8_t *wav, size_t wav_len,
 
 /* ── Health check ────────────────────────────────────────────────────────── */
 
+/* Last recorded WAV kept for download via debug HTTP server */
+static uint8_t *s_last_wav     = NULL;
+static size_t   s_last_wav_len = 0;
+
 static void do_health_check(const char *token)
 {
     atom_led_set(255, 255, 255);  /* white flash */
@@ -676,6 +680,9 @@ static void do_voice_query(const char *token, char *conv_id)
     /* Cyan: recording */
     atom_led_set(0, 100, 100);
 
+    /* Free previous WAV — kept around for HTTP download */
+    if (s_last_wav) { free(s_last_wav); s_last_wav = NULL; s_last_wav_len = 0; }
+
     uint8_t *wav     = NULL;
     size_t   wav_len = atom_mic_record(&wav, BUTTON_GPIO, 4000);
 
@@ -693,7 +700,7 @@ static void do_voice_query(const char *token, char *conv_id)
     char stt_key[STT_KEY_MAX] = {0};
     if (!nvs_read_str(NVS_KEY_STT, stt_key, sizeof(stt_key))) {
         ESP_LOGW(TAG, "No STT key configured — voice query skipped");
-        free(wav);
+        s_last_wav = wav; s_last_wav_len = wav_len;  /* keep for download */
         atom_led_set(100, 0, 0);
         atom_audio_beep_fail();
         vTaskDelay(pdMS_TO_TICKS(2000));
@@ -702,7 +709,7 @@ static void do_voice_query(const char *token, char *conv_id)
 
     char transcript[TRANSCRIPT_MAX] = {0};
     bool stt_ok = stt_transcribe(wav, wav_len, stt_key, transcript);
-    free(wav);
+    s_last_wav = wav; s_last_wav_len = wav_len;  /* keep for download */
 
     if (!stt_ok || transcript[0] == '\0') {
         ESP_LOGW(TAG, "STT failed or empty transcript");
@@ -830,6 +837,68 @@ static void run_pair_code_flow(char *hw_token_out)
     }
 }
 
+/* ── Debug HTTP server (WAV download) ────────────────────────────────────── */
+
+static esp_err_t dbg_wav_handler(httpd_req_t *req)
+{
+    if (!s_last_wav || s_last_wav_len == 0) {
+        httpd_resp_send_err(req, HTTPD_404_NOT_FOUND,
+                            "No recording yet. Long-press the button first.");
+        return ESP_OK;
+    }
+    httpd_resp_set_type(req, "audio/wav");
+    httpd_resp_set_hdr(req, "Content-Disposition",
+                       "attachment; filename=\"recording.wav\"");
+    httpd_resp_send(req, (const char *)s_last_wav, (ssize_t)s_last_wav_len);
+    return ESP_OK;
+}
+
+static const char s_dbg_index_html[] =
+    "<!DOCTYPE html><html><head><meta charset='UTF-8'>"
+    "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+    "<title>ATOM Echo Debug</title>"
+    "<style>body{font-family:system-ui;background:#111;color:#eee;"
+    "display:flex;align-items:center;justify-content:center;min-height:100vh}"
+    ".c{text-align:center}a{color:#6cf;font-size:1.3rem}</style></head>"
+    "<body><div class='c'><h1>ATOM Echo Debug</h1>"
+    "<p><a href='/wav'>Download last recording (WAV)</a></p>"
+    "<p style='color:#888'>Long-press the button to record, then click above.</p>"
+    "</div></body></html>";
+
+static esp_err_t dbg_index_handler(httpd_req_t *req)
+{
+    httpd_resp_set_type(req, "text/html");
+    httpd_resp_send(req, s_dbg_index_html, HTTPD_RESP_USE_STRLEN);
+    return ESP_OK;
+}
+
+static void start_debug_http_server(void)
+{
+    httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
+    cfg.server_port      = 80;
+    cfg.max_open_sockets = 2;
+    cfg.lru_purge_enable = true;
+
+    httpd_handle_t server = NULL;
+    if (httpd_start(&server, &cfg) == ESP_OK) {
+        httpd_uri_t idx = { .uri = "/",    .method = HTTP_GET, .handler = dbg_index_handler };
+        httpd_uri_t wav = { .uri = "/wav", .method = HTTP_GET, .handler = dbg_wav_handler   };
+        httpd_register_uri_handler(server, &idx);
+        httpd_register_uri_handler(server, &wav);
+
+        /* Log device IP so user knows where to connect */
+        esp_netif_ip_info_t ip;
+        esp_netif_t *netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+        if (netif && esp_netif_get_ip_info(netif, &ip) == ESP_OK) {
+            ESP_LOGI(TAG, "Debug server: http://" IPSTR "/wav", IP2STR(&ip.ip));
+        } else {
+            ESP_LOGI(TAG, "Debug HTTP server started on port 80");
+        }
+    } else {
+        ESP_LOGW(TAG, "Failed to start debug HTTP server");
+    }
+}
+
 /* ── Main entry point ────────────────────────────────────────────────────── */
 
 void tcmd_atom_echo_run(void)
@@ -870,6 +939,9 @@ void tcmd_atom_echo_run(void)
     atom_led_set(0, 60, 0);   /* green: connected */
     vTaskDelay(pdMS_TO_TICKS(1000));
     atom_led_off();
+
+    /* Start debug HTTP server for WAV downloads */
+    start_debug_http_server();
 
     /* ── NVS: read persistent state ───────────────────────────────────────── */
     static char s_hw_token[HW_TOKEN_MAX]  = {0};

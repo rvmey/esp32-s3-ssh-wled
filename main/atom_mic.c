@@ -7,6 +7,8 @@
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "soc/gpio_struct.h"
+#include "soc/gpio_sig_map.h"
 
 /* ── Hardware constants ──────────────────────────────────────────────────── */
 
@@ -85,7 +87,18 @@ void atom_mic_init(void)
     pdm_cfg.slot_cfg.slot_mask = I2S_PDM_SLOT_RIGHT;
     ESP_ERROR_CHECK(i2s_channel_init_pdm_rx_mode(s_rx_chan, &pdm_cfg));
     /* Channel left disabled — enabled on-demand in atom_mic_record() */
-
+    /* Diagnostic: log GPIO matrix output signal routing for CLK pin.
+     * On classic ESP32, the PDM clock should appear on the WS output signal.
+     * - I2S0I_WS_OUT_IDX (28) = RX WS output (used by driver in RX-only mode)
+     * - I2S0O_WS_OUT_IDX (25) = TX WS output (used in full-duplex mode)
+     * - I2S0I_BCK_OUT_IDX (27) = RX BCK output
+     * - I2S0O_BCK_OUT_IDX (23) = TX BCK output */
+    uint32_t clk_out_sig = GPIO.func_out_sel_cfg[MIC_CLK_PIN].func_sel;
+    ESP_LOGI(TAG, "Diag: GPIO%d out_sel=%lu  I2S0I_WS=%d I2S0O_WS=%d "
+             "I2S0I_BCK=%d I2S0O_BCK=%d",
+             MIC_CLK_PIN, (unsigned long)clk_out_sig,
+             I2S0I_WS_OUT_IDX, I2S0O_WS_OUT_IDX,
+             I2S0I_BCK_OUT_IDX, I2S0O_BCK_OUT_IDX);
     ESP_LOGI(TAG, "PDM RX ready: CLK=%d DATA=%d @ %d Hz DSR_16S",
              MIC_CLK_PIN, MIC_DATA_PIN, MIC_SAMPLE_RATE);
 }
@@ -104,6 +117,23 @@ size_t atom_mic_record(uint8_t **wav_out, int button_gpio, uint32_t max_ms)
      * then flush 4 buffers (4 × 32 ms = 128 ms) to clear the DMA ring. */
     i2s_channel_enable(s_rx_chan);
     vTaskDelay(pdMS_TO_TICKS(50));
+
+    /* ── Diagnostic: sample CLK and DATA pin levels ──────────────────────
+     * If CLK is toggling at ~2 MHz and we read 10000 samples in a software
+     * loop, we should see roughly 50% high.  All-high or all-low means the
+     * clock generator is not driving the pin.  DATA should also show ~50%
+     * if the mic is alive and outputting PDM. */
+    {
+        int clk_hi = 0, data_hi = 0;
+        const int NSAMP = 10000;
+        for (int i = 0; i < NSAMP; i++) {
+            clk_hi  += gpio_get_level(MIC_CLK_PIN);
+            data_hi += gpio_get_level(MIC_DATA_PIN);
+        }
+        ESP_LOGI(TAG, "Diag: CLK GPIO%d %d/%d hi   DATA GPIO%d %d/%d hi",
+                 MIC_CLK_PIN, clk_hi, NSAMP, MIC_DATA_PIN, data_hi, NSAMP);
+    }
+
     {
         uint8_t flush_buf[DMA_BUF_BYTES];
         size_t  flushed = 0;
@@ -190,9 +220,8 @@ size_t atom_mic_record(uint8_t **wav_out, int button_gpio, uint32_t max_ms)
         int16_t *samples = (int16_t *)pcm_start;
         uint32_t n = pcm_written / 2;
 
-        /* Log first 8 raw samples and 8 samples from the middle to check
-         * whether the DMA flush cleared the stale startup pattern and whether
-         * there is any modulation (speech) in the middle of the recording. */
+        /* Log raw samples from multiple positions to check for any variation.
+         * Constant -30935 everywhere = mic DATA stuck (no PDM clock or mic dead). */
         if (n >= 8) {
             ESP_LOGI(TAG, "Raw[0..7]:   %d %d %d %d %d %d %d %d",
                      samples[0], samples[1], samples[2], samples[3],
@@ -203,6 +232,21 @@ size_t atom_mic_record(uint8_t **wav_out, int button_gpio, uint32_t max_ms)
             ESP_LOGI(TAG, "Raw[mid..]: %d %d %d %d %d %d %d %d",
                      samples[mid+0], samples[mid+1], samples[mid+2], samples[mid+3],
                      samples[mid+4], samples[mid+5], samples[mid+6], samples[mid+7]);
+        }
+        /* Check if ALL samples are the same value (stuck mic) */
+        {
+            int16_t first = (n > 0) ? samples[0] : 0;
+            bool all_same = true;
+            int32_t raw_min = 32767, raw_max = -32768;
+            for (uint32_t i = 0; i < n; i++) {
+                int32_t v = (int32_t)samples[i];
+                if (v < raw_min) raw_min = v;
+                if (v > raw_max) raw_max = v;
+                if (samples[i] != first) all_same = false;
+            }
+            ESP_LOGI(TAG, "Raw stats: min=%ld max=%ld range=%ld %s",
+                     (long)raw_min, (long)raw_max, (long)(raw_max - raw_min),
+                     all_same ? "*** ALL IDENTICAL — mic stuck ***" : "ok");
         }
 
         /* Step 1 — IIR high-pass filter (removes DC + low-frequency bias) */
