@@ -5,7 +5,6 @@
 #include "driver/i2s_pdm.h"
 #include "driver/gpio.h"
 #include "esp_log.h"
-#include "esp_rom_gpio.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "soc/gpio_struct.h"
@@ -202,11 +201,6 @@ size_t atom_mic_record(uint8_t **wav_out, int button_gpio, uint32_t max_ms)
 
     /* Disable the channel so DMA ring cannot overflow during idle */
     i2s_channel_disable(s_rx_chan);
-
-    /* GPIO33 is shared: mic CLK (I2S0 PDM) / speaker WS (I2S1 STD).
-     * After disabling the mic, re-route GPIO33 back to I2S1 WS so the
-     * speaker (NS4168) gets a proper word-select signal for beep playback. */
-    esp_rom_gpio_connect_out_signal(MIC_CLK_PIN, I2S1O_WS_OUT_IDX, false, false);
 
     /* Post-processing: IIR high-pass filter then software gain.
      *

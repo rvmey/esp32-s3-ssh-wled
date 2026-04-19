@@ -7,10 +7,10 @@
  * atom_mic — PDM microphone capture for the M5Stack ATOM Echo (SPM1423).
  *
  * The SPM1423 is driven via the ESP32 I²S peripheral in PDM-RX mode on
- * I2S_NUM_0.  GPIO33 is shared between mic CLK (I2S0 PDM) and speaker
- * WS (I2S1 STD); the driver re-routes it before/after recording.
+ * I2S_NUM_0. GPIO33 is shared with the speaker (NS4168) LRCK, but once
+ * the mic is initialized, GPIO33 routes to I2S0 PDM clock and stays there.
  *
- * PDM pins: CLK=GPIO33 (shared with speaker WS), DATA=GPIO23
+ * PDM pins: CLK=GPIO33 (shared with speaker), DATA=GPIO23
  * Sample rate: 16 kHz, 16-bit, mono.
  *
  * Memory note: the classic ESP32 has ~520 KB SRAM shared with WiFi buffers,
