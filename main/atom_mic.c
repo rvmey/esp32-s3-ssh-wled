@@ -73,7 +73,7 @@ void atom_mic_init(void)
             .clk  = MIC_CLK_PIN,
             .din  = MIC_DATA_PIN,
             .invert_flags = {
-                .clk_inv = false,
+                .clk_inv = true,   /* SPM1423 latches data on falling edge */
             },
         },
     };
