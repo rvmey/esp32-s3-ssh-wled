@@ -14,6 +14,7 @@
 #define I2S_BCK_PIN     19
 #define I2S_LRCK_PIN    33
 #define I2S_DOUT_PIN    22
+#define I2S_CHANNELS    2
 
 /* ── Beep synthesis constants ────────────────────────────────────────────── */
 
@@ -39,7 +40,7 @@ void atom_audio_init(void)
     i2s_std_config_t std_cfg = {
         .clk_cfg  = I2S_STD_CLK_DEFAULT_CONFIG(SAMPLE_RATE),
         .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_16BIT,
-                                                         I2S_SLOT_MODE_MONO),
+                                                         I2S_SLOT_MODE_STEREO),
         .gpio_cfg = {
             .mclk = I2S_GPIO_UNUSED,
             .bclk = I2S_BCK_PIN,
@@ -82,32 +83,42 @@ void atom_audio_play_clip(const int16_t *samples, size_t num_samples,
 
     if (!samples || num_samples == 0) return;
 
-    /* Chunk size: 512 samples at a time to keep stack usage low */
-#define CHUNK 512
-    int16_t buf[CHUNK];
+    /* Chunk size: 256 mono samples -> 512 interleaved stereo samples */
+#define CHUNK_MONO 256
+    int16_t buf[CHUNK_MONO * I2S_CHANNELS];
     size_t  in_pos = 0;
 
     while (in_pos < num_samples) {
-        size_t chunk_out = 0;
-
+        size_t mono_in = num_samples - in_pos;
         if (sample_rate < SAMPLE_RATE) {
-            /* Simple 2× upsample: duplicate each source sample */
-            while (chunk_out + 1 < CHUNK && in_pos < num_samples) {
-                buf[chunk_out++] = samples[in_pos];
-                buf[chunk_out++] = samples[in_pos];
-                in_pos++;
-            }
+            /* 2x upsample path: each source sample becomes two output samples */
+            if (mono_in > (CHUNK_MONO / 2)) mono_in = CHUNK_MONO / 2;
         } else {
-            /* No upsampling needed */
-            size_t copy = num_samples - in_pos;
-            if (copy > CHUNK) copy = CHUNK;
-            memcpy(buf, samples + in_pos, copy * sizeof(int16_t));
-            in_pos    += copy;
-            chunk_out  = copy;
+            if (mono_in > CHUNK_MONO) mono_in = CHUNK_MONO;
         }
 
+        size_t frames = 0;
+        for (size_t i = 0; i < mono_in; i++) {
+            int16_t s = samples[in_pos + i];
+            if (sample_rate < SAMPLE_RATE) {
+                /* Two frames per source sample for simple 2x upsample */
+                buf[(frames * 2) + 0] = s;
+                buf[(frames * 2) + 1] = s;
+                frames++;
+                buf[(frames * 2) + 0] = s;
+                buf[(frames * 2) + 1] = s;
+                frames++;
+            } else {
+                /* Duplicate mono sample to both left/right slots */
+                buf[(frames * 2) + 0] = s;
+                buf[(frames * 2) + 1] = s;
+                frames++;
+            }
+        }
+        in_pos += mono_in;
+
         size_t written = 0;
-        i2s_channel_write(s_tx_chan, buf, chunk_out * sizeof(int16_t),
+        i2s_channel_write(s_tx_chan, buf, frames * I2S_CHANNELS * sizeof(int16_t),
                           &written, portMAX_DELAY);
     }
 
@@ -115,7 +126,7 @@ void atom_audio_play_clip(const int16_t *samples, size_t num_samples,
     int16_t silence[64] = {0};
     size_t  written = 0;
     i2s_channel_write(s_tx_chan, silence, sizeof(silence), &written, portMAX_DELAY);
-#undef CHUNK
+#undef CHUNK_MONO
 }
 
 /* ── Tone synthesis ──────────────────────────────────────────────────────── */
@@ -127,20 +138,31 @@ static void play_tone(uint32_t freq_hz)
         return;
     }
 
-    int16_t buf[BEEP_SAMPLES];
     float   step = 2.0f * (float)M_PI * (float)freq_hz / (float)SAMPLE_RATE;
+#define TONE_CHUNK_FRAMES 256
+    int16_t buf[TONE_CHUNK_FRAMES * I2S_CHANNELS];
 
-    for (int i = 0; i < BEEP_SAMPLES; i++) {
-        /* Apply simple linear fade-out over last 20% of tone to avoid click */
-        float amp = BEEP_AMPLITUDE;
-        if (i > (int)(BEEP_SAMPLES * 0.8f)) {
-            amp *= (float)(BEEP_SAMPLES - i) / (float)(BEEP_SAMPLES * 0.2f);
+    for (int base = 0; base < BEEP_SAMPLES; base += TONE_CHUNK_FRAMES) {
+        int frames = BEEP_SAMPLES - base;
+        if (frames > TONE_CHUNK_FRAMES) frames = TONE_CHUNK_FRAMES;
+
+        for (int i = 0; i < frames; i++) {
+            int idx = base + i;
+            /* Apply simple linear fade-out over last 20% of tone to avoid click */
+            float amp = BEEP_AMPLITUDE;
+            if (idx > (int)(BEEP_SAMPLES * 0.8f)) {
+                amp *= (float)(BEEP_SAMPLES - idx) / (float)(BEEP_SAMPLES * 0.2f);
+            }
+            int16_t s = (int16_t)(sinf((float)idx * step) * amp);
+            buf[(i * 2) + 0] = s;
+            buf[(i * 2) + 1] = s;
         }
-        buf[i] = (int16_t)(sinf((float)i * step) * amp);
-    }
 
-    size_t written = 0;
-    i2s_channel_write(s_tx_chan, buf, sizeof(buf), &written, portMAX_DELAY);
+        size_t written = 0;
+        i2s_channel_write(s_tx_chan, buf, frames * I2S_CHANNELS * sizeof(int16_t),
+                          &written, portMAX_DELAY);
+    }
+#undef TONE_CHUNK_FRAMES
 }
 
 void atom_audio_beep_ok(void)
