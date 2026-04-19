@@ -297,7 +297,10 @@ size_t atom_mic_record(uint8_t **wav_out, int button_gpio, uint32_t max_ms)
 void atom_mic_deinit(void)
 {
     if (!s_rx_chan) return;
-    i2s_channel_disable(s_rx_chan);
+    esp_err_t err = i2s_channel_disable(s_rx_chan);
+    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
+        ESP_LOGW(TAG, "i2s_channel_disable in deinit: %s", esp_err_to_name(err));
+    }
     i2s_del_channel(s_rx_chan);
     s_rx_chan = NULL;
     ESP_LOGI(TAG, "PDM RX uninstalled");

@@ -594,55 +594,83 @@ static bool stt_transcribe(const uint8_t *wav, size_t wav_len,
     snprintf(content_type, sizeof(content_type),
              "multipart/form-data; boundary=%s", BOUNDARY);
 
-    esp_http_client_config_t cfg = {
-        .url               = STT_URL,
-        .method            = HTTP_METHOD_POST,
-        .timeout_ms        = 30000,  /* STT may take a few seconds */
-        .crt_bundle_attach = esp_crt_bundle_attach,
-    };
-    esp_http_client_handle_t client = esp_http_client_init(&cfg);
-    if (!client) { free(body); return false; }
+    bool ok = false;
+    for (int attempt = 1; attempt <= 3 && !ok; attempt++) {
+        esp_http_client_config_t cfg = {
+            .url               = STT_URL,
+            .method            = HTTP_METHOD_POST,
+            .timeout_ms        = 30000,  /* STT may take a few seconds */
+            .crt_bundle_attach = esp_crt_bundle_attach,
+            .buffer_size       = 4096,
+            .buffer_size_tx    = 4096,
+            .keep_alive_enable = false,
+        };
 
-    esp_http_client_set_header(client, "Authorization", bearer);
-    esp_http_client_set_header(client, "Content-Type", content_type);
+        esp_http_client_handle_t client = esp_http_client_init(&cfg);
+        if (!client) {
+            ESP_LOGE(TAG, "STT init failed");
+            break;
+        }
 
-    esp_err_t ret = esp_http_client_open(client, (int)total_len);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "STT open failed: %s", esp_err_to_name(ret));
-        free(body);
+        esp_http_client_set_header(client, "Authorization", bearer);
+        esp_http_client_set_header(client, "Content-Type", content_type);
+
+        esp_err_t ret = esp_http_client_open(client, (int)total_len);
+        if (ret != ESP_OK) {
+            ESP_LOGW(TAG, "STT open failed (attempt %d/3): %s",
+                     attempt, esp_err_to_name(ret));
+            esp_http_client_cleanup(client);
+            if (attempt < 3) vTaskDelay(pdMS_TO_TICKS(250));
+            continue;
+        }
+
+        int sent = 0;
+        while (sent < (int)total_len) {
+            int n = esp_http_client_write(client,
+                                          (const char *)body + sent,
+                                          (int)total_len - sent);
+            if (n <= 0) {
+                ESP_LOGW(TAG, "STT write failed (attempt %d/3), sent=%d/%d",
+                         attempt, sent, (int)total_len);
+                break;
+            }
+            sent += n;
+        }
+
+        if (sent == (int)total_len) {
+            int64_t cl       = esp_http_client_fetch_headers(client);
+            int     max_resp = MAX_BODY;
+            if (cl > 0 && cl < max_resp) max_resp = (int)cl;
+
+            char *resp = malloc(max_resp + 1);
+            if (resp) {
+                int total = 0;
+                while (total < max_resp) {
+                    int n = esp_http_client_read(client, resp + total, max_resp - total);
+                    if (n <= 0) break;
+                    total += n;
+                }
+                resp[total] = '\0';
+
+                int status = esp_http_client_get_status_code(client);
+                ESP_LOGI(TAG, "STT response HTTP %d: %.200s", status, resp);
+
+                if (status == 200) {
+                    ok = json_extract_str(resp, "text", transcript_out, TRANSCRIPT_MAX);
+                }
+                free(resp);
+            }
+        }
+
+        esp_http_client_close(client);
         esp_http_client_cleanup(client);
-        return false;
+
+        if (!ok && attempt < 3) {
+            vTaskDelay(pdMS_TO_TICKS(250));
+        }
     }
-    esp_http_client_write(client, (const char *)body, (int)total_len);
+
     free(body);
-
-    int64_t cl       = esp_http_client_fetch_headers(client);
-    int     max_resp = MAX_BODY;
-    if (cl > 0 && cl < max_resp) max_resp = (int)cl;
-
-    char *resp = malloc(max_resp + 1);
-    bool  ok   = false;
-    if (resp) {
-        int total = 0;
-        while (total < max_resp) {
-            int n = esp_http_client_read(client, resp + total, max_resp - total);
-            if (n <= 0) break;
-            total += n;
-        }
-        resp[total] = '\0';
-
-        int status = esp_http_client_get_status_code(client);
-        ESP_LOGI(TAG, "STT response HTTP %d: %.200s", status, resp);
-
-        if (status == 200) {
-            /* Whisper returns: {"text":"..."} */
-            ok = json_extract_str(resp, "text", transcript_out, TRANSCRIPT_MAX);
-        }
-        free(resp);
-    }
-
-    esp_http_client_close(client);
-    esp_http_client_cleanup(client);
     return ok;
 }
 
