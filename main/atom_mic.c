@@ -96,10 +96,19 @@ size_t atom_mic_record(uint8_t **wav_out, int button_gpio, uint32_t max_ms)
     if (max_ms > MIC_MAX_MS) max_ms = MIC_MAX_MS;
 
     /* Enable the channel now (left disabled at init to avoid idle overflow).
-     * No warmup delay — starting to read immediately keeps the ring from
-     * filling up and stalling the DMA.  Any initial PDM-filter transient
-     * (a few ms) is harmless for speech STT. */
+     * Flush the first 2 DMA buffers: after each enable cycle the ring contains
+     * stale data from the previous recording (or zero-init data on first use).
+     * These startup samples are always identical across recordings and must be
+     * discarded before we start capturing real microphone data. */
     i2s_channel_enable(s_rx_chan);
+    {
+        uint8_t flush_buf[DMA_BUF_BYTES];
+        size_t  flushed = 0;
+        for (int fi = 0; fi < 2; fi++) {
+            i2s_channel_read(s_rx_chan, flush_buf, DMA_BUF_BYTES,
+                             &flushed, pdMS_TO_TICKS(20));
+        }
+    }
 
     /* Calculate maximum PCM bytes and allocate buffer including WAV header.
      * Use ceiling division so e.g. 2000 ms → 2 s (not 3). */
@@ -160,57 +169,65 @@ size_t atom_mic_record(uint8_t **wav_out, int button_gpio, uint32_t max_ms)
     /* Disable the channel so the DMA ring cannot overflow during idle time */
     i2s_channel_disable(s_rx_chan);
 
-    /* Post-processing: DC removal then software gain.
+    /* Post-processing: IIR high-pass filter then software gain.
      *
-     * The classic ESP32 PDM RX peripheral has no hardware high-pass filter
-     * (SOC_I2S_SUPPORTS_PDM_RX_HP_FILTER is absent).  The DC component of
-     * the PDM bitstream comes through as a large DC offset (typically near
-     * −30000 out of ±32768).  Applying gain before removing this DC offset
-     * causes everything to hard-clip at ±32768, which Whisper STT treats as
-     * silence.  The correct order is: subtract DC first, then amplify. */
+     * The classic ESP32 PDM RX has no hardware HP filter — the large DC bias
+     * (~−30000) comes through with the signal.  Mean subtraction was fragile
+     * (one outlier sample drove the reported peak).  Instead we use a
+     * single-pole IIR HPF:
+     *
+     *   y[n] = α·(y[n−1] + x[n] − x[n−1])
+     *
+     * with α = 127/128 ≈ 0.9922  →  fc = fs·(1−α)/(2π) ≈ 20 Hz
+     *
+     * This removes DC adaptively within the first ~50 ms of audio and passes
+     * all speech frequencies (>300 Hz) with negligible attenuation.
+     */
     {
         int16_t *samples = (int16_t *)pcm_start;
         uint32_t n = pcm_written / 2;
 
-        /* Step 1 — measure and log raw pre-DC stats */
-        int32_t peak_raw = 0;
-        int64_t sum = 0;
-        for (uint32_t i = 0; i < n; i++) {
-            int32_t v = samples[i];
-            sum += v;
-            if (v < 0) v = -v;
-            if (v > peak_raw) peak_raw = v;
-        }
-        int32_t dc = (n > 0) ? (int32_t)(sum / (int64_t)n) : 0;
-        ESP_LOGI(TAG, "Raw: peak=%ld dc_offset=%ld n=%lu",
-                 (long)peak_raw, (long)dc, (unsigned long)n);
+        /* Log first 8 raw samples and 8 samples from the middle to check
+         * whether the DMA flush cleared the stale startup pattern and whether
+         * there is any modulation (speech) in the middle of the recording. */
         if (n >= 8) {
-            ESP_LOGI(TAG, "Raw[0..7]: %d %d %d %d %d %d %d %d",
+            ESP_LOGI(TAG, "Raw[0..7]:   %d %d %d %d %d %d %d %d",
                      samples[0], samples[1], samples[2], samples[3],
                      samples[4], samples[5], samples[6], samples[7]);
         }
-
-        /* Step 2 — subtract mean DC offset */
-        int32_t peak_dc = 0;
-        for (uint32_t i = 0; i < n; i++) {
-            int32_t s = (int32_t)samples[i] - dc;
-            if (s >  32767) s =  32767;
-            if (s < -32768) s = -32768;
-            samples[i] = (int16_t)s;
-            if (s < 0) s = -s;
-            if (s > peak_dc) peak_dc = s;
+        uint32_t mid = n / 2;
+        if (mid + 8 <= n) {
+            ESP_LOGI(TAG, "Raw[mid..]: %d %d %d %d %d %d %d %d",
+                     samples[mid+0], samples[mid+1], samples[mid+2], samples[mid+3],
+                     samples[mid+4], samples[mid+5], samples[mid+6], samples[mid+7]);
         }
-        ESP_LOGI(TAG, "Post-DC: peak=%ld", (long)peak_dc);
 
-        /* Step 3 — apply 8x software gain with saturation */
+        /* Step 1 — IIR high-pass filter (removes DC + low-frequency bias) */
+        int32_t hp_state = 0;
+        int32_t prev_in  = (n > 0) ? (int32_t)samples[0] : 0;
+        int32_t peak_hp  = 0;
+        for (uint32_t i = 0; i < n; i++) {
+            int32_t x = (int32_t)samples[i];
+            int32_t y = (127 * (hp_state + x - prev_in)) / 128;
+            prev_in  = x;
+            hp_state = y;
+            int32_t ay = y < 0 ? -y : y;
+            if (ay > peak_hp) peak_hp = ay;
+            if (y >  32767) y =  32767;
+            if (y < -32768) y = -32768;
+            samples[i] = (int16_t)y;
+        }
+        ESP_LOGI(TAG, "Post-HPF: peak=%ld n=%lu", (long)peak_hp, (unsigned long)n);
+
+        /* Step 2 — 8x software gain with saturation */
         int32_t peak_final = 0;
         for (uint32_t i = 0; i < n; i++) {
             int32_t s = (int32_t)samples[i] * 8;
             if (s >  32767) s =  32767;
             if (s < -32768) s = -32768;
             samples[i] = (int16_t)s;
-            if (s < 0) s = -s;
-            if (s > peak_final) peak_final = s;
+            int32_t as = s < 0 ? -s : s;
+            if (as > peak_final) peak_final = as;
         }
         ESP_LOGI(TAG, "Post-gain: peak=%ld", (long)peak_final);
     }
