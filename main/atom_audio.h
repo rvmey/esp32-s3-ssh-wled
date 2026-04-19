@@ -9,12 +9,18 @@
  * I²S pins:  BCK=GPIO19, LRCK=GPIO33, DOUT=GPIO22
  * Sample rate: 16 kHz, 16-bit, mono (left channel only).
  *
+ * GPIO33 is shared with the microphone PDM clock. The app deinitializes
+ * speaker I2S before recording and reinitializes it afterward.
+ *
  * PCM clips recorded at 8 kHz are upsampled 2× by duplicating each sample
  * before being written to I²S.
  */
 
 /** Install the I²S driver and configure the NS4168 output. */
 void atom_audio_init(void);
+
+/** Uninstall the I²S driver to release GPIO33 for microphone PDM clock. */
+void atom_audio_deinit(void);
 
 /**
  * Play a PCM clip.

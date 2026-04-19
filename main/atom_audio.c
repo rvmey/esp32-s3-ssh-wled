@@ -12,8 +12,7 @@
 #define I2S_PORT        I2S_NUM_1
 #define SAMPLE_RATE     16000
 #define I2S_BCK_PIN     19
-/* GPIO33 is shared with mic PDM CLK; don't use it for speaker LRCK */
-#define I2S_LRCK_PIN    I2S_GPIO_UNUSED  /* NS4168 mono mode — BCK timing sufficient */
+#define I2S_LRCK_PIN    33
 #define I2S_DOUT_PIN    22
 
 /* ── Beep synthesis constants ────────────────────────────────────────────── */
@@ -30,6 +29,8 @@ static i2s_chan_handle_t s_tx_chan = NULL;
 
 void atom_audio_init(void)
 {
+    if (s_tx_chan) return;
+
     i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(I2S_PORT, I2S_ROLE_MASTER);
     chan_cfg.auto_clear = true;  /* silence DMA underflow */
 
@@ -56,8 +57,17 @@ void atom_audio_init(void)
     ESP_ERROR_CHECK(i2s_channel_init_std_mode(s_tx_chan, &std_cfg));
     ESP_ERROR_CHECK(i2s_channel_enable(s_tx_chan));
 
-    ESP_LOGI(TAG, "I²S TX ready on BCK=%d DOUT=%d (WS unused) @ %d Hz",
-             I2S_BCK_PIN, I2S_DOUT_PIN, SAMPLE_RATE);
+    ESP_LOGI(TAG, "I²S TX ready on BCK=%d LRCK=%d DOUT=%d @ %d Hz",
+             I2S_BCK_PIN, I2S_LRCK_PIN, I2S_DOUT_PIN, SAMPLE_RATE);
+}
+
+void atom_audio_deinit(void)
+{
+    if (!s_tx_chan) return;
+    i2s_channel_disable(s_tx_chan);
+    i2s_del_channel(s_tx_chan);
+    s_tx_chan = NULL;
+    ESP_LOGI(TAG, "I²S TX uninstalled");
 }
 
 /* ── Clip playback ───────────────────────────────────────────────────────── */
@@ -65,6 +75,11 @@ void atom_audio_init(void)
 void atom_audio_play_clip(const int16_t *samples, size_t num_samples,
                           uint32_t sample_rate)
 {
+    if (!s_tx_chan) {
+        ESP_LOGW(TAG, "atom_audio_init() not called");
+        return;
+    }
+
     if (!samples || num_samples == 0) return;
 
     /* Chunk size: 512 samples at a time to keep stack usage low */
@@ -107,6 +122,11 @@ void atom_audio_play_clip(const int16_t *samples, size_t num_samples,
 
 static void play_tone(uint32_t freq_hz)
 {
+    if (!s_tx_chan) {
+        ESP_LOGW(TAG, "atom_audio_init() not called");
+        return;
+    }
+
     int16_t buf[BEEP_SAMPLES];
     float   step = 2.0f * (float)M_PI * (float)freq_hz / (float)SAMPLE_RATE;
 

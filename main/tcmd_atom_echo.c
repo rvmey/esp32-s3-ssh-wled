@@ -677,6 +677,10 @@ static void do_health_check(const char *token)
 
 static void do_voice_query(const char *token, char *conv_id)
 {
+    /* Hand off shared GPIO33 from speaker LRCK to microphone PDM clock. */
+    atom_audio_deinit();
+    atom_mic_init();
+
     /* Cyan: recording */
     atom_led_set(0, 100, 100);
 
@@ -685,6 +689,10 @@ static void do_voice_query(const char *token, char *conv_id)
 
     uint8_t *wav     = NULL;
     size_t   wav_len = atom_mic_record(&wav, BUTTON_GPIO, 4000);
+
+    /* Hand GPIO33 back to speaker for status beeps and pair-code clips. */
+    atom_mic_deinit();
+    atom_audio_init();
 
     if (wav_len == 0 || !wav) {
         ESP_LOGW(TAG, "Voice record: empty or failed");
@@ -908,7 +916,6 @@ void tcmd_atom_echo_run(void)
     atom_led_set(100, 80, 0);  /* yellow: booting */
 
     atom_audio_init();
-    atom_mic_init();
 
     /* Configure button GPIO with internal pull-up */
     gpio_config_t btn_cfg = {
