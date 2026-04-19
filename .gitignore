@@ -3,3 +3,5 @@ managed_components/
 JC3248W535EN/
 build_*
 docs/p/
+atom-echo/char-clips/*
+idf_out.txt
