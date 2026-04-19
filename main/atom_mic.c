@@ -22,7 +22,8 @@
 
 static const char *TAG = "atom_mic";
 
-static i2s_chan_handle_t s_rx_chan = NULL;
+static i2s_chan_handle_t s_rx_chan  = NULL;
+static i2s_chan_handle_t s_tx_dummy = NULL;  /* kept only to force full-duplex CLK routing */
 
 /* ── WAV header helper ───────────────────────────────────────────────────── */
 
@@ -56,54 +57,32 @@ void atom_mic_init(void)
 {
     if (s_rx_chan) return;  /* already installed */
 
+    /* Allocate BOTH TX and RX channels (full-duplex) even though we only use
+     * RX.  On classic ESP32 (I2S HW_VERSION_1) the PDM CLK generator drives
+     * I2S0O_WS_OUT_IDX (the TX WS output signal).  When only an RX channel is
+     * allocated the driver maps the CLK pin to I2S0I_WS_OUT_IDX (the RX WS
+     * output), which is never clocked in PDM mode on this SoC — so the mic
+     * receives no CLK and DATA stays at 0, giving constant -30935 PCM output.
+     * Allocating a TX channel sets full_duplex=true in the controller, causing
+     * the driver to route CLK to m_tx_ws_sig (I2S0O_WS_OUT_IDX) instead. */
     i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(MIC_I2S_PORT, I2S_ROLE_MASTER);
-    /* Match DMA descriptor size to our read size so each i2s_channel_read()
-     * drains exactly one descriptor — eliminates partial-read ambiguity.
-     * 8 descriptors × 1024 bytes = 8 KB ring = 256 ms at 32 KB/s. */
     chan_cfg.dma_desc_num  = 8;
-    chan_cfg.dma_frame_num = DMA_BUF_SAMPLES;  /* 512 frames × 2 bytes = 1024 bytes/desc */
-    /* RX only — pass NULL for tx_handle */
-    ESP_ERROR_CHECK(i2s_new_channel(&chan_cfg, NULL, &s_rx_chan));
+    chan_cfg.dma_frame_num = DMA_BUF_SAMPLES;
+    ESP_ERROR_CHECK(i2s_new_channel(&chan_cfg, &s_tx_dummy, &s_rx_chan));
 
     i2s_pdm_rx_config_t pdm_cfg = {
-        .clk_cfg  = {
-            .sample_rate_hz = MIC_SAMPLE_RATE,
-            .clk_src        = I2S_CLK_SRC_DEFAULT,
-            .mclk_multiple  = I2S_MCLK_MULTIPLE_256,
-            /* DSR_16S doubles the PDM clock: bclk = 16000 × 128 = 2.048 MHz.
-             * SPM1423 spec: 1.0–3.25 MHz.  DSR_8S gives only 1.024 MHz which
-             * is at the absolute minimum and causes the mic to output a stuck
-             * DC value.  DSR_16S puts us comfortably in the middle of the range
-             * and also improves the PDM2PCM decimation SNR. */
-            .dn_sample_mode = I2S_PDM_DSR_16S,
-            .bclk_div       = 8,
-        },
-        .slot_cfg = {
-            /* Use the PCM-format default values except for slot_mask.
-             * M5Stack's own Arduino RecordPlay example uses
-             * I2S_CHANNEL_FMT_ONLY_RIGHT, which means the SPM1423 SEL pin is
-             * tied to VDD on the ATOM Echo: the mic outputs PDM data on the
-             * RISING CLK edge (right channel).  The default macro sets
-             * slot_mask = I2S_PDM_SLOT_BOTH which reads the falling/left edge
-             * and gets zero signal.  Override to RIGHT. */
-            .data_bit_width = I2S_DATA_BIT_WIDTH_16BIT,
-            .slot_bit_width = I2S_SLOT_BIT_WIDTH_AUTO,
-            .slot_mode      = I2S_SLOT_MODE_MONO,
-            .slot_mask      = I2S_PDM_SLOT_RIGHT,
-            .data_fmt       = I2S_PDM_DATA_FMT_PCM,
-        },
+        .clk_cfg  = I2S_PDM_RX_CLK_DEFAULT_CONFIG(MIC_SAMPLE_RATE),
+        .slot_cfg = I2S_PDM_RX_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_MONO),
         .gpio_cfg = {
             .clk  = MIC_CLK_PIN,
             .din  = MIC_DATA_PIN,
-            .invert_flags = {
-                .clk_inv = false,
-            },
+            .invert_flags = { .clk_inv = false },
         },
     };
-
+    /* SPM1423 SEL=VDD → right channel (data on rising CLK edge) */
+    pdm_cfg.slot_cfg.slot_mask = I2S_PDM_SLOT_RIGHT;
     ESP_ERROR_CHECK(i2s_channel_init_pdm_rx_mode(s_rx_chan, &pdm_cfg));
-    /* Channel is NOT enabled here — enabled on-demand in atom_mic_record()
-     * to avoid DMA ring buffer overflow during idle periods. */
+    /* Channel left disabled — enabled on-demand in atom_mic_record() */
 
     ESP_LOGI(TAG, "PDM RX ready: CLK=%d DATA=%d @ %d Hz",
              MIC_CLK_PIN, MIC_DATA_PIN, MIC_SAMPLE_RATE);
@@ -118,18 +97,16 @@ size_t atom_mic_record(uint8_t **wav_out, int button_gpio, uint32_t max_ms)
 
     if (max_ms > MIC_MAX_MS) max_ms = MIC_MAX_MS;
 
-    /* Enable the channel now (left disabled at init to avoid idle overflow).
-     * Flush the first 2 DMA buffers: after each enable cycle the ring contains
-     * stale data from the previous recording (or zero-init data on first use).
-     * These startup samples are always identical across recordings and must be
-     * discarded before we start capturing real microphone data. */
+    /* Enable and flush stale DMA data.
+     * Each 512-sample buffer takes 32 ms at 16 kHz — flush 4 buffers (128 ms)
+     * to ensure the ring is fully cleared before recording starts. */
     i2s_channel_enable(s_rx_chan);
     {
         uint8_t flush_buf[DMA_BUF_BYTES];
         size_t  flushed = 0;
-        for (int fi = 0; fi < 2; fi++) {
+        for (int fi = 0; fi < 4; fi++) {
             i2s_channel_read(s_rx_chan, flush_buf, DMA_BUF_BYTES,
-                             &flushed, pdMS_TO_TICKS(20));
+                             &flushed, pdMS_TO_TICKS(50));
         }
     }
 
@@ -180,7 +157,7 @@ size_t atom_mic_record(uint8_t **wav_out, int button_gpio, uint32_t max_ms)
                                          pdMS_TO_TICKS(50));
         if (err == ESP_ERR_TIMEOUT) {
             ESP_LOGD(TAG, "i2s timeout, elapsed=%lu btn=%d pcm=%lu", (unsigned long)elapsed, btn_level, (unsigned long)pcm_written);
-            continue;  /* no DMA data yet — keep looping until button released */
+            continue;
         }
         if (err != ESP_OK) {
             ESP_LOGW(TAG, "i2s_channel_read err=%s elapsed=%lu pcm=%lu", esp_err_to_name(err), (unsigned long)elapsed, (unsigned long)pcm_written);
@@ -189,7 +166,7 @@ size_t atom_mic_record(uint8_t **wav_out, int button_gpio, uint32_t max_ms)
         pcm_written += (uint32_t)bytes_read;
     }
 
-    /* Disable the channel so the DMA ring cannot overflow during idle time */
+    /* Disable the channel so DMA ring cannot overflow during idle */
     i2s_channel_disable(s_rx_chan);
 
     /* Post-processing: IIR high-pass filter then software gain.
@@ -276,5 +253,9 @@ void atom_mic_deinit(void)
     i2s_channel_disable(s_rx_chan);
     i2s_del_channel(s_rx_chan);
     s_rx_chan = NULL;
+    if (s_tx_dummy) {
+        i2s_del_channel(s_tx_dummy);
+        s_tx_dummy = NULL;
+    }
     ESP_LOGI(TAG, "PDM RX uninstalled");
 }
