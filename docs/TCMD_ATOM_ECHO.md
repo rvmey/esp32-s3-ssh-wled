@@ -142,6 +142,8 @@ The audio clips are in atom-echo/char-clips
 - Recording: speaker I2S is deinitialized, mic owns GPIO33 as I2S0 PDM CLK
 - After recording: mic deinitialized, speaker I2S reinitialized
 
+For reliability on ATOM Echo, speaker audio is transmitted as **stereo frames with duplicated samples** (L=R). This avoids slot-selection mismatches and ensures beeps/pair-code playback are audible.
+
 ```c
 i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_1, I2S_ROLE_MASTER);
 chan_cfg.auto_clear = true;
@@ -149,11 +151,11 @@ chan_cfg.auto_clear = true;
 i2s_std_config_t std_cfg = {
     .clk_cfg  = I2S_STD_CLK_DEFAULT_CONFIG(SAMPLE_RATE),  /* 16 kHz */
     .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_16BIT,
-                                                     I2S_SLOT_MODE_MONO),
+                                                     I2S_SLOT_MODE_STEREO),
     .gpio_cfg = {
         .mclk = I2S_GPIO_UNUSED,
-      .bclk = 19,                   /* BCK */
-      .ws   = 33,                   /* LRCK (shared pin, speaker ownership phase) */
+        .bclk = 19,                 /* BCK */
+        .ws   = 33,                 /* LRCK (shared pin, speaker ownership phase) */
         .dout = 22,                   /* DOUT */
         .din  = I2S_GPIO_UNUSED,
     },
@@ -164,7 +166,7 @@ i2s_std_config_t std_cfg = {
 
 ## PDM Microphone Configuration (SPM1423)
 
-The SPM1423 is driven via the ESP32 I²S peripheral in PDM RX mode on **I2S_NUM_0**. GPIO33 is shared between the microphone CLK (I2S0 PDM) and the speaker LRCK (I2S1 STD), but GPIO33 remains routed to the microphone's PDM clock permanently — the speaker uses GPIO19 (BCK) for timing and does not need the LRCK pin to toggle independently.
+The SPM1423 is driven via the ESP32 I²S peripheral in PDM RX mode on **I2S_NUM_0**. GPIO33 is shared between the microphone CLK (I2S0 PDM) and speaker LRCK (I2S1 STD), so firmware explicitly deinitializes/reinitializes the corresponding I2S channels when switching between recording and speaker playback.
 
 **New IDF v6.0 PDM driver:**
 
