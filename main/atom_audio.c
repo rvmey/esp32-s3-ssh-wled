@@ -12,7 +12,8 @@
 #define I2S_PORT        I2S_NUM_1
 #define SAMPLE_RATE     16000
 #define I2S_BCK_PIN     19
-#define I2S_LRCK_PIN    33
+/* GPIO33 is shared with mic PDM CLK; don't use it for speaker LRCK */
+#define I2S_LRCK_PIN    I2S_GPIO_UNUSED  /* NS4168 mono mode — BCK timing sufficient */
 #define I2S_DOUT_PIN    22
 
 /* ── Beep synthesis constants ────────────────────────────────────────────── */
@@ -55,8 +56,8 @@ void atom_audio_init(void)
     ESP_ERROR_CHECK(i2s_channel_init_std_mode(s_tx_chan, &std_cfg));
     ESP_ERROR_CHECK(i2s_channel_enable(s_tx_chan));
 
-    ESP_LOGI(TAG, "I²S TX ready on BCK=%d LRCK=%d DOUT=%d @ %d Hz",
-             I2S_BCK_PIN, I2S_LRCK_PIN, I2S_DOUT_PIN, SAMPLE_RATE);
+    ESP_LOGI(TAG, "I²S TX ready on BCK=%d DOUT=%d (WS unused) @ %d Hz",
+             I2S_BCK_PIN, I2S_DOUT_PIN, SAMPLE_RATE);
 }
 
 /* ── Clip playback ───────────────────────────────────────────────────────── */
