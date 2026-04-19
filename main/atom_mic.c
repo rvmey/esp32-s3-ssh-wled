@@ -97,9 +97,11 @@ size_t atom_mic_record(uint8_t **wav_out, int button_gpio, uint32_t max_ms)
 
     if (max_ms > MIC_MAX_MS) max_ms = MIC_MAX_MS;
 
-    /* Enable and flush stale DMA data.
-     * Each 512-sample buffer takes 32 ms at 16 kHz — flush 4 buffers (128 ms)
-     * to ensure the ring is fully cleared before recording starts. */
+    /* In full-duplex mode the PDM clock is sourced from the TX WS generator
+     * (I2S0O_WS_OUT_IDX).  The GPIO is routed correctly, but the clock only
+     * runs when the TX channel is enabled.  Enable the dummy TX channel first
+     * so the clock is running before we start the RX DMA. */
+    i2s_channel_enable(s_tx_dummy);
     i2s_channel_enable(s_rx_chan);
     {
         uint8_t flush_buf[DMA_BUF_BYTES];
@@ -166,8 +168,10 @@ size_t atom_mic_record(uint8_t **wav_out, int button_gpio, uint32_t max_ms)
         pcm_written += (uint32_t)bytes_read;
     }
 
-    /* Disable the channel so DMA ring cannot overflow during idle */
+    /* Disable both channels; TX must be disabled after RX to avoid a brief
+     * window where the clock stops before the RX DMA has flushed. */
     i2s_channel_disable(s_rx_chan);
+    i2s_channel_disable(s_tx_dummy);
 
     /* Post-processing: IIR high-pass filter then software gain.
      *
