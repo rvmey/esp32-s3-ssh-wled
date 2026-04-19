@@ -160,54 +160,59 @@ size_t atom_mic_record(uint8_t **wav_out, int button_gpio, uint32_t max_ms)
     /* Disable the channel so the DMA ring cannot overflow during idle time */
     i2s_channel_disable(s_rx_chan);
 
-    /* Diagnostic: log pre-gain peak and RMS so we can tune the gain factor.
-     * Also log the first 8 raw sample values to verify PDM-to-PCM is working. */
+    /* Post-processing: DC removal then software gain.
+     *
+     * The classic ESP32 PDM RX peripheral has no hardware high-pass filter
+     * (SOC_I2S_SUPPORTS_PDM_RX_HP_FILTER is absent).  The DC component of
+     * the PDM bitstream comes through as a large DC offset (typically near
+     * −30000 out of ±32768).  Applying gain before removing this DC offset
+     * causes everything to hard-clip at ±32768, which Whisper STT treats as
+     * silence.  The correct order is: subtract DC first, then amplify. */
     {
         int16_t *samples = (int16_t *)pcm_start;
         uint32_t n = pcm_written / 2;
-        int32_t peak = 0;
-        int64_t sum_sq = 0;
+
+        /* Step 1 — measure and log raw pre-DC stats */
+        int32_t peak_raw = 0;
+        int64_t sum = 0;
         for (uint32_t i = 0; i < n; i++) {
             int32_t v = samples[i];
+            sum += v;
             if (v < 0) v = -v;
-            if (v > peak) peak = v;
-            sum_sq += (int64_t)samples[i] * samples[i];
+            if (v > peak_raw) peak_raw = v;
         }
-        uint32_t rms = (n > 0) ? (uint32_t)( (int64_t)1 * (int64_t)( (sum_sq / n > 0) ? 1 : 0 ) ) : 0;
-        /* integer sqrt approximation */
-        if (n > 0) {
-            uint64_t mean_sq = (uint64_t)(sum_sq / n);
-            uint64_t r = mean_sq;
-            /* Newton's method, a few iterations */
-            if (r > 0) {
-                uint64_t x = r;
-                x = (x + mean_sq / x) / 2;
-                x = (x + mean_sq / x) / 2;
-                x = (x + mean_sq / x) / 2;
-                x = (x + mean_sq / x) / 2;
-                rms = (uint32_t)x;
-            }
-        }
-        ESP_LOGI(TAG, "Pre-gain: peak=%ld rms=%lu n=%lu",
-                 (long)peak, (unsigned long)rms, (unsigned long)n);
+        int32_t dc = (n > 0) ? (int32_t)(sum / (int64_t)n) : 0;
+        ESP_LOGI(TAG, "Raw: peak=%ld dc_offset=%ld n=%lu",
+                 (long)peak_raw, (long)dc, (unsigned long)n);
         if (n >= 8) {
-            ESP_LOGI(TAG, "First 8 raw samples: %d %d %d %d %d %d %d %d",
+            ESP_LOGI(TAG, "Raw[0..7]: %d %d %d %d %d %d %d %d",
                      samples[0], samples[1], samples[2], samples[3],
                      samples[4], samples[5], samples[6], samples[7]);
         }
-    }
 
-    /* Software gain: SPM1423 on classic ESP32 has no hardware amplify register.
-     * Scale each sample by 8x with saturation to bring quiet mic up to normal. */
-    {
-        int16_t *samples = (int16_t *)pcm_start;
-        uint32_t n = pcm_written / 2;
+        /* Step 2 — subtract mean DC offset */
+        int32_t peak_dc = 0;
+        for (uint32_t i = 0; i < n; i++) {
+            int32_t s = (int32_t)samples[i] - dc;
+            if (s >  32767) s =  32767;
+            if (s < -32768) s = -32768;
+            samples[i] = (int16_t)s;
+            if (s < 0) s = -s;
+            if (s > peak_dc) peak_dc = s;
+        }
+        ESP_LOGI(TAG, "Post-DC: peak=%ld", (long)peak_dc);
+
+        /* Step 3 — apply 8x software gain with saturation */
+        int32_t peak_final = 0;
         for (uint32_t i = 0; i < n; i++) {
             int32_t s = (int32_t)samples[i] * 8;
             if (s >  32767) s =  32767;
             if (s < -32768) s = -32768;
             samples[i] = (int16_t)s;
+            if (s < 0) s = -s;
+            if (s > peak_final) peak_final = s;
         }
+        ESP_LOGI(TAG, "Post-gain: peak=%ld", (long)peak_final);
     }
 
     if (pcm_written == 0) {
