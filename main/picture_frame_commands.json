@@ -54,5 +54,12 @@
   "allowParams": "true",
   "mcpToolDescription": "Display a JPEG image. Example: 'jpeg https://example.com/image.jpg'",
   "icon": "🖼️"
+ },
+{
+  "trigger": "save",
+  "command": "save",
+  "allowParams": "true",
+  "mcpToolDescription": "Save the screen settings to non-volatile memory. Example: 'save'",
+  "icon": "💾"
  }
 ]

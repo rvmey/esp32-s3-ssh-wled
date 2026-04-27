@@ -71,6 +71,17 @@ static const char *tcmd_display_host(void)
 #define NVS_NS          "pf_cfg"
 #define NVS_KEY_TOKEN   "hw_token"
 #define NVS_KEY_COMPID  "computer_id"
+#define NVS_KEY_SAVED   "disp_saved"
+#define NVS_KEY_TEXT    "disp_text"
+#define NVS_KEY_BG_R    "bg_r"
+#define NVS_KEY_BG_G    "bg_g"
+#define NVS_KEY_BG_B    "bg_b"
+#define NVS_KEY_FG_R    "fg_r"
+#define NVS_KEY_FG_G    "fg_g"
+#define NVS_KEY_FG_B    "fg_b"
+#define NVS_KEY_FONT    "font"
+#define NVS_KEY_ORIENT  "land"
+#define NVS_KEY_JPEGURL "jpeg_url"
 
 #define HW_TOKEN_MAX_LEN    513   /* 512 payload + NUL */
 #define COMPUTER_ID_MAX_LEN  33   /* 32 payload + NUL  */
@@ -94,6 +105,10 @@ static uint8_t      *s_jpeg_cache     = NULL;
 static int           s_jpeg_cache_len = 0;
 static volatile bool s_pending_jpeg_redraw = false;
 
+/* Persistable display state (set by commands, committed by 'save'). */
+static char s_last_text[512]         = {0};
+static char s_current_jpeg_url[512]  = {0};
+
 static bool nvs_read_str(const char *key, char *out, size_t out_sz)
 {
     nvs_handle_t h;
@@ -112,6 +127,135 @@ static esp_err_t nvs_write_str(const char *key, const char *val)
     if (err == ESP_OK) nvs_commit(h);
     nvs_close(h);
     return err;
+}
+
+static bool nvs_read_u8(const char *key, uint8_t *out)
+{
+    nvs_handle_t h;
+    if (nvs_open(NVS_NS, NVS_READONLY, &h) != ESP_OK) return false;
+    esp_err_t err = nvs_get_u8(h, key, out);
+    nvs_close(h);
+    return err == ESP_OK;
+}
+
+static esp_err_t nvs_write_u8(const char *key, uint8_t val)
+{
+    nvs_handle_t h;
+    esp_err_t err = nvs_open(NVS_NS, NVS_READWRITE, &h);
+    if (err != ESP_OK) return err;
+    err = nvs_set_u8(h, key, val);
+    if (err == ESP_OK) err = nvs_commit(h);
+    nvs_close(h);
+    return err;
+}
+
+static esp_err_t nvs_erase_key_local(const char *key)
+{
+    nvs_handle_t h;
+    esp_err_t err = nvs_open(NVS_NS, NVS_READWRITE, &h);
+    if (err != ESP_OK) return err;
+    err = nvs_erase_key(h, key);
+    if (err == ESP_ERR_NVS_NOT_FOUND) err = ESP_OK;
+    if (err == ESP_OK) err = nvs_commit(h);
+    nvs_close(h);
+    return err;
+}
+
+static esp_err_t save_display_state_to_nvs(void)
+{
+    uint8_t bg_r = 0, bg_g = 0, bg_b = 0;
+    uint8_t fg_r = 255, fg_g = 255, fg_b = 255;
+    bool landscape = false;
+    int font_scale = 2;
+
+    screen_get_color(&bg_r, &bg_g, &bg_b);
+    screen_get_text_color(&fg_r, &fg_g, &fg_b);
+    screen_get_landscape(&landscape);
+    screen_get_font_scale(&font_scale);
+
+    esp_err_t err = ESP_OK;
+    if ((err = nvs_write_u8(NVS_KEY_BG_R, bg_r)) != ESP_OK) return err;
+    if ((err = nvs_write_u8(NVS_KEY_BG_G, bg_g)) != ESP_OK) return err;
+    if ((err = nvs_write_u8(NVS_KEY_BG_B, bg_b)) != ESP_OK) return err;
+    if ((err = nvs_write_u8(NVS_KEY_FG_R, fg_r)) != ESP_OK) return err;
+    if ((err = nvs_write_u8(NVS_KEY_FG_G, fg_g)) != ESP_OK) return err;
+    if ((err = nvs_write_u8(NVS_KEY_FG_B, fg_b)) != ESP_OK) return err;
+    if ((err = nvs_write_u8(NVS_KEY_ORIENT, landscape ? 1 : 0)) != ESP_OK) return err;
+    if ((err = nvs_write_u8(NVS_KEY_FONT, (uint8_t)font_scale)) != ESP_OK) return err;
+    if ((err = nvs_write_str(NVS_KEY_TEXT, s_last_text)) != ESP_OK) return err;
+
+    if (s_jpeg_cache && s_jpeg_cache_len > 0 && s_current_jpeg_url[0]) {
+        if ((err = nvs_write_str(NVS_KEY_JPEGURL, s_current_jpeg_url)) != ESP_OK) return err;
+    } else {
+        if ((err = nvs_erase_key_local(NVS_KEY_JPEGURL)) != ESP_OK) return err;
+    }
+
+    return nvs_write_u8(NVS_KEY_SAVED, 1);
+}
+
+static void restore_display_state_from_nvs(void)
+{
+    uint8_t saved = 0;
+    if (!nvs_read_u8(NVS_KEY_SAVED, &saved) || saved != 1) {
+        return;
+    }
+
+    uint8_t bg_r = 0, bg_g = 0, bg_b = 0;
+    uint8_t fg_r = 255, fg_g = 255, fg_b = 255;
+    uint8_t orient = 0;
+    uint8_t font_scale = 2;
+    char text[sizeof(s_last_text)] = {0};
+    char jpeg_url[sizeof(s_current_jpeg_url)] = {0};
+
+    /* Missing keys fall back to current defaults. */
+    screen_get_color(&bg_r, &bg_g, &bg_b);
+    screen_get_text_color(&fg_r, &fg_g, &fg_b);
+    {
+        bool land = false;
+        screen_get_landscape(&land);
+        orient = land ? 1 : 0;
+    }
+    {
+        int fs = 2;
+        screen_get_font_scale(&fs);
+        font_scale = (uint8_t)fs;
+    }
+    nvs_read_u8(NVS_KEY_BG_R, &bg_r);
+    nvs_read_u8(NVS_KEY_BG_G, &bg_g);
+    nvs_read_u8(NVS_KEY_BG_B, &bg_b);
+    nvs_read_u8(NVS_KEY_FG_R, &fg_r);
+    nvs_read_u8(NVS_KEY_FG_G, &fg_g);
+    nvs_read_u8(NVS_KEY_FG_B, &fg_b);
+    nvs_read_u8(NVS_KEY_ORIENT, &orient);
+    nvs_read_u8(NVS_KEY_FONT, &font_scale);
+    nvs_read_str(NVS_KEY_TEXT, text, sizeof(text));
+    nvs_read_str(NVS_KEY_JPEGURL, jpeg_url, sizeof(jpeg_url));
+
+    if (font_scale < 1) font_scale = 1;
+    if (font_scale > 8) font_scale = 8;
+
+    screen_set_landscape(orient != 0);
+    screen_set_color(bg_r, bg_g, bg_b);
+    screen_set_text_color(fg_r, fg_g, fg_b);
+    screen_set_font_scale(font_scale);
+
+    strncpy(s_last_text, text, sizeof(s_last_text) - 1);
+    s_last_text[sizeof(s_last_text) - 1] = '\0';
+
+    if (jpeg_url[0]) {
+        strncpy(s_current_jpeg_url, jpeg_url, sizeof(s_current_jpeg_url) - 1);
+        s_current_jpeg_url[sizeof(s_current_jpeg_url) - 1] = '\0';
+        strncpy(s_pending_jpeg_url, jpeg_url, sizeof(s_pending_jpeg_url) - 1);
+        s_pending_jpeg_url[sizeof(s_pending_jpeg_url) - 1] = '\0';
+        s_pending_jpeg = true;
+    } else {
+        s_current_jpeg_url[0] = '\0';
+        if (s_last_text[0]) {
+            screen_draw_text(s_last_text);
+        }
+    }
+
+    ESP_LOGI(TAG, "Restored saved display state");
 }
 
 
@@ -431,6 +575,7 @@ static const pf_cmd_t s_pf_cmds[] = {
     { "landscape", "landscape", "false", "Set the display to landscape orientation.",                        "\xE2\x86\x94\xEF\xB8\x8F" /* ↔️ */ },
     { "portrait",  "portrait",  "false", "Set the display to portrait orientation.",                         "\xE2\x86\x95\xEF\xB8\x8F" /* ↕️ */ },
     { "jpeg",      "jpeg",      "true",  "Display a JPEG image. Example: 'jpeg https://example.com/image.jpg'", "\xF0\x9F\x96\xBC\xEF\xB8\x8F" /* 🖼️ */ },
+    { "save",      "save",      "false", "Save the current display settings and image to non-volatile memory.", "\xF0\x9F\x92\xBE" /* 💾 */ },
 };
 #define PF_CMD_COUNT  (sizeof(s_pf_cmds) / sizeof(s_pf_cmds[0]))
 
@@ -497,7 +642,10 @@ static void pf_event_handler(const char *event_name,
     if (strcmp(s_trigger, "text") == 0) {
         /* Discard any cached JPEG so orientation changes redraw text, not image */
         if (s_jpeg_cache) { free(s_jpeg_cache); s_jpeg_cache = NULL; s_jpeg_cache_len = 0; }
-        screen_draw_text(s_params[0] ? s_params : " ");
+        strncpy(s_last_text, s_params[0] ? s_params : " ", sizeof(s_last_text) - 1);
+        s_last_text[sizeof(s_last_text) - 1] = '\0';
+        s_current_jpeg_url[0] = '\0';
+        screen_draw_text(s_last_text);
 
     } else if (strcmp(s_trigger, "color") == 0) {
         uint8_t r = 0, g = 0, b = 0;
@@ -544,6 +692,14 @@ static void pf_event_handler(const char *event_name,
             return;  /* don't report run/save for empty command */
         }
 
+    } else if (strcmp(s_trigger, "save") == 0) {
+        esp_err_t err = save_display_state_to_nvs();
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "save: failed to persist display state: %s", esp_err_to_name(err));
+        } else {
+            ESP_LOGI(TAG, "save: display state persisted");
+        }
+
     } else {
         ESP_LOGW(TAG, "message: unknown trigger '%s'", s_trigger);
         return;
@@ -572,7 +728,7 @@ static void pf_event_handler(const char *event_name,
  * Decode compressed JPEG bytes (buf, len) to RGB565 and blit to the screen.
  * Called both after a fresh download and when re-blitting on orientation change.
  */
-static void decode_and_show_jpeg(const uint8_t *buf, int len)
+static bool decode_and_show_jpeg(const uint8_t *buf, int len)
 {
     esp_jpeg_image_cfg_t info_cfg = {
         .indata      = (uint8_t *)buf,
@@ -584,7 +740,7 @@ static void decode_and_show_jpeg(const uint8_t *buf, int len)
     if (esp_jpeg_get_image_info(&info_cfg, &info) != ESP_OK || info.output_len == 0) {
         ESP_LOGE(TAG, "jpeg: get_image_info failed");
         screen_draw_text("Image decode\nfailed");
-        return;
+        return false;
     }
     ESP_LOGI(TAG, "jpeg: image %ux%u, output_len=%zu", info.width, info.height, info.output_len);
 
@@ -594,7 +750,7 @@ static void decode_and_show_jpeg(const uint8_t *buf, int len)
     if (!rgb565_buf) {
         ESP_LOGE(TAG, "jpeg: no memory for %zu byte RGB565 buffer", info.output_len);
         screen_draw_text("Image decode\nfailed");
-        return;
+        return false;
     }
 
     esp_jpeg_image_cfg_t dec_cfg = {
@@ -611,15 +767,16 @@ static void decode_and_show_jpeg(const uint8_t *buf, int len)
         ESP_LOGE(TAG, "jpeg: decode failed: %s", esp_err_to_name(dec_ret));
         free(rgb565_buf);
         screen_draw_text("Image decode\nfailed");
-        return;
+        return false;
     }
 
     ESP_LOGI(TAG, "jpeg: decoded %ux%u → blitting", out.width, out.height);
     screen_draw_rgb565(rgb565_buf, (int)out.width, (int)out.height);
     free(rgb565_buf);
+    return true;
 }
 
-static void download_and_show_jpeg(const char *url)
+static bool download_and_show_jpeg(const char *url)
 {
     screen_draw_text("Loading image...");
 
@@ -636,7 +793,7 @@ static void download_and_show_jpeg(const char *url)
     if (!client) {
         ESP_LOGE(TAG, "jpeg: http_client_init failed");
         screen_draw_text("Image load\nfailed");
-        return;
+        return false;
     }
 
     esp_err_t ret = esp_http_client_open(client, 0);
@@ -644,7 +801,7 @@ static void download_and_show_jpeg(const char *url)
         ESP_LOGE(TAG, "jpeg: HTTP open failed: %s", esp_err_to_name(ret));
         esp_http_client_cleanup(client);
         screen_draw_text("Image load\nfailed");
-        return;
+        return false;
     }
 
     int64_t cl = esp_http_client_fetch_headers(client);
@@ -654,7 +811,7 @@ static void download_and_show_jpeg(const char *url)
         esp_http_client_close(client);
         esp_http_client_cleanup(client);
         screen_draw_text("Image load\nfailed");
-        return;
+        return false;
     }
 
     int max_dl = JPEG_DL_MAX;
@@ -670,7 +827,7 @@ static void download_and_show_jpeg(const char *url)
         esp_http_client_close(client);
         esp_http_client_cleanup(client);
         screen_draw_text("Image load\nfailed");
-        return;
+        return false;
     }
 
     int total = 0;
@@ -686,7 +843,7 @@ static void download_and_show_jpeg(const char *url)
         ESP_LOGE(TAG, "jpeg: empty response from %s", url);
         free(jpeg_buf);
         screen_draw_text("Image load\nfailed");
-        return;
+        return false;
     }
     ESP_LOGI(TAG, "jpeg: downloaded %d bytes", total);
 
@@ -695,7 +852,11 @@ static void download_and_show_jpeg(const char *url)
     s_jpeg_cache     = jpeg_buf;   /* take ownership — do NOT free */
     s_jpeg_cache_len = total;
 
-    decode_and_show_jpeg(s_jpeg_cache, s_jpeg_cache_len);
+    if (decode_and_show_jpeg(s_jpeg_cache, s_jpeg_cache_len)) {
+        return true;
+    }
+
+    return false;
 }
 
 /* ── Connection step: Socket.IO + subscribeToFunRoom ────────────────────── */
@@ -953,6 +1114,8 @@ void picture_frame_run(void)
     }
 
     /* ── Connect + subscribe loop ────────────────────────────────────────── */
+    bool restored_display_state = false;
+
     while (true) {
         esp_err_t ret = connect_and_subscribe();
         if (ret != ESP_OK) {
@@ -963,6 +1126,11 @@ void picture_frame_run(void)
         }
 
         TickType_t last_ping_tick = xTaskGetTickCount();
+
+        if (!restored_display_state) {
+            restore_display_state_from_nvs();
+            restored_display_state = true;
+        }
 
         while (true) {
             /* Download + display JPEG from main task — blocking HTTP + decode */
@@ -978,7 +1146,10 @@ void picture_frame_run(void)
                 char jpeg_url[512];
                 strncpy(jpeg_url, s_pending_jpeg_url, sizeof(jpeg_url) - 1);
                 jpeg_url[sizeof(jpeg_url) - 1] = '\0';
-                download_and_show_jpeg(jpeg_url);
+                if (download_and_show_jpeg(jpeg_url)) {
+                    strncpy(s_current_jpeg_url, jpeg_url, sizeof(s_current_jpeg_url) - 1);
+                    s_current_jpeg_url[sizeof(s_current_jpeg_url) - 1] = '\0';
+                }
             }
 
             /* Post run/save from the main task — never from the WS callback task */
