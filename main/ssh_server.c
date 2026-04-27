@@ -80,9 +80,27 @@ static const char *TAG = "ssh_srv";
 #define NVS_CFG_KEY_PASS  "password"
 #define NVS_CFG_KEY_PKEY  "pubkey"
 
+/* NVS display-state persistence (JC3248W535 only) */
+#define NVS_DISP_NS       "disp_cfg"
+#define NVS_DISP_KEY_BG_R "bg_r"
+#define NVS_DISP_KEY_BG_G "bg_g"
+#define NVS_DISP_KEY_BG_B "bg_b"
+#define NVS_DISP_KEY_FG_R "fg_r"
+#define NVS_DISP_KEY_FG_G "fg_g"
+#define NVS_DISP_KEY_FG_B "fg_b"
+#define NVS_DISP_KEY_FONT "font"
+#define NVS_DISP_KEY_LAND "land"
+#define NVS_DISP_KEY_TEXT "last_text"
+#define NVS_DISP_KEY_SAVED "saved"
+
 /* ANSI helpers sent to the terminal */
 #define CRLF    "\r\n"
 #define PROMPT  "> "
+
+#if CONFIG_HARDWARE_JC3248W535
+/* Last text drawn — updated by the 'text' command, used by 'save' */
+static char s_last_text[LINE_BUF_SZ];
+#endif
 
 /* ------------------------------------------------------------------ */
 /* Banner text                                                         */
@@ -560,6 +578,80 @@ static int parse_name(const char *name, uint8_t *r, uint8_t *g, uint8_t *b)
 }
 
 #if CONFIG_HARDWARE_JC3248W535
+
+/* ------------------------------------------------------------------ */
+/* Display-state save / restore (JC3248W535 only)                     */
+/* ------------------------------------------------------------------ */
+
+static void save_display_state(WOLFSSH *ssh)
+{
+    nvs_handle_t h;
+    if (nvs_open(NVS_DISP_NS, NVS_READWRITE, &h) != ESP_OK) {
+        if (ssh) ssh_puts(ssh, "Error: could not open NVS." CRLF);
+        return;
+    }
+    uint8_t r, g, b;
+    screen_get_color(&r, &g, &b);
+    nvs_set_u8(h, NVS_DISP_KEY_BG_R, r);
+    nvs_set_u8(h, NVS_DISP_KEY_BG_G, g);
+    nvs_set_u8(h, NVS_DISP_KEY_BG_B, b);
+    screen_get_text_color(&r, &g, &b);
+    nvs_set_u8(h, NVS_DISP_KEY_FG_R, r);
+    nvs_set_u8(h, NVS_DISP_KEY_FG_G, g);
+    nvs_set_u8(h, NVS_DISP_KEY_FG_B, b);
+    int font_scale = 2;
+    screen_get_font_scale(&font_scale);
+    nvs_set_u8(h, NVS_DISP_KEY_FONT, (uint8_t)font_scale);
+    bool land = false;
+    screen_get_landscape(&land);
+    nvs_set_u8(h, NVS_DISP_KEY_LAND, land ? 1 : 0);
+    nvs_set_str(h, NVS_DISP_KEY_TEXT, s_last_text);
+    nvs_set_u8(h, NVS_DISP_KEY_SAVED, 1);
+    nvs_commit(h);
+    nvs_close(h);
+    if (ssh) ssh_puts(ssh, "Display state saved." CRLF);
+    ESP_LOGI(TAG, "Display state saved to NVS");
+}
+
+static void restore_display_state(void)
+{
+    nvs_handle_t h;
+    if (nvs_open(NVS_DISP_NS, NVS_READONLY, &h) != ESP_OK) return;
+    uint8_t sentinel = 0;
+    if (nvs_get_u8(h, NVS_DISP_KEY_SAVED, &sentinel) != ESP_OK || sentinel != 1) {
+        nvs_close(h);
+        return;
+    }
+    uint8_t r = 0, g = 0, b = 0;
+    nvs_get_u8(h, NVS_DISP_KEY_BG_R, &r);
+    nvs_get_u8(h, NVS_DISP_KEY_BG_G, &g);
+    nvs_get_u8(h, NVS_DISP_KEY_BG_B, &b);
+    screen_set_color(r, g, b);
+    r = 255; g = 255; b = 255;
+    nvs_get_u8(h, NVS_DISP_KEY_FG_R, &r);
+    nvs_get_u8(h, NVS_DISP_KEY_FG_G, &g);
+    nvs_get_u8(h, NVS_DISP_KEY_FG_B, &b);
+    screen_set_text_color(r, g, b);
+    uint8_t font_scale = 2;
+    nvs_get_u8(h, NVS_DISP_KEY_FONT, &font_scale);
+    screen_set_font_scale((int)font_scale);
+    uint8_t land = 0;
+    nvs_get_u8(h, NVS_DISP_KEY_LAND, &land);
+    screen_set_landscape(land != 0);
+    char text_buf[LINE_BUF_SZ] = {0};
+    size_t text_len = sizeof(text_buf);
+    if (nvs_get_str(h, NVS_DISP_KEY_TEXT, text_buf, &text_len) == ESP_OK && text_buf[0] != '\0') {
+        strncpy(s_last_text, text_buf, LINE_BUF_SZ - 1);
+        s_last_text[LINE_BUF_SZ - 1] = '\0';
+        screen_draw_text(s_last_text);
+    }
+    nvs_close(h);
+    ESP_LOGI(TAG, "Display state restored from NVS");
+}
+
+#endif /* CONFIG_HARDWARE_JC3248W535 */
+
+#if CONFIG_HARDWARE_JC3248W535
 static const char s_help[] =
     "Commands:\r\n"
     "  color <name>      Named colour: red green blue white yellow\r\n"
@@ -571,6 +663,7 @@ static const char s_help[] =
     "  landscape          Rotate display to landscape (480×320)\r\n"
     "  portrait           Rotate display to portrait  (320×480)\r\n"
     "  fontsize <1-8>    Set font scale (1=8px, 2=16px, 3=24px, 4=32px, 5=40px, 6=48px, 7=56px, 8=64px)\r\n"
+    "  save              Save current display state (text/colors/font/orientation) to NVS\r\n"
     "  off               Fill screen black\r\n"
     "  status            Show current screen colour\r\n"
     "  help              Show this help text\r\n"
@@ -641,7 +734,17 @@ static int handle_command(WOLFSSH *ssh, const char *line)
             *d = '\0';
         }
         screen_draw_text(tmp);
+        strncpy(s_last_text, tmp, LINE_BUF_SZ - 1);
+        s_last_text[LINE_BUF_SZ - 1] = '\0';
         ssh_puts(ssh, "Text set." CRLF);
+        return 0;
+    }
+#endif
+
+    /* ---- save (JC3248W535 only) ---- */
+#if CONFIG_HARDWARE_JC3248W535
+    if (strcasecmp(line, "save") == 0) {
+        save_display_state(ssh);
         return 0;
     }
 #endif
@@ -1090,6 +1193,10 @@ esp_err_t ssh_server_start(void)
         ESP_LOGE(TAG, "wolfSSH_Init failed");
         return ESP_FAIL;
     }
+
+#if CONFIG_HARDWARE_JC3248W535
+    restore_display_state();
+#endif
 
     BaseType_t ret = xTaskCreate(listener_task, "ssh_listen",
                                  SSH_TASK_STACK, NULL,
