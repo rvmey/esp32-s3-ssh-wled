@@ -8,8 +8,8 @@
     clobbering each other.
 
     After a successful build the following files are updated in docs/firmware/:
-        bootloader.bin          (shared — taken from the last successful build)
-        partition-table.bin     (shared — taken from the last successful build)
+        bootloader-<chip>.bin   (chip-specific bootloader)
+        partition-table-<chip>.bin (chip-specific partition table)
         nvs_blank.bin           (shared — must already exist in docs/firmware/)
         esp32_ssh_devkitc.bin   (DevKitC-1 application binary)
         esp32_ssh_screen.bin    (JC3248W535 application binary)
@@ -39,18 +39,26 @@ $variants = @(
         Name      = 'devkitc'
         Config    = 'sdkconfig.devkitc'
         BuildDir  = 'build_devkitc'
+        Chip      = 'esp32s3'
+        BootloaderBin = 'bootloader-esp32s3.bin'
+        PartitionBin  = 'partition-table-esp32s3.bin'
         OutputBin = 'esp32_ssh_devkitc.bin'
     },
     [PSCustomObject]@{
         Name      = 'jc3248w535'
         Config    = 'sdkconfig.jc3248w535'
         BuildDir  = 'build_jc3248w535'
+        Chip      = 'esp32s3'
+        BootloaderBin = 'bootloader-esp32s3.bin'
+        PartitionBin  = 'partition-table-esp32s3.bin'
         OutputBin = 'esp32_ssh_screen.bin'
     },
     [PSCustomObject]@{
         Name         = 'bike_tracker'
         Config       = 'sdkconfig.bike_tracker'
         BuildDir     = 'build_bike_tracker'
+        Chip         = 'esp32s3'
+        BootloaderBin = 'bootloader-esp32s3.bin'
         OutputBin    = 'esp32_bike_tracker.bin'
         PartitionBin = 'partition-table-bike_tracker.bin'
     },
@@ -58,12 +66,18 @@ $variants = @(
         Name      = 'picture_frame'
         Config    = 'sdkconfig.picture_frame'
         BuildDir  = 'build_picture_frame'
+        Chip      = 'esp32s3'
+        BootloaderBin = 'bootloader-esp32s3.bin'
+        PartitionBin  = 'partition-table-esp32s3.bin'
         OutputBin = 'esp32_picture_frame.bin'
     },
     [PSCustomObject]@{
         Name      = 'tcmd_atom_echo'
         Config    = 'sdkconfig.tcmd_atom_echo'
         BuildDir  = 'build_tcmd_atom_echo'
+        Chip      = 'esp32'
+        BootloaderBin = 'bootloader-esp32.bin'
+        PartitionBin  = 'partition-table-esp32.bin'
         OutputBin = 'esp32_tcmd_atom_echo.bin'
         Target    = 'esp32'          # classic ESP32-PICO-D4, not ESP32-S3
     }
@@ -140,7 +154,7 @@ function Test-VariantNeedsRebuild([PSCustomObject]$variant) {
     return $false
 }
 
-function Copy-Artifacts([PSCustomObject]$variant, [bool]$copyShared) {
+function Copy-Artifacts([PSCustomObject]$variant) {
     $buildDir = Join-Path $PSScriptRoot $variant.BuildDir
 
     # Application binary
@@ -149,22 +163,14 @@ function Copy-Artifacts([PSCustomObject]$variant, [bool]$copyShared) {
     Copy-Item $appSrc $appDst -Force
     Write-Host "  Copied $($variant.OutputBin)" -ForegroundColor Green
 
-    if ($copyShared) {
-        # Bootloader and partition table are hardware-independent
-        $bootSrc  = Join-Path $buildDir 'bootloader\bootloader.bin'
-        $partSrc  = Join-Path $buildDir 'partition_table\partition-table.bin'
-        Copy-Item $bootSrc  (Join-Path $FirmwareDir 'bootloader.bin')       -Force
-        Copy-Item $partSrc  (Join-Path $FirmwareDir 'partition-table.bin')  -Force
-        Write-Host '  Copied bootloader.bin' -ForegroundColor Green
-        Write-Host '  Copied partition-table.bin' -ForegroundColor Green
-    }
+    # Bootloader and partition table must be chip-specific (ESP32 vs ESP32-S3)
+    $bootSrc = Join-Path $buildDir 'bootloader\bootloader.bin'
+    Copy-Item $bootSrc (Join-Path $FirmwareDir $variant.BootloaderBin) -Force
+    Write-Host "  Copied $($variant.BootloaderBin)" -ForegroundColor Green
 
-    # Variant-specific partition table (e.g. for custom flash layouts)
-    if ($variant.PSObject.Properties['PartitionBin']) {
-        $varPartSrc = Join-Path $buildDir 'partition_table\partition-table.bin'
-        Copy-Item $varPartSrc (Join-Path $FirmwareDir $variant.PartitionBin) -Force
-        Write-Host "  Copied $($variant.PartitionBin)" -ForegroundColor Green
-    }
+    $partSrc = Join-Path $buildDir 'partition_table\partition-table.bin'
+    Copy-Item $partSrc (Join-Path $FirmwareDir $variant.PartitionBin) -Force
+    Write-Host "  Copied $($variant.PartitionBin)" -ForegroundColor Green
 }
 
 # ---------------------------------------------------------------------------
@@ -215,18 +221,17 @@ if ($Variant.Count -gt 0) {
     $variants = @($variants)
 }
 
-# Build each variant (skip if sources are unchanged)
-$first   = $true
+# Build each variant (skip compiling if sources are unchanged, but refresh artifacts)
 $skipped = 0
 foreach ($v in $variants) {
     if (-not $Clean -and -not (Test-VariantNeedsRebuild -variant $v)) {
-        Write-Host "`n>>> Skipping variant '$($v.Name)' -- no source changes detected" -ForegroundColor DarkGray
+        Write-Host "`n>>> Skipping compile for variant '$($v.Name)' -- no source changes detected" -ForegroundColor DarkGray
+        Copy-Artifacts -variant $v
         $skipped++
         continue
     }
     Invoke-IdfBuild -variant $v
-    Copy-Artifacts  -variant $v -copyShared $first
-    $first = $false
+    Copy-Artifacts  -variant $v
 }
 
 if ($skipped -eq $variants.Count) {

@@ -6,8 +6,8 @@
     {
       "chipFamily": "ESP32",
       "parts": [
-        { "path": "firmware/bootloader.bin",             "offset": 4096  },
-        { "path": "firmware/partition-table.bin",        "offset": 32768 },
+        { "path": "firmware/bootloader-esp32.bin",       "offset": 4096  },
+        { "path": "firmware/partition-table-esp32.bin",  "offset": 32768 },
         { "path": "firmware/nvs_blank.bin",              "offset": 36864 },
         { "path": "firmware/esp32_tcmd_atom_echo.bin",   "offset": 65536 }
       ]
