@@ -1,13 +1,14 @@
 # ESP32-S3 SSH Server
 
-Control an ESP32-S3 output device (RGB LED or colour screen) over a real SSH
-connection powered by **[wolfSSH](https://www.wolfssl.com/wolfssh/)**.  Two
-hardware variants are supported; choose the one that matches your board.
+Control an ESP32-based output device (RGB LED, color screen, or voice endpoint)
+over firmware variants in this repository. Three hardware variants are
+documented below; choose the one that matches your board.
 
 | Variant | Hardware | What it controls |
 |---------|----------|------------------|
-| [ESP32-S3-DevKitC-1](ESP32-S3-DevKitC-1.md) | DevKitC-1 | Onboard WS2812 RGB LED (GPIO 48) |
-| [JC3248W535](JC3248W535.md) | Guition JC3248W535 | 320×480 AXS15231 QSPI display |
+| [ESP32-S3-DevKitC-1](DevKitC-1-Onboard-RGB-LED.md) | DevKitC-1 | Onboard WS2812 RGB LED (GPIO 48) |
+| [JC3248W535](JC3248W535-320x480-Screen.md) | Guition JC3248W535 | 320×480 AXS15231 QSPI display |
+| [ATOM Echo](ATOM-Echo-TRIGGERcmd-Voice.md) | M5Stack ATOM Echo | TRIGGERcmd pairing + button-triggered voice commands |
 
 ---
 
