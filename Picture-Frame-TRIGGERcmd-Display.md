@@ -39,6 +39,16 @@ receives commands over Socket.IO, and updates the display in real time.
 - The `save` command stores display state (colors, font, orientation, text, JPEG URL)
   in NVS and restores it on reboot.
 
+## Example: sending a kitty photo via ChatGPT
+
+Ask ChatGPT to look up a public cat image and send it to the display using the TRIGGERcmd app:
+
+![ChatGPT sending a kitty JPEG URL via the TRIGGERcmd app](chatgpt_triggercmd_kitty.png)
+
+The Picture Frame receives the `jpeg` command over Socket.IO and immediately downloads and renders the image:
+
+![Picture frame displaying the kitty photo](picture_frame_kitty.jpg)
+
 ---
 
 ## Display states during boot/connect
