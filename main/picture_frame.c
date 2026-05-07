@@ -571,7 +571,7 @@ static const pf_cmd_t s_pf_cmds[] = {
     { "text",      "text",      "true",  "Update the display text. Example: 'text Hello world!'",           "\xF0\x9F\x93\x9D" /* 📝 */ },
     { "color",     "color",     "true",  "Change the display color. Example: 'color red' or 'color #FF0000'", "\xF0\x9F\x94\xA4" /* 🔤 */ },
     { "textcolor", "textcolor", "true",  "Change the text color. Example: 'textcolor blue' or 'textcolor #0000FF'", "\xF0\x9F\x8E\xA8" /* 🎨 */ },
-    { "fontsize",  "fontsize",  "true",  "Change the font size. Example: 'fontsize 3'",                     "\xF0\x9F\x94\xA1" /* 🔡 */ },
+    { "fontsize",  "fontsize",  "true",  "Change the font size (1-4). Example: 'fontsize 3'",                     "\xF0\x9F\x94\xA1" /* 🔡 */ },
     { "landscape", "landscape", "false", "Set the display to landscape orientation.",                        "\xE2\x86\x94\xEF\xB8\x8F" /* ↔️ */ },
     { "portrait",  "portrait",  "false", "Set the display to portrait orientation.",                         "\xE2\x86\x95\xEF\xB8\x8F" /* ↕️ */ },
     { "jpeg",      "jpeg",      "true",  "Display a JPEG image. Example: 'jpeg https://example.com/image.jpg'", "\xF0\x9F\x96\xBC\xEF\xB8\x8F" /* 🖼️ */ },

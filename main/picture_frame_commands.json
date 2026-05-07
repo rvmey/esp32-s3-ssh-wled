@@ -29,7 +29,7 @@
   "command": "fontsize",
   "voice": "fontsize",
   "allowParams": "true",
-  "mcpToolDescription": "Change the font size. Example: 'fontsize 3'",
+  "mcpToolDescription": "Change the font size (1-4). Example: 'fontsize 3'",
   "icon": "🔡"
  },
  {
