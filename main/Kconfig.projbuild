@@ -106,6 +106,45 @@ menu "ESP32 SSH LED Configuration"
                 If no motion is detected for this many seconds, the current
                 ride is finished and the device returns to deep sleep.
 
+        config TRACKER_HALL_ENABLE
+            bool "Enable KY-003 hall speed sensor"
+            default y
+            help
+                Enable digital pulse capture from a KY-003 hall sensor.
+
+        config TRACKER_HALL_GPIO
+            int "KY-003 hall sensor GPIO (must be RTC-capable, 0-21)"
+            default 5
+            range 0 21
+            depends on TRACKER_HALL_ENABLE
+            help
+                GPIO connected to the KY-003 digital output. Must be an
+                RTC-capable GPIO to support deep-sleep wakeup via EXT1.
+
+        config TRACKER_HALL_ACTIVE_HIGH
+            bool "KY-003 active level is HIGH"
+            default n
+            depends on TRACKER_HALL_ENABLE
+            help
+                Set if your module drives HIGH when magnet is detected.
+                Leave disabled if magnet detection pulls the output LOW.
+
+        config TRACKER_WHEEL_CIRCUM_MM
+            int "Wheel circumference (mm)"
+            default 2105
+            range 500 4000
+            depends on TRACKER_HALL_ENABLE
+            help
+                Circumference used to convert hall pulses into wheel speed.
+
+        config TRACKER_HALL_PULSES_PER_REV
+            int "Hall pulses per wheel revolution"
+            default 1
+            range 1 16
+            depends on TRACKER_HALL_ENABLE
+            help
+                Number of KY-003 pulses generated for one wheel revolution.
+
         config TRACKER_UPLOAD_URL
             string "Ride upload URL (empty = disable upload)"
             default ""

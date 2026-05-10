@@ -17,8 +17,96 @@
 #include "freertos/task.h"
 
 #include <inttypes.h>
+#include <limits.h>
 
 static const char *TAG = "bike_tracker";
+
+#if CONFIG_TRACKER_HALL_ACTIVE_HIGH
+#define HALL_INTR_TYPE GPIO_INTR_POSEDGE
+#define HALL_PULLUP    GPIO_PULLUP_DISABLE
+#define HALL_PULLDOWN  GPIO_PULLDOWN_ENABLE
+#else
+#define HALL_INTR_TYPE GPIO_INTR_NEGEDGE
+#define HALL_PULLUP    GPIO_PULLUP_ENABLE
+#define HALL_PULLDOWN  GPIO_PULLDOWN_DISABLE
+#endif
+
+#if CONFIG_TRACKER_HALL_ENABLE
+static volatile uint32_t s_hall_pulse_count = 0;
+static portMUX_TYPE s_hall_pulse_mux = portMUX_INITIALIZER_UNLOCKED;
+
+static void IRAM_ATTR hall_isr_handler(void *arg)
+{
+    (void)arg;
+    portENTER_CRITICAL_ISR(&s_hall_pulse_mux);
+    s_hall_pulse_count++;
+    portEXIT_CRITICAL_ISR(&s_hall_pulse_mux);
+}
+
+static uint32_t hall_take_pulses(void)
+{
+    uint32_t pulses;
+
+    portENTER_CRITICAL(&s_hall_pulse_mux);
+    pulses = s_hall_pulse_count;
+    s_hall_pulse_count = 0;
+    portEXIT_CRITICAL(&s_hall_pulse_mux);
+
+    return pulses;
+}
+
+static int16_t hall_pulses_to_speed_kmh_x10(uint32_t pulses, int interval_ms)
+{
+    if (pulses == 0 || interval_ms <= 0) {
+        return 0;
+    }
+
+    int64_t distance_mm = ((int64_t)pulses * CONFIG_TRACKER_WHEEL_CIRCUM_MM
+                           + (CONFIG_TRACKER_HALL_PULSES_PER_REV / 2))
+                          / CONFIG_TRACKER_HALL_PULSES_PER_REV;
+    int64_t speed_mm_s = (distance_mm * 1000 + (interval_ms / 2)) / interval_ms;
+    int64_t speed_kmh_x10 = (speed_mm_s * 36 + 500) / 1000;
+
+    if (speed_kmh_x10 > INT16_MAX) {
+        speed_kmh_x10 = INT16_MAX;
+    }
+    return (int16_t)speed_kmh_x10;
+}
+
+static esp_err_t hall_sensor_runtime_init(void)
+{
+    gpio_config_t io_cfg = {
+        .pin_bit_mask = 1ULL << CONFIG_TRACKER_HALL_GPIO,
+        .mode = GPIO_MODE_INPUT,
+        .intr_type = HALL_INTR_TYPE,
+        .pull_up_en = HALL_PULLUP,
+        .pull_down_en = HALL_PULLDOWN,
+    };
+
+    esp_err_t ret = gpio_config(&io_cfg);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Hall GPIO config failed: %s", esp_err_to_name(ret));
+        return ret;
+    }
+
+    ret = gpio_install_isr_service(ESP_INTR_FLAG_IRAM);
+    if (ret != ESP_OK && ret != ESP_ERR_INVALID_STATE) {
+        ESP_LOGE(TAG, "Hall ISR service install failed: %s", esp_err_to_name(ret));
+        return ret;
+    }
+
+    ret = gpio_isr_handler_add((gpio_num_t)CONFIG_TRACKER_HALL_GPIO,
+                               hall_isr_handler, NULL);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Hall ISR add failed: %s", esp_err_to_name(ret));
+        return ret;
+    }
+
+    hall_take_pulses();
+    ESP_LOGI(TAG, "Hall speed sensor active on GPIO %d", CONFIG_TRACKER_HALL_GPIO);
+    return ESP_OK;
+}
+#endif
 
 /* ── Deep sleep helper ───────────────────────────────────────────────────── */
 
@@ -37,8 +125,30 @@ static void IRAM_ATTR enter_deep_sleep(void)
     rtc_gpio_pulldown_en((gpio_num_t)CONFIG_MPU6050_INT_GPIO);
 
     esp_sleep_enable_ext0_wakeup((gpio_num_t)CONFIG_MPU6050_INT_GPIO, 1);
+
+#if CONFIG_TRACKER_HALL_ENABLE
+    rtc_gpio_init((gpio_num_t)CONFIG_TRACKER_HALL_GPIO);
+    rtc_gpio_set_direction((gpio_num_t)CONFIG_TRACKER_HALL_GPIO,
+                           RTC_GPIO_MODE_INPUT_ONLY);
+#if CONFIG_TRACKER_HALL_ACTIVE_HIGH
+    rtc_gpio_pullup_dis((gpio_num_t)CONFIG_TRACKER_HALL_GPIO);
+    rtc_gpio_pulldown_en((gpio_num_t)CONFIG_TRACKER_HALL_GPIO);
+    esp_sleep_enable_ext1_wakeup(1ULL << CONFIG_TRACKER_HALL_GPIO,
+                                 ESP_EXT1_WAKEUP_ANY_HIGH);
+    ESP_LOGI(TAG, "Entering deep sleep, wakeups: MPU INT GPIO %d high, hall GPIO %d high",
+             CONFIG_MPU6050_INT_GPIO, CONFIG_TRACKER_HALL_GPIO);
+#else
+    rtc_gpio_pullup_en((gpio_num_t)CONFIG_TRACKER_HALL_GPIO);
+    rtc_gpio_pulldown_dis((gpio_num_t)CONFIG_TRACKER_HALL_GPIO);
+    esp_sleep_enable_ext1_wakeup(1ULL << CONFIG_TRACKER_HALL_GPIO,
+                                 ESP_EXT1_WAKEUP_ANY_LOW);
+    ESP_LOGI(TAG, "Entering deep sleep, wakeups: MPU INT GPIO %d high, hall GPIO %d low",
+             CONFIG_MPU6050_INT_GPIO, CONFIG_TRACKER_HALL_GPIO);
+#endif
+#else
     ESP_LOGI(TAG, "Entering deep sleep, INT wakeup on GPIO %d",
              CONFIG_MPU6050_INT_GPIO);
+#endif
 
     /* Short delay to let log output flush before power-down.               */
     vTaskDelay(pdMS_TO_TICKS(50));
@@ -56,6 +166,12 @@ static void run_tracking_cycle(void)
         enter_deep_sleep();
     }
     mpu6050_clear_interrupt();
+
+#if CONFIG_TRACKER_HALL_ENABLE
+    if (hall_sensor_runtime_init() != ESP_OK) {
+        ESP_LOGW(TAG, "Hall speed sensor init failed; continuing with GPS speed only");
+    }
+#endif
 
     /* Acquire GPS fix. */
     if (gps_ubx_init() != ESP_OK) {
@@ -89,21 +205,41 @@ static void run_tracking_cycle(void)
         while (1) {
             vTaskDelay(pdMS_TO_TICKS(interval_ms));
 
+#if CONFIG_TRACKER_HALL_ENABLE
+            uint32_t hall_pulses = hall_take_pulses();
+            int16_t hall_speed_kmh_x10 = hall_pulses_to_speed_kmh_x10(hall_pulses,
+                                                                       interval_ms);
+#else
+            uint32_t hall_pulses = 0;
+#endif
+
             gps_pvt_t pvt = {0};
             if (gps_ubx_get_pvt(&pvt) == ESP_OK && pvt.fix_type >= 2) {
+                int16_t speed_kmh_x10 =
+                    (int16_t)((pvt.speed_mm_s * 36 + 5000) / 10000);
+#if CONFIG_TRACKER_HALL_ENABLE
+                if (hall_pulses > 0) {
+                    speed_kmh_x10 = hall_speed_kmh_x10;
+                }
+#endif
                 track_point_t pt = {
                     .lat       = pvt.lat,
                     .lon       = pvt.lon,
-                    .speed_kmh = (int16_t)((pvt.speed_mm_s * 36 + 5000) / 10000),
+                    .speed_kmh = speed_kmh_x10,
                     ._pad      = 0,
                 };
                 ride_log_append(&pt);
-                ESP_LOGD(TAG, "Point: lat=%ld lon=%ld spd=%d km/h×10",
+#if CONFIG_TRACKER_HALL_ENABLE
+                ESP_LOGD(TAG, "Point: lat=%ld lon=%ld spd=%d km/hx10 hall_pulses=%" PRIu32,
+                         (long)pt.lat, (long)pt.lon, pt.speed_kmh, hall_pulses);
+#else
+                ESP_LOGD(TAG, "Point: lat=%ld lon=%ld spd=%d km/hx10",
                          (long)pt.lat, (long)pt.lon, pt.speed_kmh);
+#endif
             }
 
-            /* Check for inactivity via MPU6050 motion interrupt.           */
-            if (mpu6050_is_active()) {
+            /* Check for inactivity via MPU6050 interrupt or hall pulses.   */
+            if (mpu6050_is_active() || hall_pulses > 0) {
                 inactivity_ticks = 0;
             } else {
                 inactivity_ticks++;
@@ -143,9 +279,9 @@ void bike_tracker_run(void)
     esp_sleep_wakeup_cause_t cause = esp_sleep_get_wakeup_cause();
     ESP_LOGI(TAG, "Wakeup cause: %d", (int)cause);
 
-    if (cause == ESP_SLEEP_WAKEUP_EXT0) {
-        /* Woken by MPU6050 motion interrupt — start a tracking cycle.      */
-        ESP_LOGI(TAG, "Motion detected — starting tracking cycle");
+    if (cause == ESP_SLEEP_WAKEUP_EXT0 || cause == ESP_SLEEP_WAKEUP_EXT1) {
+        /* Woken by MPU6050 interrupt (EXT0) or hall pulse (EXT1).          */
+        ESP_LOGI(TAG, "Motion/speed wakeup detected — starting tracking cycle");
         run_tracking_cycle();
     } else {
         /* First power-on or manual reset.                                  */
