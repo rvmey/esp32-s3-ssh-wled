@@ -220,11 +220,9 @@ static void screen_fill(uint8_t r, uint8_t g, uint8_t b)
         s_row_buf[i + 1] = pl;
     }
 
-    ili_set_window(0, 0, LCD_PHYS_W - 1, LCD_PHYS_H - 1);
-    /* First row already started by RAMWR inside ili_set_window */
-    ili_write_row();
-    for (int y = 1; y < LCD_PHYS_H; y++) {
-        ili_write_cont_row();
+    for (int y = 0; y < LCD_PHYS_H; y++) {
+        ili_set_window(0, y, LCD_PHYS_W - 1, y);
+        ili_write_row();
     }
 
     xSemaphoreGive(s_draw_mutex);
@@ -733,8 +731,6 @@ void screen_draw_text(const char *text)
 
     int logical_w = lcd_w();
 
-    ili_set_window(0, 0, LCD_PHYS_W - 1, LCD_PHYS_H - 1);
-
     for (int y = 0; y < LCD_PHYS_H; y++) {
         for (int i = 0; i < LCD_PHYS_W * 2; i += 2) {
             s_row_buf[i]     = bg_h;
@@ -761,8 +757,8 @@ void screen_draw_text(const char *text)
             }
         }
 
-        if (y == 0) ili_write_row();
-        else        ili_write_cont_row();
+        ili_set_window(0, y, LCD_PHYS_W - 1, y);
+        ili_write_row();
     }
 
     xSemaphoreGive(s_draw_mutex);
@@ -796,8 +792,6 @@ void screen_draw_rgb565(const uint8_t *rgb565, int src_w, int src_h)
 
     const uint16_t *src = (const uint16_t *)rgb565;
 
-    ili_set_window(0, 0, LCD_PHYS_W - 1, LCD_PHYS_H - 1);
-
     for (int y = 0; y < LCD_PHYS_H; y++) {
         for (int i = 0; i < LCD_PHYS_W * 2; i += 2) {
             s_row_buf[i]     = bg_h;
@@ -826,8 +820,8 @@ void screen_draw_rgb565(const uint8_t *rgb565, int src_w, int src_h)
             s_row_buf[x * 2 + 1] = (uint8_t)(pixel & 0xFF);
         }
 
-        if (y == 0) ili_write_row();
-        else        ili_write_cont_row();
+        ili_set_window(0, y, LCD_PHYS_W - 1, y);
+        ili_write_row();
     }
 
     xSemaphoreGive(s_draw_mutex);
