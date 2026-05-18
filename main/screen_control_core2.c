@@ -40,7 +40,7 @@ static const char *TAG = "screen_c2";
 /* Hardware constants (M5Stack Core2)                                 */
 /* ------------------------------------------------------------------ */
 
-#define LCD_HOST     SPI2_HOST
+#define LCD_HOST     SPI3_HOST
 /* ESP32 SPI master on this setup rejects >26.666MHz for the LCD device. */
 #define LCD_CLK_HZ   (26 * 1000 * 1000)
 
@@ -472,28 +472,28 @@ esp_err_t screen_init(void)
     }
     ESP_LOGI(TAG, "I2C ready (SDA=%d SCL=%d)", I2C_SDA_GPIO, I2C_SCL_GPIO);
 
-    /* ── AXP192 PMU — power LCD via DCDC3 + LDO2, keep vibration off ─── */
+    /* ── AXP192 PMU — Core2-style LCD rails/reset, keep vibration off ─── */
     /*
-    * Core2 reference rail mapping (AXP192):
-    *   - DCDC3 (reg 0x27) -> LCD/backlight rail (set to 2.8V)
-    *   - LDO2  (reg 0x28 hi nibble) -> LCD logic rail (3.3V)
-    *   - LDO3  (reg 0x28 lo nibble) -> vibration motor preset (2.0V), keep disabled
-    *   - Enable bits in reg 0x12: DCDC3 bit1 + LDO2 bit2 ON, LDO3 bit3 OFF
-    *   - Toggle LCD reset via reg 0x96 bit1 (SetLCDRSet equivalent)
+    * Core2 AXP192 bring-up mirrors M5GFX logic:
+    *   - Enable GPIO4 function, use it as LCD reset control (reg 0x95 / 0x96)
+    *   - LDO2 = 3.3V for LCD logic (reg 0x28 high nibble)
+    *   - DC3 powers LCD backlight rail (reg 0x27 + reg 0x12 bit1)
+    *   - LDO3 (vibration rail) forced OFF (reg 0x12 bit3 clear)
      */
     uint8_t reg30 = 0;
     if (axp_read(0x30, &reg30) == ESP_OK) {
         axp_write(0x30, (reg30 & 0x04) | 0x02); /* disable VBUS current limit */
     }
-    axp_write(0x82, 0xFF);              /* enable all ADC channels              */
-    axp_write(0x27, 0x54);              /* DCDC3 = 2.8V                         */
-    axp_write(0x28, 0xF2);              /* LDO2 = 3.3V, LDO3 preset = 2.0V      */
-    axp_read_modify_write(0x12, 0x0E, 0x06); /* ON: DCDC3+LDO2, OFF: LDO3          */
-    axp_read_modify_write(0x96, 0x02, 0x00); /* LCD reset low                        */
+    axp_write(0x95, 0x84);              /* GPIO4 function enable (Core2 LCD RST) */
+    axp_write(0x28, 0xF0);              /* LDO2 = 3.3V                           */
+    axp_write(0x27, 0x67);              /* DC3 backlight rail nominal setting     */
+    axp_read_modify_write(0x92, 0x07, 0x00); /* GPIO1 open-drain style (Core2/Tough) */
+    axp_read_modify_write(0x12, 0x0E, 0x06); /* ON: DC3+LDO2, OFF: LDO3 (vibration)  */
+    axp_read_modify_write(0x96, 0x02, 0x00); /* LCD reset low                          */
     vTaskDelay(pdMS_TO_TICKS(20));
-    axp_read_modify_write(0x96, 0x02, 0x02); /* LCD reset high                       */
+    axp_read_modify_write(0x96, 0x02, 0x02); /* LCD reset high                         */
     vTaskDelay(pdMS_TO_TICKS(50));
-    ESP_LOGI(TAG, "AXP192 LCD rails on (DCDC3/LDO2), vibration rail off");
+    ESP_LOGI(TAG, "AXP192 Core2 rails/reset ready (DC3+LDO2 on, LDO3 off)");
 
     /* ── DC pin (GPIO output) ────────────────────────────────────────── */
     gpio_config_t dc_cfg = {
