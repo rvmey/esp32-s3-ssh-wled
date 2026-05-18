@@ -530,17 +530,43 @@ esp_err_t screen_init(void)
     vTaskDelay(pdMS_TO_TICKS(150));
 
     ili_cmd(0x11);                              /* SLEEP_OUT         */
-    vTaskDelay(pdMS_TO_TICKS(150));
+    vTaskDelay(pdMS_TO_TICKS(120));
+
+    /* ILI9342C extended init sequence (matches known-good Core2 panel bring-up). */
+    { uint8_t d[] = {0xFF, 0x93, 0x42}; ili_cmd(0xC8); ili_data(d, sizeof(d)); } /* SETEXTC */
+    { uint8_t d[] = {0x12, 0x12};       ili_cmd(0xC0); ili_data(d, sizeof(d)); } /* PWCTR1  */
+    { uint8_t d[] = {0x03};             ili_cmd(0xC1); ili_data(d, sizeof(d)); } /* PWCTR2  */
+    { uint8_t d[] = {0xF2};             ili_cmd(0xC5); ili_data(d, sizeof(d)); } /* VMCTR1  */
+    { uint8_t d[] = {0xE0};             ili_cmd(0xB0); ili_data(d, sizeof(d)); }
+    { uint8_t d[] = {0x01, 0x00, 0x00}; ili_cmd(0xF6); ili_data(d, sizeof(d)); }
+    {
+        uint8_t d[] = {
+            0x00, 0x0C, 0x11, 0x04, 0x11,
+            0x08, 0x37, 0x89, 0x4C, 0x06,
+            0x0C, 0x0A, 0x2E, 0x34, 0x0F
+        };
+        ili_cmd(0xE0); ili_data(d, sizeof(d)); /* GMCTRP1 */
+    }
+    {
+        uint8_t d[] = {
+            0x00, 0x0B, 0x11, 0x05, 0x13,
+            0x09, 0x33, 0x67, 0x48, 0x07,
+            0x0E, 0x0B, 0x2E, 0x33, 0x0F
+        };
+        ili_cmd(0xE1); ili_data(d, sizeof(d)); /* GMCTRN1 */
+    }
+    { uint8_t d[] = {0x08, 0x82, 0x1D, 0x04}; ili_cmd(0xB6); ili_data(d, sizeof(d)); } /* DFUNCTR */
+    ili_cmd(0x38);                              /* IDMOFF (idle off) */
 
     ili_cmd(0x3A); ili_data_byte(0x55);         /* COLMOD: RGB565    */
     ili_cmd(0x36); ili_data_byte(MADCTL_LANDSCAPE); /* MADCTL        */
-    ili_cmd(0x21);                              /* INVERT_ON  (ILI9342C often needs invert) */
-
-    /* Blackout GRAM before display-on to avoid snow flash */
-    screen_off();
+    ili_cmd(0x21);                              /* INVERT_ON         */
 
     ili_cmd(0x29);                              /* DISPLAY_ON        */
     vTaskDelay(pdMS_TO_TICKS(20));
+
+    /* Blackout after display-on so first visible frame is deterministic. */
+    screen_off();
 
     ESP_LOGI(TAG, "ILI9342C ready (%d x %d @ %d MHz SPI)",
              lcd_w(), lcd_h(), LCD_CLK_HZ / 1000000);
