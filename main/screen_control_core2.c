@@ -41,7 +41,8 @@ static const char *TAG = "screen_c2";
 /* ------------------------------------------------------------------ */
 
 #define LCD_HOST     SPI2_HOST
-#define LCD_CLK_HZ   (40 * 1000 * 1000)
+/* ESP32 SPI master on this setup rejects >26.666MHz for the LCD device. */
+#define LCD_CLK_HZ   (26 * 1000 * 1000)
 
 #define LCD_MOSI     23
 #define LCD_MISO     38

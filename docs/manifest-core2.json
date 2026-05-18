@@ -1,6 +1,6 @@
 {
   "name": "TRIGGERcmd Core2 Display (M5Stack Core2 for AWS)",
-  "version": "2.0.89",
+  "version": "2.0.90",
   "new_install_improv_wifi": false,
   "builds": [
     {
