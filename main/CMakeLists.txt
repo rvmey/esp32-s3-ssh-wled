@@ -21,21 +21,27 @@ elseif(CONFIG_HARDWARE_TCMD_ATOM_ECHO)
         "atom_audio.c"
         "atom_mic.c"
         "audio_clips.c")
+elseif(CONFIG_HARDWARE_CORE2)
+    set(VARIANT_SRCS
+        "screen_control_core2.c"
+        "picture_frame.c"
+        "socketio.c"
+        "http_pf_config.c")
 else()
     set(VARIANT_SRCS "led_control.c")
 endif()
 
 # SSH/HTTP server sources are not needed for bike-tracker, picture-frame, or atom-echo
 if(NOT CONFIG_HARDWARE_BIKE_TRACKER AND NOT CONFIG_HARDWARE_PICTURE_FRAME
-   AND NOT CONFIG_HARDWARE_TCMD_ATOM_ECHO)
+   AND NOT CONFIG_HARDWARE_TCMD_ATOM_ECHO AND NOT CONFIG_HARDWARE_CORE2)
     set(SSH_SRCS "ssh_server.c" "http_config.c")
 else()
     set(SSH_SRCS "")
 endif()
 
 # improv_wifi uses driver/usb_serial_jtag.h which is ESP32-S3 only;
-# the ATOM Echo variant handles its own provisioning via SoftAP.
-if(CONFIG_HARDWARE_TCMD_ATOM_ECHO)
+# the ATOM Echo and Core2 variants handle their own provisioning via SoftAP.
+if(CONFIG_HARDWARE_TCMD_ATOM_ECHO OR CONFIG_HARDWARE_CORE2)
     set(IMPROV_SRCS "")
 else()
     set(IMPROV_SRCS "improv_wifi.c")

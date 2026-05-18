@@ -97,3 +97,52 @@ Output firmware path:
 - `main/picture_frame.c` - main firmware flow for this variant
 - `sdkconfig.picture_frame` - variant configuration
 - `docs/manifest-picture_frame.json` - browser installer manifest
+
+---
+
+## Core2 for AWS variant
+
+The same TRIGGERcmd picture-frame firmware also runs on the
+**M5Stack Core2 for AWS** (classic ESP32, ILI9342C 320×240 SPI display).
+All display commands are identical; only the hardware initialization differs.
+
+### Hardware notes
+
+| Item | Detail |
+|------|--------|
+| Board | M5Stack Core2 for AWS |
+| Display | ILI9342C SPI TFT, 320×240 (landscape native) |
+| PMU | AXP192 (I2C) — powers LCD logic and backlight |
+| Touch | FT6336U capacitive, I2C 0x38 (shared bus) |
+| Console | UART0 via CP2104 USB-UART bridge |
+| Memory | QSPI PSRAM (8 MB) |
+
+### Wi-Fi provisioning (Core2)
+
+The Core2 uses **SoftAP provisioning** instead of BLE Improv (which requires
+USB-JTAG, not present on classic ESP32):
+
+1. On first boot, the device starts a Wi-Fi access point named **`TCMD-Core2-XXXXXX`**.
+2. Connect your phone or laptop to that network.
+3. Browse to **`http://192.168.4.1`** and fill in your Wi-Fi SSID and password.
+4. Click **Save & Connect** — the device restarts and joins your network.
+
+### Orientation notes
+
+The Core2 defaults to **landscape** (320×240) on first boot because its panel
+is physically mounted in landscape orientation.  Use the `portrait` command to
+switch to a software-rotated 240×320 canvas.
+
+### Building the Core2 variant
+
+```powershell
+. C:\esp\v6.0\esp-idf\export.ps1 2>&1 | Out-Null ; .\build.ps1 -Variant core2
+```
+
+Output firmware path: `docs/firmware/esp32_core2_picture_frame.bin`
+
+### Related files (Core2)
+
+- `main/screen_control_core2.c` - ILI9342C + AXP192 display driver
+- `sdkconfig.core2` - variant configuration
+- `docs/manifest-core2.json` - browser installer manifest

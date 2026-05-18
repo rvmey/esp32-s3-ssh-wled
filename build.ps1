@@ -80,6 +80,16 @@ $variants = @(
         PartitionBin  = 'partition-table-esp32.bin'
         OutputBin = 'esp32_tcmd_atom_echo.bin'
         Target    = 'esp32'          # classic ESP32-PICO-D4, not ESP32-S3
+    },
+    [PSCustomObject]@{
+        Name      = 'core2'
+        Config    = 'sdkconfig.core2'
+        BuildDir  = 'build_core2'
+        Chip      = 'esp32'
+        BootloaderBin = 'bootloader-esp32.bin'
+        PartitionBin  = 'partition-table-esp32.bin'
+        OutputBin = 'esp32_core2_picture_frame.bin'
+        Target    = 'esp32'          # classic ESP32-D0WDQ6-V3, not ESP32-S3
     }
 )
 

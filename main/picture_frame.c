@@ -40,6 +40,176 @@
 #include "wifi_manager.h"
 #include "improv_wifi.h"
 #include "screen_control.h"
+
+#if CONFIG_HARDWARE_CORE2
+/* SoftAP provisioning for Core2 (classic ESP32 — no USB-JTAG Improv) */
+#include "esp_wifi.h"
+#include "esp_netif.h"
+#include "esp_event.h"
+#include "esp_http_server.h"
+
+static const char s_c2_prov_html[] =
+    "<!DOCTYPE html><html><head>"
+    "<meta charset='UTF-8'>"
+    "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+    "<title>TRIGGERcmd Core2 Setup</title>"
+    "<style>"
+    "body{font-family:system-ui,sans-serif;background:#0f1117;color:#e2e8f0;"
+    "display:flex;align-items:center;justify-content:center;min-height:100vh}"
+    ".card{background:#1e2130;border:1px solid #2d3148;border-radius:1rem;"
+    "padding:2rem;max-width:380px;width:100%}"
+    "h1{color:#a5b4fc;font-size:1.3rem;margin:0 0 1rem}"
+    "label{display:block;color:#94a3b8;font-size:.85rem;margin:.75rem 0 .25rem}"
+    "input{width:100%;box-sizing:border-box;padding:.6rem;background:#0f1117;"
+    "border:1px solid #4f46e5;border-radius:.4rem;color:#e2e8f0;font-size:1rem}"
+    "button{margin-top:1.25rem;width:100%;padding:.75rem;background:#4f46e5;"
+    "color:#fff;border:none;border-radius:.6rem;font-size:1rem;cursor:pointer}"
+    "</style></head><body><div class='card'>"
+    "<h1>TRIGGERcmd Core2 Setup</h1>"
+    "<form method='POST' action='/save'>"
+    "<label>Wi-Fi SSID</label><input name='ssid' required>"
+    "<label>Wi-Fi Password</label><input name='pass' type='password'>"
+    "<button type='submit'>Save &amp; Connect</button>"
+    "</form></div></body></html>";
+
+static const char s_c2_saved_html[] =
+    "<!DOCTYPE html><html><body style='font-family:system-ui;background:#0f1117;"
+    "color:#86efac;display:flex;align-items:center;justify-content:center;"
+    "min-height:100vh'><h2>Saved! Device is restarting...</h2></body></html>";
+
+static bool s_c2_prov_done = false;
+
+static void c2_url_decode(const char *src, char *dst, size_t dst_sz)
+{
+    size_t i = 0;
+    while (*src && i < dst_sz - 1) {
+        if (*src == '%' && src[1] && src[2]) {
+            char hex[3] = {src[1], src[2], '\0'};
+            dst[i++] = (char)strtol(hex, NULL, 16);
+            src += 3;
+        } else if (*src == '+') {
+            dst[i++] = ' ';
+            src++;
+        } else {
+            dst[i++] = *src++;
+        }
+    }
+    dst[i] = '\0';
+}
+
+static bool c2_form_get_field(const char *body, const char *field,
+                               char *out, size_t out_sz)
+{
+    size_t flen = strlen(field);
+    const char *p = body;
+    while (p && *p) {
+        if (strncmp(p, field, flen) == 0 && p[flen] == '=') {
+            p += flen + 1;
+            const char *end = strchr(p, '&');
+            char encoded[256] = {0};
+            size_t vlen = end ? (size_t)(end - p) : strlen(p);
+            if (vlen >= sizeof(encoded)) vlen = sizeof(encoded) - 1;
+            memcpy(encoded, p, vlen);
+            c2_url_decode(encoded, out, out_sz);
+            return true;
+        }
+        p = strchr(p, '&');
+        if (p) p++;
+    }
+    return false;
+}
+
+static esp_err_t c2_get_handler(httpd_req_t *req)
+{
+    httpd_resp_set_type(req, "text/html");
+    httpd_resp_send(req, s_c2_prov_html, HTTPD_RESP_USE_STRLEN);
+    return ESP_OK;
+}
+
+static esp_err_t c2_save_handler(httpd_req_t *req)
+{
+    char body[1024] = {0};
+    int  len = httpd_req_recv(req, body, sizeof(body) - 1);
+    if (len <= 0) {
+        httpd_resp_send_500(req);
+        return ESP_FAIL;
+    }
+    body[len] = '\0';
+
+    char ssid[64] = {0};
+    char pass[64] = {0};
+    c2_form_get_field(body, "ssid", ssid, sizeof(ssid));
+    c2_form_get_field(body, "pass", pass, sizeof(pass));
+
+    httpd_resp_set_type(req, "text/html");
+    httpd_resp_send(req, s_c2_saved_html, HTTPD_RESP_USE_STRLEN);
+
+    if (ssid[0]) {
+        wifi_save_credentials(ssid, pass);
+        ESP_LOGI("pf_c2", "WiFi credentials saved for SSID: %s", ssid);
+    }
+    s_c2_prov_done = true;
+    return ESP_OK;
+}
+
+/* Starts SoftAP + HTTP server; blocks until the form is submitted, then restarts */
+static void pf_softap_provision(void)
+{
+    wifi_stack_init_public();
+
+    uint8_t mac[6];
+    esp_wifi_get_mac(WIFI_IF_AP, mac);
+    char ap_ssid[32];
+    snprintf(ap_ssid, sizeof(ap_ssid), "TCMD-Core2-%02X%02X%02X",
+             mac[3], mac[4], mac[5]);
+
+    ESP_LOGI("pf_c2", "Starting SoftAP: %s", ap_ssid);
+
+    screen_set_color(0, 0, 64);
+    char msg[128];
+    snprintf(msg, sizeof(msg),
+             "WiFi Setup\nConnect to:\n%s\nThen browse to\n192.168.4.1", ap_ssid);
+    screen_draw_text(msg);
+
+    esp_netif_t *ap_netif = esp_netif_create_default_wifi_ap();
+    (void)ap_netif;
+
+    wifi_config_t ap_cfg = {
+        .ap = {
+            .max_connection = 4,
+            .authmode       = WIFI_AUTH_OPEN,
+        },
+    };
+    strlcpy((char *)ap_cfg.ap.ssid, ap_ssid, sizeof(ap_cfg.ap.ssid));
+    ap_cfg.ap.ssid_len = (uint8_t)strlen(ap_ssid);
+
+    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_AP));
+    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &ap_cfg));
+    ESP_ERROR_CHECK(esp_wifi_start());
+
+    httpd_config_t http_cfg = HTTPD_DEFAULT_CONFIG();
+    http_cfg.max_open_sockets = 4;
+    http_cfg.lru_purge_enable = true;
+    httpd_handle_t server    = NULL;
+    ESP_ERROR_CHECK(httpd_start(&server, &http_cfg));
+
+    httpd_uri_t get_uri  = { .uri = "/",     .method = HTTP_GET,  .handler = c2_get_handler  };
+    httpd_uri_t save_uri = { .uri = "/save", .method = HTTP_POST, .handler = c2_save_handler };
+    httpd_register_uri_handler(server, &get_uri);
+    httpd_register_uri_handler(server, &save_uri);
+
+    s_c2_prov_done = false;
+    while (!s_c2_prov_done) {
+        vTaskDelay(pdMS_TO_TICKS(500));
+    }
+
+    httpd_stop(server);
+    esp_wifi_stop();
+    esp_wifi_set_mode(WIFI_MODE_STA);
+    vTaskDelay(pdMS_TO_TICKS(500));
+    esp_restart();
+}
+#endif /* CONFIG_HARDWARE_CORE2 */
 #include "socketio.h"
 #include "http_pf_config.h"
 #include "triggercmd_ca.h"   /* embedded Go Daddy Root G2 cert for triggercmd.com */
@@ -908,12 +1078,16 @@ void picture_frame_run(void)
     screen_draw_text("Waiting for WiFi...");
 
     if (!wifi_has_stored_credentials()) {
+#if CONFIG_HARDWARE_CORE2
+        pf_softap_provision();   /* never returns — restarts after credentials saved */
+#else
         screen_set_color(0, 0, 64);   /* blue = BLE provisioning */
         if (improv_wifi_start() != ESP_OK) {
             screen_set_color(64, 0, 0);
             ESP_LOGE(TAG, "Improv WiFi provisioning failed");
             vTaskSuspend(NULL);
         }
+#endif
     }
 
     if (wifi_connect() != ESP_OK) {
