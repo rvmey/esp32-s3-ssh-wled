@@ -59,7 +59,7 @@ static const char *TAG = "screen_c2";
  * If colours appear swapped (red ↔ blue), clear the BGR bit (0x48→0x40).
  * If image is horizontally mirrored, try 0x08 (BGR only, no MX).
  */
-#define MADCTL_LANDSCAPE  0x48   /* MX | BGR */
+#define MADCTL_LANDSCAPE  0x08   /* BGR only (MX=0 = correct scan direction) */
 
 /* ------------------------------------------------------------------ */
 /* AXP192 PMU (I2C 0x34 on GPIO21/22)                                 */
