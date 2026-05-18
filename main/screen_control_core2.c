@@ -112,6 +112,11 @@ static esp_err_t axp_write(uint8_t reg, uint8_t val)
     return i2c_master_write_to_device(AXP_I2C_NUM, AXP_I2C_ADDR,
                                       buf, 2, pdMS_TO_TICKS(50));
 }
+static esp_err_t axp_read(uint8_t reg, uint8_t *val)
+{
+    return i2c_master_write_read_device(
+        AXP_I2C_NUM, AXP_I2C_ADDR, &reg, 1, val, 1, pdMS_TO_TICKS(20));
+}
 
 static esp_err_t axp_read_modify_write(uint8_t reg, uint8_t mask, uint8_t set)
 {
@@ -467,23 +472,28 @@ esp_err_t screen_init(void)
     }
     ESP_LOGI(TAG, "I2C ready (SDA=%d SCL=%d)", I2C_SDA_GPIO, I2C_SCL_GPIO);
 
-    /* ── AXP192 PMU — power on LCD and backlight, keep vibration off ─── */
+    /* ── AXP192 PMU — power LCD via DCDC3 + LDO2, keep vibration off ─── */
     /*
-     * Register 0x28: LDO2/LDO3 output voltage
-     *   bits[7:4] = LDO2  (LCD logic power, 3.0V = 0xC)
-    *   bits[3:0] = LDO3  (vibration rail on Core2; keep disabled)
-    * Register 0x12: power output enable — keep bit2 (LDO2) on, bit3 (LDO3) off
-     * Register 0x91: GPIO0 LDO voltage = 2.8V (upper nibble 0xA → 2.8V)
-     * Register 0x90: GPIO0 function = LDO output (0x02) — LCD backlight
+    * Core2 reference rail mapping (AXP192):
+    *   - DCDC3 (reg 0x27) -> LCD/backlight rail (set to 2.8V)
+    *   - LDO2  (reg 0x28 hi nibble) -> LCD logic rail (3.3V)
+    *   - LDO3  (reg 0x28 lo nibble) -> vibration motor preset (2.0V), keep disabled
+    *   - Enable bits in reg 0x12: DCDC3 bit1 + LDO2 bit2 ON, LDO3 bit3 OFF
+    *   - Toggle LCD reset via reg 0x96 bit1 (SetLCDRSet equivalent)
      */
-    axp_write(0x82, 0xFF);              /* enable all ADC channels             */
-    axp_write(0x28, 0xC0);              /* LDO2=3.0V, LDO3=0.0V (off)         */
-    axp_read_modify_write(0x12, 0x0C, 0x04); /* enable LDO2 (bit2), disable LDO3   */
-    vTaskDelay(pdMS_TO_TICKS(10));
-    axp_write(0x91, 0xA0);              /* GPIO0 LDO = 2.8V                    */
-    axp_write(0x90, 0x02);              /* GPIO0 = LDO mode (backlight ON)     */
+    uint8_t reg30 = 0;
+    if (axp_read(0x30, &reg30) == ESP_OK) {
+        axp_write(0x30, (reg30 & 0x04) | 0x02); /* disable VBUS current limit */
+    }
+    axp_write(0x82, 0xFF);              /* enable all ADC channels              */
+    axp_write(0x27, 0x54);              /* DCDC3 = 2.8V                         */
+    axp_write(0x28, 0xF2);              /* LDO2 = 3.3V, LDO3 preset = 2.0V      */
+    axp_read_modify_write(0x12, 0x0E, 0x06); /* ON: DCDC3+LDO2, OFF: LDO3          */
+    axp_read_modify_write(0x96, 0x02, 0x00); /* LCD reset low                        */
+    vTaskDelay(pdMS_TO_TICKS(20));
+    axp_read_modify_write(0x96, 0x02, 0x02); /* LCD reset high                       */
     vTaskDelay(pdMS_TO_TICKS(50));
-    ESP_LOGI(TAG, "AXP192 LCD power on");
+    ESP_LOGI(TAG, "AXP192 LCD rails on (DCDC3/LDO2), vibration rail off");
 
     /* ── DC pin (GPIO output) ────────────────────────────────────────── */
     gpio_config_t dc_cfg = {
