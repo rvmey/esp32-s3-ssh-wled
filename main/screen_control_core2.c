@@ -420,13 +420,17 @@ static void touch_poll_task(void *arg)
          * For Core2 (320×240 landscape native), the FT6336U reports:
          *   raw X (0..319) = horizontal axis of the physical panel
          *   raw Y (0..239) = vertical axis of the physical panel
+         *   (0,0) is at the top-left corner of the display.
          *
          * In landscape mode (320×240): vertical scroll axis = raw Y
          * In portrait mode (software-rotated 240×320): vertical scroll
          *   axis in logical space maps to raw X in physical space.
+         *
+         * sign=-1: swipe UP (ty decreases) → positive delta → scroll down
+         *          (show later content).  Natural phone-style scrolling.
          */
         int16_t raw_v = s_landscape ? (int16_t)ty : (int16_t)tx;
-        int     sign  = 1;   /* increasing raw_v = scrolling down */
+        int     sign  = -1;  /* swipe up = see later content (natural) */
 
         if (have && !touching) {
             touching     = true;
