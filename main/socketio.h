@@ -71,6 +71,18 @@ bool socketio_connected(void);
 esp_err_t socketio_send_vget(const char *path, const char *auth_token);
 
 /**
+ * @brief Send a Sails.io virtual POST over the active Socket.IO connection.
+ *
+ * Sends: 421["post",{"url":"<path>","headers":{"Authorization":"Bearer <token>"},
+ *                    "data":{...}}]
+ *
+ * data_json_object must be a JSON object literal (e.g. {"k":"v"}).
+ */
+esp_err_t socketio_send_vpost(const char *path,
+                              const char *auth_token,
+                              const char *data_json_object);
+
+/**
  * @brief Send an EIO ping ("2") to keep the server connection alive.
  *
  * Sails.js 0.12 / socket.io 1.x uses EIO v2/v3 keep-alive where the client

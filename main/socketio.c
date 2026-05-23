@@ -282,6 +282,29 @@ esp_err_t socketio_send_vget(const char *path, const char *auth_token)
     return (sent >= 0) ? ESP_OK : ESP_FAIL;
 }
 
+esp_err_t socketio_send_vpost(const char *path,
+                              const char *auth_token,
+                              const char *data_json_object)
+{
+    if (!s_client || !s_connected) return ESP_ERR_INVALID_STATE;
+    if (!path || !auth_token || !data_json_object) return ESP_ERR_INVALID_ARG;
+
+    char msg[1024];
+    int n = snprintf(msg, sizeof(msg),
+                     "421[\"post\",{\"url\":\"%s\","
+                     "\"headers\":{\"Authorization\":\"Bearer %s\"},"
+                     "\"data\":%s}]",
+                     path, auth_token, data_json_object);
+    if (n <= 0 || n >= (int)sizeof(msg)) {
+        ESP_LOGE(TAG, "vpost message too large");
+        return ESP_ERR_INVALID_SIZE;
+    }
+
+    ESP_LOGI(TAG, "Sending vpost: %.200s", msg);
+    int sent = esp_websocket_client_send_text(s_client, msg, n, pdMS_TO_TICKS(3000));
+    return (sent >= 0) ? ESP_OK : ESP_FAIL;
+}
+
 void socketio_send_eio_ping(void)
 {
     if (!s_client || !s_connected) return;

@@ -2715,31 +2715,19 @@ void picture_frame_run(void)
                 }
             }
 
-            /* Post run/save from the main task — never from the WS callback task */
+            /* Post run/save from the main task — over existing Socket.IO session
+             * so we avoid a second TLS handshake under low-memory conditions. */
             if (s_pending_run &&
                 (s_pending_run_retry_after == 0 ||
                  xTaskGetTickCount() >= s_pending_run_retry_after)) {
-                char run_url[192];
-                snprintf(run_url, sizeof(run_url), "%s/api/run/save", TCMD_BASE_URL);
-                char form[256];
-                char *p   = form;
-                char *end = form + sizeof(form);
-                p = url_encode_append(p, (size_t)(end - p), "status");
-                if (p < end) *p++ = '=';
-                p = url_encode_append(p, (size_t)(end - p), "Command ran");
-                if (p < end) *p++ = '&';
-                p = url_encode_append(p, (size_t)(end - p), "computer");
-                if (p < end) *p++ = '=';
-                p = url_encode_append(p, (size_t)(end - p), s_computer_id);
-                if (p < end) *p++ = '&';
-                p = url_encode_append(p, (size_t)(end - p), "command");
-                if (p < end) *p++ = '=';
-                p = url_encode_append(p, (size_t)(end - p), s_pending_run_id);
-                *p = '\0';
-                int http_status = https_post_form(run_url, s_hw_token, form, NULL);
-                ESP_LOGI(TAG, "run/save \u2192 HTTP %d", http_status);
+                char data_json[320];
+                snprintf(data_json, sizeof(data_json),
+                         "{\"status\":\"Command ran\",\"computer\":\"%s\",\"command\":\"%s\"}",
+                         s_computer_id, s_pending_run_id);
+                esp_err_t post_err = socketio_send_vpost("/api/run/save", s_hw_token, data_json);
+                ESP_LOGI(TAG, "run/save vpost → %s", esp_err_to_name(post_err));
 
-                if (http_status >= 200 && http_status < 300) {
+                if (post_err == ESP_OK) {
                     s_pending_run = false;
                     s_pending_run_tries = 0;
                     s_pending_run_retry_after = 0;
