@@ -350,9 +350,6 @@ static mp3_state_t   s_mp3 = {
 };
 static TickType_t s_mp3_last_ui_tick = 0;
 static TaskHandle_t s_mp3_task = NULL;
-/* Large decoder buffers must not live on the mp3 task stack. */
-static unsigned char s_mp3_inbuf[4096];
-static short s_mp3_pcm[1152 * 2];
 
 static bool nvs_read_str(const char *key, char *out, size_t out_sz);
 static esp_err_t nvs_write_str(const char *key, const char *val);
@@ -1221,7 +1218,22 @@ static void mp3_player_task(void *arg)
         return;
     }
 
-    unsigned char *read_ptr = s_mp3_inbuf;
+    unsigned char *inbuf = heap_caps_malloc(4096, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!inbuf) inbuf = heap_caps_malloc(4096, MALLOC_CAP_8BIT);
+    short *pcm = heap_caps_malloc((size_t)(1152 * 2 * (int)sizeof(short)),
+                                  MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!pcm) pcm = heap_caps_malloc((size_t)(1152 * 2 * (int)sizeof(short)), MALLOC_CAP_8BIT);
+    if (!inbuf || !pcm) {
+        ESP_LOGE(TAG, "mp3: buffer allocation failed (inbuf=%p pcm=%p)", (void *)inbuf, (void *)pcm);
+        if (inbuf) free(inbuf);
+        if (pcm) free(pcm);
+        MP3FreeDecoder(dec);
+        s_mp3_task = NULL;
+        vTaskDelete(NULL);
+        return;
+    }
+
+    unsigned char *read_ptr = inbuf;
     int bytes_left = 0;
 
     while (true) {
@@ -1232,7 +1244,7 @@ static void mp3_player_task(void *arg)
                 opened_token = 0;
             }
             bytes_left = 0;
-            read_ptr = s_mp3_inbuf;
+            read_ptr = inbuf;
             vTaskDelay(pdMS_TO_TICKS(100));
             continue;
         }
@@ -1247,7 +1259,7 @@ static void mp3_player_task(void *arg)
             fp = fopen(s_mp3.file_path, "rb");
             opened_token = s_mp3.play_token;
             bytes_left = 0;
-            read_ptr = s_mp3_inbuf;
+            read_ptr = inbuf;
             if (!fp) {
                 ESP_LOGW(TAG, "mp3: failed to open %s", s_mp3.file_path);
                 s_mp3.paused = true;
@@ -1257,13 +1269,13 @@ static void mp3_player_task(void *arg)
         }
 
         if (bytes_left < 1024) {
-            if (bytes_left > 0 && read_ptr != s_mp3_inbuf) {
-                memmove(s_mp3_inbuf, read_ptr, (size_t)bytes_left);
+            if (bytes_left > 0 && read_ptr != inbuf) {
+                memmove(inbuf, read_ptr, (size_t)bytes_left);
             }
-            read_ptr = s_mp3_inbuf;
-            size_t n = fread(s_mp3_inbuf + bytes_left,
+            read_ptr = inbuf;
+            size_t n = fread(inbuf + bytes_left,
                              1,
-                             sizeof(s_mp3_inbuf) - (size_t)bytes_left,
+                             4096U - (size_t)bytes_left,
                              fp);
             bytes_left += (int)n;
         }
@@ -1279,14 +1291,14 @@ static void mp3_player_task(void *arg)
         int sync = MP3FindSyncWord(read_ptr, bytes_left);
         if (sync < 0) {
             bytes_left = 0;
-            read_ptr = s_mp3_inbuf;
+            read_ptr = inbuf;
             vTaskDelay(pdMS_TO_TICKS(2));
             continue;
         }
         read_ptr += sync;
         bytes_left -= sync;
 
-        int err = MP3Decode(dec, &read_ptr, &bytes_left, s_mp3_pcm, 0);
+        int err = MP3Decode(dec, &read_ptr, &bytes_left, pcm, 0);
         if (err == ERR_MP3_INDATA_UNDERFLOW || err == ERR_MP3_MAINDATA_UNDERFLOW) {
             vTaskDelay(pdMS_TO_TICKS(2));
             continue;
@@ -1297,7 +1309,7 @@ static void mp3_player_task(void *arg)
                 bytes_left--;
             } else {
                 bytes_left = 0;
-                read_ptr = s_mp3_inbuf;
+                read_ptr = inbuf;
             }
             continue;
         }
@@ -1311,14 +1323,14 @@ static void mp3_player_task(void *arg)
 #if CONFIG_HARDWARE_CORE2
     #if CONFIG_BT_ENABLED && CONFIG_BT_A2DP_ENABLE
         if (s_bt.connected) {
-            bt_pcm_write_from_decoder(s_mp3_pcm, (size_t)fi.outputSamps, fi.nChans, s_mp3.volume);
+            bt_pcm_write_from_decoder(pcm, (size_t)fi.outputSamps, fi.nChans, s_mp3.volume);
         } else {
             core2_audio_set_sample_rate((uint32_t)fi.samprate);
-            core2_audio_write_pcm(s_mp3_pcm, (size_t)fi.outputSamps, fi.nChans, s_mp3.volume);
+            core2_audio_write_pcm(pcm, (size_t)fi.outputSamps, fi.nChans, s_mp3.volume);
         }
     #else
         core2_audio_set_sample_rate((uint32_t)fi.samprate);
-        core2_audio_write_pcm(s_mp3_pcm, (size_t)fi.outputSamps, fi.nChans, s_mp3.volume);
+        core2_audio_write_pcm(pcm, (size_t)fi.outputSamps, fi.nChans, s_mp3.volume);
     #endif
 #endif
 
@@ -1346,6 +1358,8 @@ static void mp3_player_task(void *arg)
     }
 
     MP3FreeDecoder(dec);
+    free(inbuf);
+    free(pcm);
 }
 
 static void mp3_ensure_task(void)
