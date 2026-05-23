@@ -108,6 +108,11 @@ esp_err_t wifi_connect_with_credentials(const char *ssid, const char *password)
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_cfg));
     ESP_ERROR_CHECK(esp_wifi_start());
+    /* A2DP + TLS handshake is sensitive to Wi-Fi modem sleep latency. */
+    esp_err_t ps_err = esp_wifi_set_ps(WIFI_PS_NONE);
+    if (ps_err != ESP_OK) {
+        ESP_LOGW(TAG, "Failed to disable WiFi power save: %s", esp_err_to_name(ps_err));
+    }
     s_wifi_started = true;
 
     ESP_LOGI(TAG, "Connecting to \"%s\" ...", ssid);

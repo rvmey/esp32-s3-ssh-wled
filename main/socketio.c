@@ -207,6 +207,8 @@ esp_err_t socketio_connect(const char          *uri,
         .uri               = uri,
         .headers           = auth_hdr,
         .cert_pem          = TRIGGERCMD_CA_PEM,   /* GoDaddy Root G2 — avoids cross-signed bundle lookup */
+        .network_timeout_ms = 20000,
+        .reconnect_timeout_ms = 5000,
         .ping_interval_sec = 25,   /* keep-alive through NAT idle timeouts */
         .buffer_size       = 4096,
     };
