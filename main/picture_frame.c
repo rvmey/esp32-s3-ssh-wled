@@ -1572,9 +1572,10 @@ static bool mount_sd_card_if_needed(void)
 {
     if (s_sd_mounted) return true;
 
-    bool spi_locked = screen_spi_lock(250);
+    bool spi_locked = screen_spi_lock(3000);
     if (!spi_locked) {
         ESP_LOGW(TAG, "sd: could not acquire screen SPI lock before mount attempt");
+        return false;
     }
 
     /* Keep LCD and SD deselected while probing so only one device can drive MISO. */
@@ -1587,6 +1588,9 @@ static bool mount_sd_card_if_needed(void)
     gpio_pullup_en(GPIO_NUM_4);
     gpio_pullup_en(GPIO_NUM_18);
     gpio_pullup_en(GPIO_NUM_23);
+    gpio_set_drive_capability(GPIO_NUM_4, GPIO_DRIVE_CAP_3);
+    gpio_set_drive_capability(GPIO_NUM_18, GPIO_DRIVE_CAP_3);
+    gpio_set_drive_capability(GPIO_NUM_23, GPIO_DRIVE_CAP_3);
     vTaskDelay(pdMS_TO_TICKS(5));
 
     esp_vfs_fat_sdmmc_mount_config_t mount_config = {

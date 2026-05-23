@@ -674,25 +674,11 @@ bool screen_spi_lock(uint32_t timeout_ms)
         return false;
     }
 
-    if (!s_spi) {
-        xSemaphoreGive(s_draw_mutex);
-        return false;
-    }
-
-    esp_err_t err = spi_device_acquire_bus(s_spi, ticks);
-    if (err != ESP_OK) {
-        xSemaphoreGive(s_draw_mutex);
-        return false;
-    }
-
-    return true;
+    return (s_spi != NULL);
 }
 
 void screen_spi_unlock(void)
 {
-    if (s_spi) {
-        spi_device_release_bus(s_spi);
-    }
     if (s_draw_mutex) {
         xSemaphoreGive(s_draw_mutex);
     }
