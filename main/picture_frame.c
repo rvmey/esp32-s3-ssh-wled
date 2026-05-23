@@ -316,6 +316,8 @@ static char s_computer_id[COMPUTER_ID_MAX_LEN] = {0};
 /* Pending run/save — set by the WS event task, consumed by the main loop */
 static char          s_pending_run_id[33] = {0};
 static volatile bool s_pending_run        = false;
+static int           s_pending_run_tries  = 0;
+static TickType_t    s_pending_run_retry_after = 0;
 
 /* Pending JPEG URL — set by the WS event task, consumed by the main loop */
 static char          s_pending_jpeg_url[512] = {0};
@@ -2254,6 +2256,8 @@ static void pf_event_handler(const char *event_name,
     if (s_id[0] && s_computer_id[0]) {
         strncpy(s_pending_run_id, s_id, sizeof(s_pending_run_id) - 1);
         s_pending_run_id[sizeof(s_pending_run_id) - 1] = '\0';
+        s_pending_run_tries = 0;
+        s_pending_run_retry_after = 0;
         s_pending_run = true;
     }
 }
@@ -2698,8 +2702,9 @@ void picture_frame_run(void)
             }
 
             /* Post run/save from the main task — never from the WS callback task */
-            if (s_pending_run) {
-                s_pending_run = false;   /* clear before HTTP so new events can re-queue */
+            if (s_pending_run &&
+                (s_pending_run_retry_after == 0 ||
+                 xTaskGetTickCount() >= s_pending_run_retry_after)) {
                 char run_url[192];
                 snprintf(run_url, sizeof(run_url), "%s/api/run/save", TCMD_BASE_URL);
                 char form[256];
@@ -2719,6 +2724,28 @@ void picture_frame_run(void)
                 *p = '\0';
                 int http_status = https_post_form(run_url, s_hw_token, form, NULL);
                 ESP_LOGI(TAG, "run/save \u2192 HTTP %d", http_status);
+
+                if (http_status >= 200 && http_status < 300) {
+                    s_pending_run = false;
+                    s_pending_run_tries = 0;
+                    s_pending_run_retry_after = 0;
+                } else {
+                    s_pending_run_tries++;
+                    if (s_pending_run_tries >= 5) {
+                        ESP_LOGE(TAG, "run/save dropped after %d attempts (id=%s)",
+                                 s_pending_run_tries, s_pending_run_id);
+                        s_pending_run = false;
+                        s_pending_run_tries = 0;
+                        s_pending_run_retry_after = 0;
+                    } else {
+                        TickType_t backoff = pdMS_TO_TICKS(300U * (uint32_t)s_pending_run_tries);
+                        s_pending_run_retry_after = xTaskGetTickCount() + backoff;
+                        ESP_LOGW(TAG, "run/save retry %d scheduled in %lu ms (id=%s)",
+                                 s_pending_run_tries,
+                                 (unsigned long)(backoff * portTICK_PERIOD_MS),
+                                 s_pending_run_id);
+                    }
+                }
             }
 
             vTaskDelay(pdMS_TO_TICKS(200));   /* poll every 200 ms */
