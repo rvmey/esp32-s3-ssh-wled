@@ -102,6 +102,15 @@ static uint8_t s_row_buf[LCD_MAX_DIM * 2];
 /* Forward declaration */
 static void touch_poll_task(void *arg);
 
+static inline void screen_full_redraw_yield(int row)
+{
+    if ((row & 0x0F) == 0x0F) {
+        /* Polling SPI redraws can monopolize the classic ESP32 long enough
+         * to trip the interrupt watchdog unless we yield periodically. */
+        vTaskDelay(pdMS_TO_TICKS(1));
+    }
+}
+
 /* ------------------------------------------------------------------ */
 /* AXP192 I2C helpers                                                 */
 /* ------------------------------------------------------------------ */
@@ -223,6 +232,7 @@ static void screen_fill(uint8_t r, uint8_t g, uint8_t b)
     for (int y = 0; y < LCD_PHYS_H; y++) {
         ili_set_window(0, y, LCD_PHYS_W - 1, y);
         ili_write_row();
+        screen_full_redraw_yield(y);
     }
 
     xSemaphoreGive(s_draw_mutex);
@@ -763,6 +773,7 @@ void screen_draw_text(const char *text)
 
         ili_set_window(0, y, LCD_PHYS_W - 1, y);
         ili_write_row();
+        screen_full_redraw_yield(y);
     }
 
     xSemaphoreGive(s_draw_mutex);
@@ -826,6 +837,7 @@ void screen_draw_rgb565(const uint8_t *rgb565, int src_w, int src_h)
 
         ili_set_window(0, y, LCD_PHYS_W - 1, y);
         ili_write_row();
+        screen_full_redraw_yield(y);
     }
 
     xSemaphoreGive(s_draw_mutex);
