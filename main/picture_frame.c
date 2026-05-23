@@ -2489,9 +2489,14 @@ void picture_frame_run(void)
             ESP_LOGI(TAG, "Pair code: %s", pair_code);
 
             char pair_disp[192];
+#if CONFIG_HARDWARE_CORE2
+            snprintf(pair_disp, sizeof(pair_disp),
+                     "Pair code:\n%s", pair_code);
+#else
             snprintf(pair_disp, sizeof(pair_disp),
                      "Visit %s\nSign in -> click name\n"
                      "Click Pair -> enter:\n%s", tcmd_display_host(), pair_code);
+#endif
             screen_draw_text(pair_disp);
 #if !CONFIG_HARDWARE_CORE2
             http_pf_config_start(pair_code);
