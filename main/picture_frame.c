@@ -1608,6 +1608,22 @@ static void restore_display_state_from_nvs(void)
     nvs_read_str(NVS_KEY_TEXT, text, sizeof(text));
     nvs_read_str(NVS_KEY_JPEGURL, jpeg_url, sizeof(jpeg_url));
 
+    /* Guard against invisible text when saved fg/bg are identical or near-identical. */
+    {
+        int dr = (int)fg_r - (int)bg_r; if (dr < 0) dr = -dr;
+        int dg = (int)fg_g - (int)bg_g; if (dg < 0) dg = -dg;
+        int db = (int)fg_b - (int)bg_b; if (db < 0) db = -db;
+        if (dr < 24 && dg < 24 && db < 24) {
+            int luma = ((int)bg_r * 299 + (int)bg_g * 587 + (int)bg_b * 114) / 1000;
+            if (luma >= 128) {
+                fg_r = fg_g = fg_b = 0;
+            } else {
+                fg_r = fg_g = fg_b = 255;
+            }
+            ESP_LOGW(TAG, "restore: adjusted text color for contrast");
+        }
+    }
+
     if (font_scale < 1) font_scale = 1;
     if (font_scale > 8) font_scale = 8;
 
@@ -1628,6 +1644,10 @@ static void restore_display_state_from_nvs(void)
     } else {
         s_current_jpeg_url[0] = '\0';
         if (s_last_text[0]) {
+            screen_draw_text(s_last_text);
+        } else {
+            strncpy(s_last_text, "Connected!\nWaiting for\ncommands...", sizeof(s_last_text) - 1);
+            s_last_text[sizeof(s_last_text) - 1] = '\0';
             screen_draw_text(s_last_text);
         }
     }
