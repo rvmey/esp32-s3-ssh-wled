@@ -723,10 +723,13 @@ static bool bt_init_if_needed(void)
         bt_pcm_clear();
     }
 
-    esp_err_t err = esp_bt_controller_mem_release(ESP_BT_MODE_BLE);
+    esp_err_t err;
+#if defined(CONFIG_BTDM_CTRL_MODE_BR_EDR_ONLY) || defined(CONFIG_BTDM_CONTROLLER_MODE_BR_EDR_ONLY)
+    err = esp_bt_controller_mem_release(ESP_BT_MODE_BLE);
     if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
         ESP_LOGW(TAG, "bt: mem_release(BLE) failed: %s", esp_err_to_name(err));
     }
+#endif
 
     esp_bt_controller_config_t bt_cfg = BT_CONTROLLER_INIT_CONFIG_DEFAULT();
     err = esp_bt_controller_init(&bt_cfg);
