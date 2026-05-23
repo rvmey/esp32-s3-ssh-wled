@@ -1571,11 +1571,14 @@ static bool mount_sd_card_if_needed(void)
 {
     if (s_sd_mounted) return true;
 
+    /* Core2 display already initializes SPI3 (MOSI=23, MISO=38, SCK=18). */
+    const spi_host_device_t sd_host = SPI3_HOST;
+
     sdmmc_host_t host = SDSPI_HOST_DEFAULT();
-    host.slot = SPI2_HOST;
+    host.slot = sd_host;
 
     sdspi_device_config_t slot_config = SDSPI_DEVICE_CONFIG_DEFAULT();
-    slot_config.host_id = host.slot;
+    slot_config.host_id = sd_host;
     slot_config.gpio_cs = GPIO_NUM_4;
 
     esp_vfs_fat_sdmmc_mount_config_t mount_config = {
