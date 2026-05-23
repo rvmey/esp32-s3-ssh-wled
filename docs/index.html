@@ -208,6 +208,14 @@
     .note a { color: #818cf8; text-decoration: none; }
     .note a:hover { text-decoration: underline; }
 
+    .manifest-version {
+      text-align: center;
+      font-size: 0.9rem;
+      color: #93c5fd;
+      margin: -0.5rem 0 1rem;
+      min-height: 1.2rem;
+    }
+
     .badge {
       display: inline-block;
       background: #1e3a5f;
@@ -300,6 +308,8 @@
       <esp-web-install-button id="install-btn"></esp-web-install-button>
     </div>
 
+    <p id="manifest-version" class="manifest-version">Selected firmware version: loading...</p>
+
     <p class="note">
       Requires a Chromium-based browser (Chrome, Edge, Opera) with
       <a href="https://developer.mozilla.org/en-US/docs/Web/API/Web_Serial_API"
@@ -311,11 +321,31 @@
   <script>
     (function () {
       var btn = document.getElementById('install-btn');
+      var versionEl = document.getElementById('manifest-version');
+      var rawBase = 'https://raw.githubusercontent.com/rvmey/esp32-s3-ssh-wled/master/docs/';
+
+      function setVersionText(msg) {
+        versionEl.textContent = msg;
+      }
 
       // Set the manifest based on which variant radio is selected.
       function updateManifest() {
         var selected = document.querySelector('input[name="variant"]:checked');
-        btn.setAttribute('manifest', selected ? selected.value : 'manifest-devkitc.json');
+        var manifestFile = selected ? selected.value : 'manifest-devkitc.json';
+        var manifestUrl = rawBase + manifestFile;
+
+        btn.setAttribute('manifest', manifestUrl);
+        setVersionText('Selected firmware version: loading...');
+
+        fetch(manifestUrl, { cache: 'no-store' })
+          .then(function (resp) { return resp.ok ? resp.json() : Promise.reject(new Error('HTTP ' + resp.status)); })
+          .then(function (manifest) {
+            var version = manifest && manifest.version ? manifest.version : 'unknown';
+            setVersionText('Selected firmware version: ' + version);
+          })
+          .catch(function () {
+            setVersionText('Selected firmware version: unavailable');
+          });
       }
 
       // Wire up change events on the radio buttons.
