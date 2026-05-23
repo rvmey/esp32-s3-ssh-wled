@@ -104,7 +104,7 @@ static void touch_poll_task(void *arg);
 
 static inline void screen_full_redraw_yield(int row)
 {
-    if ((row & 0x0F) == 0x0F) {
+    if ((row & 0x07) == 0x07) {
         /* Polling SPI redraws can monopolize the classic ESP32 long enough
          * to trip the interrupt watchdog unless we yield periodically. */
         vTaskDelay(pdMS_TO_TICKS(1));
@@ -229,9 +229,10 @@ static void screen_fill(uint8_t r, uint8_t g, uint8_t b)
         s_row_buf[i + 1] = pl;
     }
 
+    ili_set_window(0, 0, LCD_PHYS_W - 1, LCD_PHYS_H - 1);
     for (int y = 0; y < LCD_PHYS_H; y++) {
-        ili_set_window(0, y, LCD_PHYS_W - 1, y);
-        ili_write_row();
+        if (y == 0) ili_write_row();
+        else        ili_write_cont_row();
         screen_full_redraw_yield(y);
     }
 
@@ -771,8 +772,12 @@ void screen_draw_text(const char *text)
             }
         }
 
-        ili_set_window(0, y, LCD_PHYS_W - 1, y);
-        ili_write_row();
+        if (y == 0) {
+            ili_set_window(0, 0, LCD_PHYS_W - 1, LCD_PHYS_H - 1);
+            ili_write_row();
+        } else {
+            ili_write_cont_row();
+        }
         screen_full_redraw_yield(y);
     }
 
@@ -835,8 +840,12 @@ void screen_draw_rgb565(const uint8_t *rgb565, int src_w, int src_h)
             s_row_buf[x * 2 + 1] = (uint8_t)(pixel & 0xFF);
         }
 
-        ili_set_window(0, y, LCD_PHYS_W - 1, y);
-        ili_write_row();
+        if (y == 0) {
+            ili_set_window(0, 0, LCD_PHYS_W - 1, LCD_PHYS_H - 1);
+            ili_write_row();
+        } else {
+            ili_write_cont_row();
+        }
         screen_full_redraw_yield(y);
     }
 
