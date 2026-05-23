@@ -659,6 +659,45 @@ void screen_get_text_color(uint8_t *r, uint8_t *g, uint8_t *b)
     *r = s_fr;  *g = s_fg;  *b = s_fb;
 }
 
+bool screen_spi_lock(uint32_t timeout_ms)
+{
+    if (!s_draw_mutex) return false;
+
+    TickType_t ticks = pdMS_TO_TICKS(timeout_ms);
+    if (timeout_ms == 0) {
+        ticks = 0;
+    } else if (ticks == 0) {
+        ticks = 1;
+    }
+
+    if (xSemaphoreTake(s_draw_mutex, ticks) != pdTRUE) {
+        return false;
+    }
+
+    if (!s_spi) {
+        xSemaphoreGive(s_draw_mutex);
+        return false;
+    }
+
+    esp_err_t err = spi_device_acquire_bus(s_spi, ticks);
+    if (err != ESP_OK) {
+        xSemaphoreGive(s_draw_mutex);
+        return false;
+    }
+
+    return true;
+}
+
+void screen_spi_unlock(void)
+{
+    if (s_spi) {
+        spi_device_release_bus(s_spi);
+    }
+    if (s_draw_mutex) {
+        xSemaphoreGive(s_draw_mutex);
+    }
+}
+
 void screen_draw_text(const char *text)
 {
     xSemaphoreTake(s_draw_mutex, portMAX_DELAY);

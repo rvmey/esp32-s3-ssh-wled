@@ -1572,6 +1572,11 @@ static bool mount_sd_card_if_needed(void)
 {
     if (s_sd_mounted) return true;
 
+    bool spi_locked = screen_spi_lock(250);
+    if (!spi_locked) {
+        ESP_LOGW(TAG, "sd: could not acquire screen SPI lock before mount attempt");
+    }
+
     /* Keep LCD and SD deselected while probing so only one device can drive MISO. */
     gpio_set_direction(GPIO_NUM_5, GPIO_MODE_OUTPUT);
     gpio_set_level(GPIO_NUM_5, 1);
@@ -1624,10 +1629,16 @@ static bool mount_sd_card_if_needed(void)
 
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "sd: mount failed at %s: %s", MP3_ROOT_PATH, esp_err_to_name(err));
+        if (spi_locked) {
+            screen_spi_unlock();
+        }
         return false;
     }
 
     s_sd_mounted = true;
+    if (spi_locked) {
+        screen_spi_unlock();
+    }
     ESP_LOGI(TAG, "sd: mounted at %s", MP3_ROOT_PATH);
     return true;
 }

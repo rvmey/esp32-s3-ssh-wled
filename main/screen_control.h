@@ -101,3 +101,20 @@ void screen_set_text_color(uint8_t r, uint8_t g, uint8_t b);
  * @brief Return the current text colour through the output parameters.
  */
 void screen_get_text_color(uint8_t *r, uint8_t *g, uint8_t *b);
+
+/**
+ * @brief Acquire exclusive access to the screen SPI path.
+ *        Intended for short critical sections where another peripheral
+ *        (for example SD over shared SPI lines) must probe without LCD
+ *        traffic.
+ *
+ * @param timeout_ms  Lock timeout in milliseconds.
+ *
+ * @return true if lock acquired, false on timeout/error.
+ */
+bool screen_spi_lock(uint32_t timeout_ms);
+
+/**
+ * @brief Release exclusive access previously acquired via screen_spi_lock().
+ */
+void screen_spi_unlock(void);

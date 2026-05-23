@@ -540,6 +540,45 @@ static const uint8_t s_font8x16[95][16] = {
 /* Returns true if the given logical pixel falls on a foreground font bit.
  * Always uses the 8×16 IBM VGA font scaled by s_font_scale.
  * char_w = 8 * scale, char_h = 16 * scale.
+
+bool screen_spi_lock(uint32_t timeout_ms)
+{
+    if (!s_draw_mutex) return false;
+
+    TickType_t ticks = pdMS_TO_TICKS(timeout_ms);
+    if (timeout_ms == 0) {
+        ticks = 0;
+    } else if (ticks == 0) {
+        ticks = 1;
+    }
+
+    if (xSemaphoreTake(s_draw_mutex, ticks) != pdTRUE) {
+        return false;
+    }
+
+    if (!s_spi) {
+        xSemaphoreGive(s_draw_mutex);
+        return false;
+    }
+
+    esp_err_t err = spi_device_acquire_bus(s_spi, ticks);
+    if (err != ESP_OK) {
+        xSemaphoreGive(s_draw_mutex);
+        return false;
+    }
+
+    return true;
+}
+
+void screen_spi_unlock(void)
+{
+    if (s_spi) {
+        spi_device_release_bus(s_spi);
+    }
+    if (s_draw_mutex) {
+        xSemaphoreGive(s_draw_mutex);
+    }
+}
  * start_y is the top pixel row of the text block in logical coordinates
  * (0 when content overflows the screen; centred otherwise).             */
 static bool text_pixel_is_fg(int logical_x, int logical_y,
