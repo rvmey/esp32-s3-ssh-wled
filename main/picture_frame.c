@@ -1572,20 +1572,18 @@ static bool mount_sd_card_if_needed(void)
 {
     if (s_sd_mounted) return true;
 
-    /* Core2 display already initializes SPI3 (MOSI=23, MISO=38, SCK=18). */
-    const spi_host_device_t sd_host = SPI3_HOST;
-
-    /* Deselect LCD (CS=GPIO5) so it never contends while probing the SD card. */
+    /* Keep LCD and SD deselected while probing so only one device can drive MISO. */
     gpio_set_direction(GPIO_NUM_5, GPIO_MODE_OUTPUT);
     gpio_set_level(GPIO_NUM_5, 1);
+    gpio_set_direction(GPIO_NUM_4, GPIO_MODE_OUTPUT);
+    gpio_set_level(GPIO_NUM_4, 1);
+
+    /* Core2 wiring can be marginal on these lines; enable internal pull-ups. */
+    gpio_pullup_en(GPIO_NUM_4);
+    gpio_pullup_en(GPIO_NUM_18);
+    gpio_pullup_en(GPIO_NUM_23);
+    gpio_pullup_en(GPIO_NUM_38);
     vTaskDelay(pdMS_TO_TICKS(5));
-
-    sdmmc_host_t host = SDSPI_HOST_DEFAULT();
-    host.slot = sd_host;
-
-    sdspi_device_config_t slot_config = SDSPI_DEVICE_CONFIG_DEFAULT();
-    slot_config.host_id = sd_host;
-    slot_config.gpio_cs = GPIO_NUM_4;
 
     esp_vfs_fat_sdmmc_mount_config_t mount_config = {
         .format_if_mount_failed = false,
@@ -1593,17 +1591,36 @@ static bool mount_sd_card_if_needed(void)
         .allocation_unit_size = 16 * 1024,
     };
 
-    const int freq_candidates_khz[] = {10000, 4000};
+    const spi_host_device_t host_candidates[] = {SPI3_HOST, SPI2_HOST};
+    const int freq_candidates_khz[] = {4000, 1000, 400};
     esp_err_t err = ESP_FAIL;
-    for (size_t i = 0; i < sizeof(freq_candidates_khz) / sizeof(freq_candidates_khz[0]); i++) {
-        host.max_freq_khz = freq_candidates_khz[i];
-        err = esp_vfs_fat_sdspi_mount(MP3_ROOT_PATH, &host, &slot_config,
-                                      &mount_config, &s_sd_card);
-        if (err == ESP_OK) break;
+    for (size_t h = 0; h < sizeof(host_candidates) / sizeof(host_candidates[0]) && err != ESP_OK; h++) {
+        sdmmc_host_t host = SDSPI_HOST_DEFAULT();
+        host.slot = host_candidates[h];
 
-        ESP_LOGW(TAG, "sd: mount retry failed at %d kHz: %s",
-                 freq_candidates_khz[i], esp_err_to_name(err));
-        vTaskDelay(pdMS_TO_TICKS(50));
+        sdspi_device_config_t slot_config = SDSPI_DEVICE_CONFIG_DEFAULT();
+        slot_config.host_id = host_candidates[h];
+        slot_config.gpio_cs = GPIO_NUM_4;
+        slot_config.gpio_cd = GPIO_NUM_NC;
+        slot_config.gpio_wp = GPIO_NUM_NC;
+        slot_config.gpio_int = GPIO_NUM_NC;
+
+        for (size_t i = 0; i < sizeof(freq_candidates_khz) / sizeof(freq_candidates_khz[0]); i++) {
+            host.max_freq_khz = freq_candidates_khz[i];
+            err = esp_vfs_fat_sdspi_mount(MP3_ROOT_PATH, &host, &slot_config,
+                                          &mount_config, &s_sd_card);
+            if (err == ESP_OK) {
+                ESP_LOGI(TAG, "sd: mounted using host=%s freq=%d kHz",
+                         host_candidates[h] == SPI3_HOST ? "SPI3" : "SPI2",
+                         freq_candidates_khz[i]);
+                break;
+            }
+
+            ESP_LOGW(TAG, "sd: mount retry failed host=%s freq=%d kHz: %s",
+                     host_candidates[h] == SPI3_HOST ? "SPI3" : "SPI2",
+                     freq_candidates_khz[i], esp_err_to_name(err));
+            vTaskDelay(pdMS_TO_TICKS(80));
+        }
     }
 
     if (err != ESP_OK) {
