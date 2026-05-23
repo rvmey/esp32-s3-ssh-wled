@@ -363,6 +363,7 @@ typedef struct {
     bool connecting;
     bool connected;
     bool connect_after_discovery;
+    int  connect_retries;     /* auto-retry on page timeout */
 #endif
     bool has_device;
     bool has_bda;
@@ -378,7 +379,9 @@ typedef struct {
 
 static bt_state_t s_bt = {0};
 
-static bool s_bt_reconnect_attempted = false;
+static bool      s_bt_reconnect_attempted  = false;
+static volatile bool s_bt_pending_reconnect = false;
+static TickType_t    s_bt_reconnect_after   = 0;
 
 static bool bt_parse_bda(const char *s, esp_bd_addr_t out)
 {
@@ -576,6 +579,8 @@ static void bt_a2dp_cb(esp_a2d_cb_event_t event, esp_a2d_cb_param_t *param)
         if (st == ESP_A2D_CONNECTION_STATE_CONNECTED) {
             s_bt.connected = true;
             s_bt.connecting = false;
+            s_bt.connect_retries = 0;    /* reset — connection succeeded */
+            s_bt_pending_reconnect = false;
             bt_pcm_clear();
             ESP_LOGI(TAG, "bt: A2DP connected to %s", s_bt.selected_bda);
             if (s_bt.selected_bda[0]) {
@@ -592,6 +597,17 @@ static void bt_a2dp_cb(esp_a2d_cb_event_t event, esp_a2d_cb_param_t *param)
             s_bt.connected = false;
             bt_pcm_clear();
             ESP_LOGI(TAG, "bt: A2DP disconnected");
+            /* Schedule a retry on page-timeout / transient failure (up to 3 attempts) */
+            if (s_bt.has_bda && !s_bt.discovering &&
+                s_bt.connect_retries < 3 && !s_bt_pending_reconnect) {
+                s_bt.connect_retries++;
+                s_bt_reconnect_after = xTaskGetTickCount() +
+                                       pdMS_TO_TICKS(3000U * (uint32_t)s_bt.connect_retries);
+                s_bt_pending_reconnect = true;
+                ESP_LOGW(TAG, "bt: scheduling reconnect attempt %d in %lu ms",
+                         s_bt.connect_retries,
+                         (unsigned long)(3000U * (uint32_t)s_bt.connect_retries));
+            }
         }
         return;
     }
@@ -800,6 +816,12 @@ static bool bt_init_if_needed(void)
         ESP_LOGW(TAG, "bt: set pin failed: %s", esp_err_to_name(err));
     }
 
+    /* Allow outgoing Classic BT connections but do not advertise the device */
+    err = esp_bt_gap_set_scan_mode(ESP_BT_CONNECTABLE, ESP_BT_NON_DISCOVERABLE);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "bt: set_scan_mode failed: %s", esp_err_to_name(err));
+    }
+
     s_bt.initialized = true;
     ESP_LOGI(TAG, "bt: classic Bluetooth initialized");
     return true;
@@ -903,6 +925,8 @@ static void bt_cmd_disconnect(void)
         }
     }
     s_bt.connect_after_discovery = false;
+    s_bt.connect_retries = 0;    /* user-initiated: cancel retries */
+    s_bt_pending_reconnect = false;
 #endif
     s_bt.has_device = false;
     s_bt.has_bda = false;
@@ -2759,6 +2783,23 @@ void picture_frame_run(void)
             }
 
             vTaskDelay(pdMS_TO_TICKS(200));   /* poll every 200 ms */
+
+#if CONFIG_BT_ENABLED && CONFIG_BT_A2DP_ENABLE
+            if (s_bt_pending_reconnect &&
+                xTaskGetTickCount() >= s_bt_reconnect_after) {
+                s_bt_pending_reconnect = false;
+                if (s_bt.has_bda && !s_bt.connected && !s_bt.connecting && !s_bt.discovering) {
+                    ESP_LOGI(TAG, "bt: reconnect attempt %d to %s",
+                             s_bt.connect_retries, s_bt.selected_bda);
+                    s_bt.connecting = true;
+                    esp_err_t rerr = esp_a2d_source_connect(s_bt.bda);
+                    if (rerr != ESP_OK) {
+                        s_bt.connecting = false;
+                        ESP_LOGW(TAG, "bt: reconnect failed: %s", esp_err_to_name(rerr));
+                    }
+                }
+            }
+#endif
 
             /* EIO keepalive: send "2" ping every 20 s so the server doesn't
              * close the socket after its 60-second pingTimeout. */
