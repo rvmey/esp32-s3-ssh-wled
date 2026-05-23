@@ -104,11 +104,10 @@ static void touch_poll_task(void *arg);
 
 static inline void screen_full_redraw_yield(int row)
 {
-    if ((row & 0x07) == 0x07) {
-        /* Polling SPI redraws can monopolize the classic ESP32 long enough
-         * to trip the interrupt watchdog unless we yield periodically. */
-        vTaskDelay(pdMS_TO_TICKS(1));
-    }
+    (void)row;
+    /* Aggressive yielding keeps high-priority Wi-Fi/BT interrupts serviced
+     * while we stream full-screen SPI redraws on classic ESP32. */
+    vTaskDelay(pdMS_TO_TICKS(1));
 }
 
 /* ------------------------------------------------------------------ */
@@ -601,7 +600,7 @@ esp_err_t screen_init(void)
                                                     pdMS_TO_TICKS(20));
     if (t_err == ESP_OK) {
         ESP_LOGI(TAG, "FT6336U touch ready (I2C addr=0x%02X)", TOUCH_I2C_ADDR);
-        xTaskCreate(touch_poll_task, "touch_poll", 2048, NULL, 5, NULL);
+        ESP_LOGW(TAG, "Touch polling temporarily disabled to avoid redraw/WDT contention");
     } else {
         ESP_LOGW(TAG, "FT6336U not found (err=%d) — scroll by touch unavailable", t_err);
     }
