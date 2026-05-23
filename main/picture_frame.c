@@ -2493,7 +2493,9 @@ void picture_frame_run(void)
                      "Visit %s\nSign in -> click name\n"
                      "Click Pair -> enter:\n%s", tcmd_display_host(), pair_code);
             screen_draw_text(pair_disp);
+#if !CONFIG_HARDWARE_CORE2
             http_pf_config_start(pair_code);
+#endif
 
             char lookup_url[900];
             snprintf(lookup_url, sizeof(lookup_url),
@@ -2516,7 +2518,9 @@ void picture_frame_run(void)
                 }
             }
 
+#if !CONFIG_HARDWARE_CORE2
             http_pf_config_stop();
+#endif
 
             if (paired) {
                 vTaskDelay(pdMS_TO_TICKS(500));
