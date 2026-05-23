@@ -736,6 +736,11 @@ static bool bt_init_if_needed(void)
     }
 
     err = esp_bt_controller_enable(ESP_BT_MODE_CLASSIC_BT);
+    if (err == ESP_ERR_INVALID_ARG) {
+        // Some BT controller configs only accept BTDM at runtime.
+        ESP_LOGW(TAG, "bt: CLASSIC enable rejected, retrying BTDM");
+        err = esp_bt_controller_enable(ESP_BT_MODE_BTDM);
+    }
     if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
         ESP_LOGE(TAG, "bt: controller enable failed: %s", esp_err_to_name(err));
         return false;
