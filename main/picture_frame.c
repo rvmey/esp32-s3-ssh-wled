@@ -231,6 +231,7 @@ static void pf_softap_provision(void)
 #include "esp_vfs_fat.h"
 #include "sdmmc_cmd.h"
 #include "driver/sdspi_host.h"
+#include "driver/spi_master.h"
 #include "driver/gpio.h"
 #include "mp3dec.h"
 
@@ -1578,12 +1579,25 @@ static bool mount_sd_card_if_needed(void)
     gpio_set_direction(GPIO_NUM_4, GPIO_MODE_OUTPUT);
     gpio_set_level(GPIO_NUM_4, 1);
 
-    /* Core2 wiring can be marginal on these lines; enable internal pull-ups. */
+    /* Core2 wiring can be marginal on these lines; enable internal pull-ups where supported. */
     gpio_pullup_en(GPIO_NUM_4);
     gpio_pullup_en(GPIO_NUM_18);
     gpio_pullup_en(GPIO_NUM_23);
-    gpio_pullup_en(GPIO_NUM_38);
     vTaskDelay(pdMS_TO_TICKS(5));
+
+    /* Use a dedicated SPI2 bus for SD so LCD traffic on SPI3 cannot interfere. */
+    spi_bus_config_t bus_cfg = {
+        .mosi_io_num = GPIO_NUM_23,
+        .miso_io_num = GPIO_NUM_38,
+        .sclk_io_num = GPIO_NUM_18,
+        .quadwp_io_num = -1,
+        .quadhd_io_num = -1,
+        .max_transfer_sz = 4096,
+    };
+    esp_err_t bus_err = spi_bus_initialize(SPI2_HOST, &bus_cfg, SPI_DMA_CH_AUTO);
+    if (bus_err != ESP_OK && bus_err != ESP_ERR_INVALID_STATE) {
+        ESP_LOGW(TAG, "sd: SPI2 bus init failed: %s", esp_err_to_name(bus_err));
+    }
 
     esp_vfs_fat_sdmmc_mount_config_t mount_config = {
         .format_if_mount_failed = false,
@@ -1591,7 +1605,7 @@ static bool mount_sd_card_if_needed(void)
         .allocation_unit_size = 16 * 1024,
     };
 
-    const spi_host_device_t host_candidates[] = {SPI3_HOST, SPI2_HOST};
+    const spi_host_device_t host_candidates[] = {SPI2_HOST};
     const int freq_candidates_khz[] = {4000, 1000, 400};
     esp_err_t err = ESP_FAIL;
     for (size_t h = 0; h < sizeof(host_candidates) / sizeof(host_candidates[0]) && err != ESP_OK; h++) {
