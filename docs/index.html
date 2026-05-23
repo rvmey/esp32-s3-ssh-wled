@@ -323,6 +323,17 @@
       var btn = document.getElementById('install-btn');
       var versionEl = document.getElementById('manifest-version');
       var rawBase = 'https://raw.githubusercontent.com/rvmey/esp32-s3-ssh-wled/master/docs/';
+      var manifestMap = {
+        'manifest-devkitc.json': rawBase + 'manifest-devkitc.json',
+        'manifest-jc3248w535.json': rawBase + 'manifest-jc3248w535.json',
+        'manifest-bike_tracker.json': rawBase + 'manifest-bike_tracker.json',
+        'manifest-picture_frame.json': rawBase + 'manifest-picture_frame.json',
+        'manifest-core2.json': rawBase + 'manifest-core2-2.0.107.json',
+        'manifest-tcmd_atom_echo.json': rawBase + 'manifest-tcmd_atom_echo.json'
+      };
+      var fixedVersionMap = {
+        'manifest-core2.json': '2.0.107'
+      };
 
       function setVersionText(msg) {
         versionEl.textContent = msg;
@@ -332,10 +343,14 @@
       function updateManifest() {
         var selected = document.querySelector('input[name="variant"]:checked');
         var manifestFile = selected ? selected.value : 'manifest-devkitc.json';
-        var manifestUrl = rawBase + manifestFile;
+        var manifestUrl = manifestMap[manifestFile] || (rawBase + manifestFile);
 
         btn.setAttribute('manifest', manifestUrl);
-        setVersionText('Selected firmware version: loading...');
+        if (fixedVersionMap[manifestFile]) {
+          setVersionText('Selected firmware version: ' + fixedVersionMap[manifestFile]);
+        } else {
+          setVersionText('Selected firmware version: loading...');
+        }
 
         fetch(manifestUrl, { cache: 'no-store' })
           .then(function (resp) { return resp.ok ? resp.json() : Promise.reject(new Error('HTTP ' + resp.status)); })
