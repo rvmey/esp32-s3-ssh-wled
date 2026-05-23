@@ -364,6 +364,7 @@ typedef struct {
     bool connected;
     bool connect_after_discovery;
     int  connect_retries;     /* auto-retry on page timeout */
+    bool pairing_ui_active;   /* true when pair command initiated current flow */
 #endif
     bool has_device;
     bool has_bda;
@@ -609,6 +610,15 @@ static void bt_a2dp_cb(esp_a2d_cb_event_t event, esp_a2d_cb_param_t *param)
             s_bt_pending_reconnect = false;
             bt_pcm_clear();
             ESP_LOGI(TAG, "bt: A2DP connected to %s", s_bt.selected_bda);
+            if (s_bt.pairing_ui_active) {
+                char msg[192];
+                snprintf(msg, sizeof(msg),
+                         "Bluetooth paired:\n%s\n%s",
+                         s_bt.selected_name[0] ? s_bt.selected_name : "(unknown)",
+                         s_bt.selected_bda[0] ? s_bt.selected_bda : "");
+                screen_draw_text(msg);
+                s_bt.pairing_ui_active = false;
+            }
             if (s_bt.selected_bda[0]) {
                 nvs_write_str(NVS_KEY_BT_BDA, s_bt.selected_bda);
             }
@@ -624,15 +634,29 @@ static void bt_a2dp_cb(esp_a2d_cb_event_t event, esp_a2d_cb_param_t *param)
             bt_pcm_clear();
             ESP_LOGI(TAG, "bt: A2DP disconnected");
             /* Schedule a retry on page-timeout / transient failure (up to 3 attempts) */
+            bool scheduled_retry = false;
             if (s_bt.has_bda && !s_bt.discovering &&
                 s_bt.connect_retries < 3 && !s_bt_pending_reconnect) {
                 s_bt.connect_retries++;
                 s_bt_reconnect_after = xTaskGetTickCount() +
                                        pdMS_TO_TICKS(3000U * (uint32_t)s_bt.connect_retries);
                 s_bt_pending_reconnect = true;
+                scheduled_retry = true;
                 ESP_LOGW(TAG, "bt: scheduling reconnect attempt %d in %lu ms",
                          s_bt.connect_retries,
                          (unsigned long)(3000U * (uint32_t)s_bt.connect_retries));
+            }
+            if (s_bt.pairing_ui_active) {
+                if (scheduled_retry) {
+                    char msg[96];
+                    snprintf(msg, sizeof(msg),
+                             "Bluetooth pairing\nretry %d/3...",
+                             s_bt.connect_retries);
+                    screen_draw_text(msg);
+                } else {
+                    screen_draw_text("Bluetooth pairing\nfailed");
+                    s_bt.pairing_ui_active = false;
+                }
             }
         }
         return;
@@ -672,14 +696,24 @@ static void bt_gap_cb(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t *param)
 #if CONFIG_BT_A2DP_ENABLE
             if (s_bt.connect_after_discovery && s_bt.has_bda) {
                 s_bt.connect_after_discovery = false;
+                if (s_bt.pairing_ui_active) {
+                    screen_draw_text("Bluetooth pairing\nconnecting...");
+                }
                 esp_err_t err = esp_a2d_source_connect(s_bt.bda);
                 if (err != ESP_OK) {
                     ESP_LOGE(TAG, "bt: A2DP connect failed: %s", esp_err_to_name(err));
                     s_bt.connecting = false;
+                    if (s_bt.pairing_ui_active) {
+                        screen_draw_text("Bluetooth pairing\nconnect failed");
+                        s_bt.pairing_ui_active = false;
+                    }
                 } else {
                     s_bt.connecting = true;
                     ESP_LOGI(TAG, "bt: connecting to %s", s_bt.selected_bda);
                 }
+            } else if (s_bt.pairing_ui_active && !s_bt.has_bda) {
+                screen_draw_text("Bluetooth pairing\nno audio device\nfound");
+                s_bt.pairing_ui_active = false;
             }
 #endif
         }
@@ -873,6 +907,7 @@ static void bt_cmd_pair_start(void)
     s_bt.candidate_score = -1000;
 #if CONFIG_BT_A2DP_ENABLE
     s_bt.connect_after_discovery = true;
+    s_bt.pairing_ui_active = true;
 #endif
     s_bt.selected_name[0] = '\0';
     s_bt.selected_bda[0] = '\0';
@@ -955,6 +990,7 @@ static void bt_cmd_disconnect(void)
     }
     s_bt.connect_after_discovery = false;
     s_bt.connect_retries = 0;    /* user-initiated: cancel retries */
+    s_bt.pairing_ui_active = false;
     s_bt_pending_reconnect = false;
 #endif
     s_bt.has_device = false;
