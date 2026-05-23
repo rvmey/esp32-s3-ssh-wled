@@ -27,6 +27,9 @@
 #include <string.h>
 #include <stdlib.h>
 #include <ctype.h>
+#include <stdio.h>
+#include <dirent.h>
+#include <sys/stat.h>
 #include "esp_log.h"
 #include "esp_err.h"
 #include "esp_system.h"
@@ -40,6 +43,16 @@
 #include "wifi_manager.h"
 #include "improv_wifi.h"
 #include "screen_control.h"
+
+#if CONFIG_BT_ENABLED
+#include "esp_bt.h"
+#include "esp_bt_main.h"
+#include "esp_bt_device.h"
+#include "esp_gap_bt_api.h"
+#if CONFIG_BT_A2DP_ENABLE
+#include "esp_a2dp_api.h"
+#endif
+#endif
 
 #if CONFIG_HARDWARE_CORE2
 /* SoftAP provisioning for Core2 (classic ESP32 — no USB-JTAG Improv) */
@@ -215,9 +228,45 @@ static void pf_softap_provision(void)
 #include "triggercmd_ca.h"   /* embedded Go Daddy Root G2 cert for triggercmd.com */
 #include "jpeg_decoder.h"
 #include "esp_heap_caps.h"
+#include "esp_vfs_fat.h"
+#include "sdmmc_cmd.h"
+#include "driver/sdspi_host.h"
+#include "mp3dec.h"
+
+#if CONFIG_HARDWARE_CORE2
+#include "core2_audio.h"
+#endif
 
 
 static const char *TAG = "pf";
+
+#define MP3_ROOT_PATH        "/sdcard"
+#define MP3_MAX_FOLDERS      32
+#define MP3_MAX_TRIGGER_LEN  64
+#define MP3_MAX_PATH_LEN     256
+#define MP3_MAX_FILE_LEN     128
+
+typedef struct {
+    char trigger[MP3_MAX_TRIGGER_LEN];
+    char folder_path[MP3_MAX_PATH_LEN];
+    int  mp3_count;
+} mp3_folder_t;
+
+typedef struct {
+    bool       active;
+    bool       paused;
+    bool       shuffle;
+    int        volume;            /* 0..100 */
+    int        folder_idx;        /* index into s_mp3_folders */
+    int        track_idx;         /* 0-based index in folder */
+    uint32_t   duration_ms;
+    uint32_t   position_ms;
+    TickType_t last_tick;
+    uint32_t   play_token;
+    char       folder_name[MP3_MAX_TRIGGER_LEN];
+    char       file_name[MP3_MAX_FILE_LEN];
+    char       file_path[MP3_MAX_PATH_LEN + MP3_MAX_FILE_LEN + 8];
+} mp3_state_t;
 
 /* ── Server URL base (change to dev server as needed) ──────────────────── */
 /*
@@ -252,6 +301,9 @@ static const char *tcmd_display_host(void)
 #define NVS_KEY_FONT    "font"
 #define NVS_KEY_ORIENT  "land"
 #define NVS_KEY_JPEGURL "jpeg_url"
+#define NVS_KEY_SHUFFLE "mp3_shuffle"
+#define NVS_KEY_BT_BDA  "bt_bda"
+#define NVS_KEY_BT_NAME "bt_name"
 
 #define HW_TOKEN_MAX_LEN    513   /* 512 payload + NUL */
 #define COMPUTER_ID_MAX_LEN  33   /* 32 payload + NUL  */
@@ -278,6 +330,668 @@ static volatile bool s_pending_jpeg_redraw = false;
 /* Persistable display state (set by commands, committed by 'save'). */
 static char s_last_text[512]         = {0};
 static char s_current_jpeg_url[512]  = {0};
+
+static sdmmc_card_t *s_sd_card = NULL;
+static bool          s_sd_mounted = false;
+static mp3_folder_t  s_mp3_folders[MP3_MAX_FOLDERS];
+static size_t        s_mp3_folder_count = 0;
+static mp3_state_t   s_mp3 = {
+    .active = false,
+    .paused = false,
+    .shuffle = false,
+    .volume = 50,
+    .folder_idx = -1,
+    .track_idx = -1,
+    .duration_ms = 0,
+    .position_ms = 0,
+    .last_tick = 0,
+};
+static TickType_t s_mp3_last_ui_tick = 0;
+static TaskHandle_t s_mp3_task = NULL;
+
+static bool nvs_read_str(const char *key, char *out, size_t out_sz);
+static esp_err_t nvs_write_str(const char *key, const char *val);
+static esp_err_t nvs_erase_key_local(const char *key);
+
+#if CONFIG_BT_ENABLED
+typedef struct {
+    bool initialized;
+    bool discovering;
+#if CONFIG_BT_A2DP_ENABLE
+    bool connecting;
+    bool connected;
+    bool connect_after_discovery;
+#endif
+    bool has_device;
+    bool has_bda;
+    bool has_candidate;
+    int candidate_score;
+    esp_bd_addr_t bda;
+    esp_bd_addr_t candidate_bda;
+    char selected_name[64];
+    char selected_bda[18];
+    char candidate_name[64];
+    char candidate_bda_str[18];
+} bt_state_t;
+
+static bt_state_t s_bt = {0};
+
+static bool s_bt_reconnect_attempted = false;
+
+static bool bt_parse_bda(const char *s, esp_bd_addr_t out)
+{
+    if (!s || !out) return false;
+    unsigned int b[6] = {0};
+    if (sscanf(s, "%02x:%02x:%02x:%02x:%02x:%02x",
+               &b[0], &b[1], &b[2], &b[3], &b[4], &b[5]) != 6) {
+        return false;
+    }
+    for (int i = 0; i < 6; i++) out[i] = (uint8_t)b[i];
+    return true;
+}
+
+static bool bt_name_has_token(const char *name, const char *token)
+{
+    if (!name || !token || !name[0] || !token[0]) return false;
+    size_t ln = strlen(name);
+    size_t lt = strlen(token);
+    if (lt > ln) return false;
+    for (size_t i = 0; i + lt <= ln; i++) {
+        bool match = true;
+        for (size_t j = 0; j < lt; j++) {
+            if (tolower((unsigned char)name[i + j]) != tolower((unsigned char)token[j])) {
+                match = false;
+                break;
+            }
+        }
+        if (match) return true;
+    }
+    return false;
+}
+
+static int bt_score_candidate(const char *name, int rssi)
+{
+    int score = rssi;
+    if (!name || !name[0]) return score - 100;
+
+    if (bt_name_has_token(name, "head") || bt_name_has_token(name, "buds") ||
+        bt_name_has_token(name, "speaker") || bt_name_has_token(name, "audio") ||
+        bt_name_has_token(name, "sound") || bt_name_has_token(name, "ear") ||
+        bt_name_has_token(name, "jbl") || bt_name_has_token(name, "sony") ||
+        bt_name_has_token(name, "bose") || bt_name_has_token(name, "beats") ||
+        bt_name_has_token(name, "anker") || bt_name_has_token(name, "senn") ||
+        bt_name_has_token(name, "airpods") || bt_name_has_token(name, "marshall")) {
+        score += 80;
+    }
+    if (bt_name_has_token(name, "phone") || bt_name_has_token(name, "laptop") ||
+        bt_name_has_token(name, "pc") || bt_name_has_token(name, "keyboard") ||
+        bt_name_has_token(name, "mouse")) {
+        score -= 60;
+    }
+    return score;
+}
+
+#define BT_PCM_RING_BYTES (64 * 1024)
+static uint8_t *s_bt_pcm_ring = NULL;
+static size_t s_bt_pcm_rpos = 0;
+static size_t s_bt_pcm_wpos = 0;
+static size_t s_bt_pcm_fill = 0;
+static portMUX_TYPE s_bt_pcm_mux = portMUX_INITIALIZER_UNLOCKED;
+
+static void bt_pcm_clear(void)
+{
+    taskENTER_CRITICAL(&s_bt_pcm_mux);
+    s_bt_pcm_rpos = 0;
+    s_bt_pcm_wpos = 0;
+    s_bt_pcm_fill = 0;
+    taskEXIT_CRITICAL(&s_bt_pcm_mux);
+}
+
+static size_t bt_pcm_write_bytes(const uint8_t *src, size_t len)
+{
+    if (!s_bt_pcm_ring || !src || len == 0) return 0;
+
+    taskENTER_CRITICAL(&s_bt_pcm_mux);
+    size_t free_space = BT_PCM_RING_BYTES - s_bt_pcm_fill;
+    if (len > free_space) len = free_space;
+
+    size_t first = BT_PCM_RING_BYTES - s_bt_pcm_wpos;
+    if (first > len) first = len;
+    memcpy(&s_bt_pcm_ring[s_bt_pcm_wpos], src, first);
+    s_bt_pcm_wpos = (s_bt_pcm_wpos + first) % BT_PCM_RING_BYTES;
+
+    size_t rem = len - first;
+    if (rem > 0) {
+        memcpy(&s_bt_pcm_ring[s_bt_pcm_wpos], src + first, rem);
+        s_bt_pcm_wpos = (s_bt_pcm_wpos + rem) % BT_PCM_RING_BYTES;
+    }
+
+    s_bt_pcm_fill += len;
+    taskEXIT_CRITICAL(&s_bt_pcm_mux);
+    return len;
+}
+
+static size_t bt_pcm_read_bytes(uint8_t *dst, size_t len)
+{
+    if (!s_bt_pcm_ring || !dst || len == 0) return 0;
+
+    taskENTER_CRITICAL(&s_bt_pcm_mux);
+    size_t take = (len < s_bt_pcm_fill) ? len : s_bt_pcm_fill;
+
+    size_t first = BT_PCM_RING_BYTES - s_bt_pcm_rpos;
+    if (first > take) first = take;
+    memcpy(dst, &s_bt_pcm_ring[s_bt_pcm_rpos], first);
+    s_bt_pcm_rpos = (s_bt_pcm_rpos + first) % BT_PCM_RING_BYTES;
+
+    size_t rem = take - first;
+    if (rem > 0) {
+        memcpy(dst + first, &s_bt_pcm_ring[s_bt_pcm_rpos], rem);
+        s_bt_pcm_rpos = (s_bt_pcm_rpos + rem) % BT_PCM_RING_BYTES;
+    }
+
+    s_bt_pcm_fill -= take;
+    taskEXIT_CRITICAL(&s_bt_pcm_mux);
+    return take;
+}
+
+static int16_t bt_scale_sample(int16_t s, int volume_percent)
+{
+    if (volume_percent >= 100) return s;
+    if (volume_percent <= 0) return 0;
+    int32_t scaled = ((int32_t)s * (int32_t)volume_percent) / 100;
+    if (scaled > 32767) scaled = 32767;
+    if (scaled < -32768) scaled = -32768;
+    return (int16_t)scaled;
+}
+
+static void bt_pcm_write_from_decoder(const int16_t *samples,
+                                      size_t sample_count,
+                                      int channels,
+                                      int volume_percent)
+{
+    if (!samples || sample_count == 0) return;
+    if (!s_bt.connected) return;
+    if (channels != 1 && channels != 2) return;
+
+    uint8_t frame_bytes[512];
+    size_t in_pos = 0;
+    size_t frames_per_chunk = sizeof(frame_bytes) / 4;
+
+    while (in_pos < sample_count) {
+        size_t frames = frames_per_chunk;
+        if (channels == 2) {
+            size_t rem_frames = (sample_count - in_pos) / 2;
+            if (rem_frames < frames) frames = rem_frames;
+        } else {
+            size_t rem_frames = sample_count - in_pos;
+            if (rem_frames < frames) frames = rem_frames;
+        }
+        if (frames == 0) break;
+
+        for (size_t i = 0; i < frames; i++) {
+            int16_t l;
+            int16_t r;
+            if (channels == 2) {
+                l = bt_scale_sample(samples[in_pos + (i * 2)], volume_percent);
+                r = bt_scale_sample(samples[in_pos + (i * 2) + 1], volume_percent);
+            } else {
+                l = bt_scale_sample(samples[in_pos + i], volume_percent);
+                r = l;
+            }
+
+            frame_bytes[(i * 4)] = (uint8_t)(l & 0xFF);
+            frame_bytes[(i * 4) + 1] = (uint8_t)((l >> 8) & 0xFF);
+            frame_bytes[(i * 4) + 2] = (uint8_t)(r & 0xFF);
+            frame_bytes[(i * 4) + 3] = (uint8_t)((r >> 8) & 0xFF);
+        }
+
+        (void)bt_pcm_write_bytes(frame_bytes, frames * 4);
+        if (channels == 2) {
+            in_pos += frames * 2;
+        } else {
+            in_pos += frames;
+        }
+    }
+}
+
+#if CONFIG_BT_A2DP_ENABLE
+static int32_t bt_a2dp_data_cb(uint8_t *data, int32_t len)
+{
+    if (!data || len <= 0) return 0;
+    size_t taken = bt_pcm_read_bytes(data, (size_t)len);
+    if (taken < (size_t)len) {
+        memset(data + taken, 0, (size_t)len - taken);
+    }
+    return len;
+}
+
+static void bt_a2dp_cb(esp_a2d_cb_event_t event, esp_a2d_cb_param_t *param)
+{
+    if (!param) return;
+
+    if (event == ESP_A2D_CONNECTION_STATE_EVT) {
+        esp_a2d_connection_state_t st = param->conn_stat.state;
+        if (st == ESP_A2D_CONNECTION_STATE_CONNECTED) {
+            s_bt.connected = true;
+            s_bt.connecting = false;
+            bt_pcm_clear();
+            ESP_LOGI(TAG, "bt: A2DP connected to %s", s_bt.selected_bda);
+            if (s_bt.selected_bda[0]) {
+                nvs_write_str(NVS_KEY_BT_BDA, s_bt.selected_bda);
+            }
+            if (s_bt.selected_name[0]) {
+                nvs_write_str(NVS_KEY_BT_NAME, s_bt.selected_name);
+            }
+        } else if (st == ESP_A2D_CONNECTION_STATE_CONNECTING) {
+            s_bt.connecting = true;
+            s_bt.connected = false;
+        } else {
+            s_bt.connecting = false;
+            s_bt.connected = false;
+            bt_pcm_clear();
+            ESP_LOGI(TAG, "bt: A2DP disconnected");
+        }
+        return;
+    }
+
+    if (event == ESP_A2D_AUDIO_STATE_EVT) {
+        ESP_LOGI(TAG, "bt: A2DP audio state=%d", (int)param->audio_stat.state);
+    }
+}
+#endif
+
+static void bt_bda_to_str(const esp_bd_addr_t bda, char *out, size_t out_sz)
+{
+    if (!out || out_sz < 18) return;
+    snprintf(out, out_sz, "%02X:%02X:%02X:%02X:%02X:%02X",
+             bda[0], bda[1], bda[2], bda[3], bda[4], bda[5]);
+}
+
+static void bt_gap_cb(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t *param)
+{
+    if (!param) return;
+
+    if (event == ESP_BT_GAP_DISC_STATE_CHANGED_EVT) {
+        if (param->disc_st_chg.state == ESP_BT_GAP_DISCOVERY_STARTED) {
+            s_bt.discovering = true;
+            s_bt.has_candidate = false;
+            s_bt.candidate_score = -1000;
+        } else if (param->disc_st_chg.state == ESP_BT_GAP_DISCOVERY_STOPPED) {
+            s_bt.discovering = false;
+            if (!s_bt.has_device && s_bt.has_candidate) {
+                s_bt.has_device = true;
+                s_bt.has_bda = true;
+                memcpy(s_bt.bda, s_bt.candidate_bda, ESP_BD_ADDR_LEN);
+                strlcpy(s_bt.selected_name, s_bt.candidate_name, sizeof(s_bt.selected_name));
+                strlcpy(s_bt.selected_bda, s_bt.candidate_bda_str, sizeof(s_bt.selected_bda));
+            }
+#if CONFIG_BT_A2DP_ENABLE
+            if (s_bt.connect_after_discovery && s_bt.has_bda) {
+                s_bt.connect_after_discovery = false;
+                esp_err_t err = esp_a2d_source_connect(s_bt.bda);
+                if (err != ESP_OK) {
+                    ESP_LOGE(TAG, "bt: A2DP connect failed: %s", esp_err_to_name(err));
+                    s_bt.connecting = false;
+                } else {
+                    s_bt.connecting = true;
+                    ESP_LOGI(TAG, "bt: connecting to %s", s_bt.selected_bda);
+                }
+            }
+#endif
+        }
+        return;
+    }
+
+    if (event != ESP_BT_GAP_DISC_RES_EVT) {
+        return;
+    }
+
+    char name[sizeof(s_bt.selected_name)] = {0};
+    for (int i = 0; i < param->disc_res.num_prop; i++) {
+        esp_bt_gap_dev_prop_t *p = &param->disc_res.prop[i];
+        if (p->type == ESP_BT_GAP_DEV_PROP_BDNAME && p->val && p->len > 0) {
+            size_t n = (size_t)p->len;
+            if (n >= sizeof(name)) n = sizeof(name) - 1;
+            memcpy(name, p->val, n);
+            name[n] = '\0';
+            break;
+        }
+        if (p->type == ESP_BT_GAP_DEV_PROP_EIR && p->val) {
+            uint8_t eir_len = 0;
+            uint8_t *eir = (uint8_t *)p->val;
+            uint8_t *eir_name = esp_bt_gap_resolve_eir_data(eir,
+                                                             ESP_BT_EIR_TYPE_CMPL_LOCAL_NAME,
+                                                             &eir_len);
+            if (!eir_name || eir_len == 0) {
+                eir_name = esp_bt_gap_resolve_eir_data(eir,
+                                                       ESP_BT_EIR_TYPE_SHORT_LOCAL_NAME,
+                                                       &eir_len);
+            }
+            if (eir_name && eir_len > 0) {
+                size_t n = (size_t)eir_len;
+                if (n >= sizeof(name)) n = sizeof(name) - 1;
+                memcpy(name, eir_name, n);
+                name[n] = '\0';
+                break;
+            }
+        }
+    }
+
+    if (name[0] == '\0') {
+        return;
+    }
+
+    int rssi = -90;
+    for (int i = 0; i < param->disc_res.num_prop; i++) {
+        esp_bt_gap_dev_prop_t *p = &param->disc_res.prop[i];
+        if (p->type == ESP_BT_GAP_DEV_PROP_RSSI && p->val) {
+            rssi = (int)(*(int8_t *)p->val);
+            break;
+        }
+    }
+
+    int score = bt_score_candidate(name, rssi);
+    if (!s_bt.has_candidate || score > s_bt.candidate_score) {
+        s_bt.has_candidate = true;
+        s_bt.candidate_score = score;
+        strlcpy(s_bt.candidate_name, name, sizeof(s_bt.candidate_name));
+        bt_bda_to_str(param->disc_res.bda, s_bt.candidate_bda_str, sizeof(s_bt.candidate_bda_str));
+        memcpy(s_bt.candidate_bda, param->disc_res.bda, ESP_BD_ADDR_LEN);
+        ESP_LOGI(TAG, "bt: candidate %s (%s) score=%d rssi=%d",
+                 s_bt.candidate_name,
+                 s_bt.candidate_bda_str,
+                 score,
+                 rssi);
+    }
+}
+
+static bool bt_init_if_needed(void)
+{
+    if (s_bt.initialized) return true;
+
+    if (!s_bt_pcm_ring) {
+        s_bt_pcm_ring = heap_caps_malloc(BT_PCM_RING_BYTES, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (!s_bt_pcm_ring) {
+            s_bt_pcm_ring = malloc(BT_PCM_RING_BYTES);
+        }
+        if (!s_bt_pcm_ring) {
+            ESP_LOGE(TAG, "bt: failed to allocate pcm ring");
+            return false;
+        }
+        bt_pcm_clear();
+    }
+
+    esp_err_t err = esp_bt_controller_mem_release(ESP_BT_MODE_BLE);
+    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
+        ESP_LOGW(TAG, "bt: mem_release(BLE) failed: %s", esp_err_to_name(err));
+    }
+
+    esp_bt_controller_config_t bt_cfg = BT_CONTROLLER_INIT_CONFIG_DEFAULT();
+    err = esp_bt_controller_init(&bt_cfg);
+    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
+        ESP_LOGE(TAG, "bt: controller init failed: %s", esp_err_to_name(err));
+        return false;
+    }
+
+    err = esp_bt_controller_enable(ESP_BT_MODE_CLASSIC_BT);
+    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
+        ESP_LOGE(TAG, "bt: controller enable failed: %s", esp_err_to_name(err));
+        return false;
+    }
+
+    err = esp_bluedroid_init();
+    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
+        ESP_LOGE(TAG, "bt: bluedroid init failed: %s", esp_err_to_name(err));
+        return false;
+    }
+
+    err = esp_bluedroid_enable();
+    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
+        ESP_LOGE(TAG, "bt: bluedroid enable failed: %s", esp_err_to_name(err));
+        return false;
+    }
+
+    err = esp_bt_gap_register_callback(bt_gap_cb);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "bt: GAP callback registration failed: %s", esp_err_to_name(err));
+        return false;
+    }
+
+#if CONFIG_BT_A2DP_ENABLE
+    err = esp_a2d_register_callback(bt_a2dp_cb);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "bt: A2DP callback registration failed: %s", esp_err_to_name(err));
+        return false;
+    }
+
+    err = esp_a2d_source_register_data_callback(bt_a2dp_data_cb);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "bt: A2DP data callback registration failed: %s", esp_err_to_name(err));
+        return false;
+    }
+
+    err = esp_a2d_source_init();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "bt: A2DP source init failed: %s", esp_err_to_name(err));
+        return false;
+    }
+#endif
+
+    err = esp_bt_gap_set_device_name("TCMD-Core2");
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "bt: set device name failed: %s", esp_err_to_name(err));
+    }
+
+    esp_bt_pin_type_t pin_type = ESP_BT_PIN_TYPE_VARIABLE;
+    esp_bt_pin_code_t pin_code;
+    memset(pin_code, 0, sizeof(pin_code));
+    err = esp_bt_gap_set_pin(pin_type, 0, pin_code);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "bt: set pin failed: %s", esp_err_to_name(err));
+    }
+
+    s_bt.initialized = true;
+    ESP_LOGI(TAG, "bt: classic Bluetooth initialized");
+    return true;
+}
+
+static void bt_cmd_pair_start(void)
+{
+    if (!bt_init_if_needed()) {
+        screen_draw_text("Bluetooth init\nfailed");
+        return;
+    }
+    if (s_bt.discovering) {
+        screen_draw_text("Bluetooth pairing\nin progress...\nScanning");
+        return;
+    }
+
+    s_bt.has_device = false;
+    s_bt.has_bda = false;
+    s_bt.has_candidate = false;
+    s_bt.candidate_score = -1000;
+#if CONFIG_BT_A2DP_ENABLE
+    s_bt.connect_after_discovery = true;
+#endif
+    s_bt.selected_name[0] = '\0';
+    s_bt.selected_bda[0] = '\0';
+
+    esp_err_t err = esp_bt_gap_start_discovery(ESP_BT_INQ_MODE_GENERAL_INQUIRY, 10, 0);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "bt: start discovery failed: %s", esp_err_to_name(err));
+        screen_draw_text("Bluetooth pairing\nfailed to start");
+        return;
+    }
+
+    screen_draw_text("Bluetooth pairing\nstarted...\nScanning for\naudio devices");
+}
+
+static void bt_cmd_status(void)
+{
+    char saved_bda[18] = {0};
+    bool auto_target_set = nvs_read_str(NVS_KEY_BT_BDA, saved_bda, sizeof(saved_bda));
+
+    if (!s_bt.initialized) {
+        screen_draw_text(auto_target_set
+                             ? "Bluetooth status:\nnot initialized\nauto target: set"
+                             : "Bluetooth status:\nnot initialized\nauto target: none");
+        return;
+    }
+    if (s_bt.discovering) {
+        screen_draw_text(auto_target_set
+                             ? "Bluetooth status:\nscanning...\nauto target: set"
+                             : "Bluetooth status:\nscanning...\nauto target: none");
+        return;
+    }
+#if CONFIG_BT_A2DP_ENABLE
+    if (s_bt.connecting) {
+        screen_draw_text(auto_target_set
+                             ? "Bluetooth status:\nconnecting...\nauto target: set"
+                             : "Bluetooth status:\nconnecting...\nauto target: none");
+        return;
+    }
+    if (s_bt.connected) {
+        char msg[192];
+        snprintf(msg, sizeof(msg),
+                 "Bluetooth status:\nconnected:\n%s\n%s\nauto target: %s",
+                 s_bt.selected_name[0] ? s_bt.selected_name : "(unknown)",
+                 s_bt.selected_bda[0] ? s_bt.selected_bda : "",
+                 auto_target_set ? "set" : "none");
+        screen_draw_text(msg);
+        return;
+    }
+#endif
+    if (s_bt.has_device) {
+        char msg[192];
+        snprintf(msg, sizeof(msg),
+                 "Bluetooth status:\nselected device:\n%s\n%s\nauto target: %s",
+                 s_bt.selected_name,
+                 s_bt.selected_bda,
+                 auto_target_set ? "set" : "none");
+        screen_draw_text(msg);
+        return;
+    }
+    screen_draw_text(auto_target_set
+                         ? "Bluetooth status:\nno device selected\nauto target: set"
+                         : "Bluetooth status:\nno device selected\nauto target: none");
+}
+
+static void bt_cmd_disconnect(void)
+{
+    if (!s_bt.initialized) {
+        screen_draw_text("Bluetooth\nnot initialized");
+        return;
+    }
+    if (s_bt.discovering) {
+        esp_bt_gap_cancel_discovery();
+    }
+#if CONFIG_BT_A2DP_ENABLE
+    if ((s_bt.connected || s_bt.connecting) && s_bt.has_bda) {
+        esp_err_t err = esp_a2d_source_disconnect(s_bt.bda);
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "bt: disconnect request failed: %s", esp_err_to_name(err));
+        }
+    }
+    s_bt.connect_after_discovery = false;
+#endif
+    s_bt.has_device = false;
+    s_bt.has_bda = false;
+    s_bt.has_candidate = false;
+#if CONFIG_BT_A2DP_ENABLE
+    s_bt.connected = false;
+    s_bt.connecting = false;
+#endif
+    s_bt.selected_name[0] = '\0';
+    s_bt.selected_bda[0] = '\0';
+    bt_pcm_clear();
+    screen_draw_text("Bluetooth device\ncleared");
+}
+
+static void bt_cmd_forget(void)
+{
+    bt_cmd_disconnect();
+    esp_err_t e1 = nvs_erase_key_local(NVS_KEY_BT_BDA);
+    esp_err_t e2 = nvs_erase_key_local(NVS_KEY_BT_NAME);
+    if (e1 == ESP_OK && e2 == ESP_OK) {
+        screen_draw_text("Bluetooth\npaired device\nforgotten");
+        ESP_LOGI(TAG, "bt: persisted device removed");
+    } else {
+        screen_draw_text("Bluetooth\nforget failed");
+        ESP_LOGW(TAG, "bt: forget failed bda=%s name=%s",
+                 esp_err_to_name(e1),
+                 esp_err_to_name(e2));
+    }
+}
+
+static void bt_try_reconnect_on_boot(void)
+{
+#if CONFIG_BT_A2DP_ENABLE
+    if (s_bt_reconnect_attempted) return;
+    s_bt_reconnect_attempted = true;
+
+    char bda_str[18] = {0};
+    char name[64] = {0};
+    if (!nvs_read_str(NVS_KEY_BT_BDA, bda_str, sizeof(bda_str))) {
+        return;
+    }
+
+    esp_bd_addr_t bda = {0};
+    if (!bt_parse_bda(bda_str, bda)) {
+        ESP_LOGW(TAG, "bt: invalid persisted bda '%s'", bda_str);
+        return;
+    }
+
+    if (!bt_init_if_needed()) {
+        return;
+    }
+
+    memcpy(s_bt.bda, bda, ESP_BD_ADDR_LEN);
+    s_bt.has_bda = true;
+    s_bt.has_device = true;
+    strlcpy(s_bt.selected_bda, bda_str, sizeof(s_bt.selected_bda));
+    if (nvs_read_str(NVS_KEY_BT_NAME, name, sizeof(name))) {
+        strlcpy(s_bt.selected_name, name, sizeof(s_bt.selected_name));
+    } else {
+        strlcpy(s_bt.selected_name, "last device", sizeof(s_bt.selected_name));
+    }
+
+    esp_err_t err = esp_a2d_source_connect(s_bt.bda);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "bt: reconnect on boot failed: %s", esp_err_to_name(err));
+        return;
+    }
+
+    s_bt.connecting = true;
+    ESP_LOGI(TAG, "bt: reconnecting to %s (%s)", s_bt.selected_name, s_bt.selected_bda);
+#endif
+}
+#else
+static void bt_cmd_pair_start(void)
+{
+    screen_draw_text("Bluetooth not\nenabled in this\nfirmware build");
+}
+
+static void bt_cmd_status(void)
+{
+    screen_draw_text("Bluetooth status:\ndisabled in\nfirmware build");
+}
+
+static void bt_cmd_disconnect(void)
+{
+    screen_draw_text("Bluetooth disabled\nin firmware build");
+}
+
+static void bt_cmd_forget(void)
+{
+    screen_draw_text("Bluetooth disabled\nin firmware build");
+}
+
+static void bt_try_reconnect_on_boot(void)
+{
+}
+#endif
+
+static void mp3_render_now_playing(void);
 
 static bool nvs_read_str(const char *key, char *out, size_t out_sz)
 {
@@ -317,6 +1031,498 @@ static esp_err_t nvs_write_u8(const char *key, uint8_t val)
     if (err == ESP_OK) err = nvs_commit(h);
     nvs_close(h);
     return err;
+}
+
+static bool str_ends_with_ci(const char *s, const char *suffix)
+{
+    size_t ls = strlen(s);
+    size_t lf = strlen(suffix);
+    if (ls < lf) return false;
+    s += (ls - lf);
+    while (*suffix) {
+        if (tolower((unsigned char)*s++) != tolower((unsigned char)*suffix++)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool is_mp3_file_name(const char *name)
+{
+    return str_ends_with_ci(name, ".mp3");
+}
+
+static bool trigger_reserved(const char *trigger)
+{
+    static const char *reserved[] = {
+        "text", "color", "textcolor", "fontsize", "landscape", "portrait",
+        "jpeg", "save", "play", "stop", "forward", "reverse", "volumeup",
+        "volumedown", "shuffle", "pair", "btstatus", "btdisconnect", "btforget"
+    };
+    for (size_t i = 0; i < sizeof(reserved) / sizeof(reserved[0]); i++) {
+        if (strcasecmp(trigger, reserved[i]) == 0) return true;
+    }
+    return false;
+}
+
+static int mp3_count_in_folder(const char *folder_path)
+{
+    DIR *d = opendir(folder_path);
+    if (!d) return 0;
+
+    int count = 0;
+    struct dirent *e;
+    while ((e = readdir(d)) != NULL) {
+        if (e->d_name[0] == '.') continue;
+        if (is_mp3_file_name(e->d_name)) count++;
+    }
+    closedir(d);
+    return count;
+}
+
+static bool mp3_get_nth_file(const char *folder_path,
+                             int target_idx,
+                             char *out_name,
+                             size_t out_sz,
+                             int *total_out)
+{
+    DIR *d = opendir(folder_path);
+    if (!d) return false;
+
+    int index = 0;
+    int total = 0;
+    bool ok = false;
+    struct dirent *e;
+    while ((e = readdir(d)) != NULL) {
+        if (e->d_name[0] == '.') continue;
+        if (!is_mp3_file_name(e->d_name)) continue;
+        if (index == target_idx) {
+            strncpy(out_name, e->d_name, out_sz - 1);
+            out_name[out_sz - 1] = '\0';
+            ok = true;
+        }
+        index++;
+        total++;
+    }
+    closedir(d);
+
+    if (total_out) *total_out = total;
+    return ok;
+}
+
+typedef struct {
+    int frame_bytes;
+    int sample_rate;
+    int samples_per_frame;
+} mp3_frame_info_t;
+
+static bool mp3_parse_frame_header(uint32_t h, mp3_frame_info_t *out)
+{
+    static const int br_v1_l3[16] = {0,32,40,48,56,64,80,96,112,128,160,192,224,256,320,0};
+    static const int br_v2_l3[16] = {0,8,16,24,32,40,48,56,64,80,96,112,128,144,160,0};
+    static const int sr_tbl[3]    = {44100, 48000, 32000};
+
+    if ((h & 0xFFE00000U) != 0xFFE00000U) return false;
+
+    int version_id = (int)((h >> 19) & 0x3U);
+    int layer = (int)((h >> 17) & 0x3U);
+    int bitrate_idx = (int)((h >> 12) & 0xFU);
+    int sample_idx = (int)((h >> 10) & 0x3U);
+    int padding = (int)((h >> 9) & 0x1U);
+
+    if (version_id == 1) return false;        /* reserved */
+    if (layer != 1) return false;             /* only Layer III */
+    if (bitrate_idx == 0 || bitrate_idx == 15) return false;
+    if (sample_idx == 3) return false;
+
+    int sample_rate = sr_tbl[sample_idx];
+    bool mpeg1 = (version_id == 3);
+    if (version_id == 2) sample_rate /= 2;    /* MPEG 2 */
+    if (version_id == 0) sample_rate /= 4;    /* MPEG 2.5 */
+
+    int bitrate_kbps = mpeg1 ? br_v1_l3[bitrate_idx] : br_v2_l3[bitrate_idx];
+    if (bitrate_kbps <= 0 || sample_rate <= 0) return false;
+
+    int samples_per_frame = mpeg1 ? 1152 : 576;
+    int coeff = mpeg1 ? 144 : 72;
+    int frame_bytes = (coeff * bitrate_kbps * 1000) / sample_rate + padding;
+    if (frame_bytes < 24) return false;
+
+    out->frame_bytes = frame_bytes;
+    out->sample_rate = sample_rate;
+    out->samples_per_frame = samples_per_frame;
+    return true;
+}
+
+static bool mp3_stream_next_frame(FILE *fp, mp3_frame_info_t *info)
+{
+    int b0 = fgetc(fp);
+    int b1 = fgetc(fp);
+    int b2 = fgetc(fp);
+    int b3 = fgetc(fp);
+    if (b0 == EOF || b1 == EOF || b2 == EOF || b3 == EOF) return false;
+
+    while (true) {
+        uint32_t h = ((uint32_t)b0 << 24) | ((uint32_t)b1 << 16) |
+                     ((uint32_t)b2 << 8) | (uint32_t)b3;
+        if (mp3_parse_frame_header(h, info)) {
+            return true;
+        }
+
+        b0 = b1;
+        b1 = b2;
+        b2 = b3;
+        b3 = fgetc(fp);
+        if (b3 == EOF) return false;
+    }
+}
+
+static uint32_t mp3_probe_duration_ms(const char *file_path)
+{
+    FILE *fp = fopen(file_path, "rb");
+    if (!fp) return 180000;
+
+    uint64_t total_samples = 0;
+    int last_sample_rate = 0;
+    mp3_frame_info_t info;
+
+    while (mp3_stream_next_frame(fp, &info)) {
+        total_samples += (uint64_t)info.samples_per_frame;
+        last_sample_rate = info.sample_rate;
+        if (fseek(fp, info.frame_bytes - 4, SEEK_CUR) != 0) {
+            break;
+        }
+    }
+    fclose(fp);
+
+    if (total_samples == 0 || last_sample_rate <= 0) return 180000;
+
+    uint64_t ms = (total_samples * 1000ULL) / (uint64_t)last_sample_rate;
+    if (ms < 1000ULL) ms = 1000ULL;
+    if (ms > 7200000ULL) ms = 7200000ULL;
+    return (uint32_t)ms;
+}
+
+static void mp3_player_task(void *arg)
+{
+    (void)arg;
+
+    FILE *fp = NULL;
+    uint32_t opened_token = 0;
+    HMP3Decoder dec = MP3InitDecoder();
+    if (!dec) {
+        ESP_LOGE(TAG, "mp3: MP3InitDecoder failed");
+        vTaskDelete(NULL);
+        return;
+    }
+
+    unsigned char inbuf[4096];
+    unsigned char *read_ptr = inbuf;
+    int bytes_left = 0;
+    short pcm[1152 * 2];
+
+    while (true) {
+        if (!s_mp3.active) {
+            if (fp) {
+                fclose(fp);
+                fp = NULL;
+                opened_token = 0;
+            }
+            bytes_left = 0;
+            read_ptr = inbuf;
+            vTaskDelay(pdMS_TO_TICKS(100));
+            continue;
+        }
+
+        if (s_mp3.paused) {
+            vTaskDelay(pdMS_TO_TICKS(50));
+            continue;
+        }
+
+        if (!fp || opened_token != s_mp3.play_token) {
+            if (fp) fclose(fp);
+            fp = fopen(s_mp3.file_path, "rb");
+            opened_token = s_mp3.play_token;
+            bytes_left = 0;
+            read_ptr = inbuf;
+            if (!fp) {
+                ESP_LOGW(TAG, "mp3: failed to open %s", s_mp3.file_path);
+                s_mp3.paused = true;
+                vTaskDelay(pdMS_TO_TICKS(200));
+                continue;
+            }
+        }
+
+        if (bytes_left < 1024) {
+            if (bytes_left > 0 && read_ptr != inbuf) {
+                memmove(inbuf, read_ptr, (size_t)bytes_left);
+            }
+            read_ptr = inbuf;
+            size_t n = fread(inbuf + bytes_left,
+                             1,
+                             sizeof(inbuf) - (size_t)bytes_left,
+                             fp);
+            bytes_left += (int)n;
+        }
+
+        if (bytes_left <= 4) {
+            s_mp3.paused = true;
+            s_mp3.position_ms = s_mp3.duration_ms;
+            mp3_render_now_playing();
+            vTaskDelay(pdMS_TO_TICKS(100));
+            continue;
+        }
+
+        int sync = MP3FindSyncWord(read_ptr, bytes_left);
+        if (sync < 0) {
+            bytes_left = 0;
+            read_ptr = inbuf;
+            vTaskDelay(pdMS_TO_TICKS(2));
+            continue;
+        }
+        read_ptr += sync;
+        bytes_left -= sync;
+
+        int err = MP3Decode(dec, &read_ptr, &bytes_left, pcm, 0);
+        if (err == ERR_MP3_INDATA_UNDERFLOW || err == ERR_MP3_MAINDATA_UNDERFLOW) {
+            vTaskDelay(pdMS_TO_TICKS(2));
+            continue;
+        }
+        if (err != ERR_MP3_NONE) {
+            if (bytes_left > 0) {
+                read_ptr++;
+                bytes_left--;
+            } else {
+                bytes_left = 0;
+                read_ptr = inbuf;
+            }
+            continue;
+        }
+
+        MP3FrameInfo fi = {0};
+        MP3GetLastFrameInfo(dec, &fi);
+        if (fi.outputSamps <= 0 || fi.samprate <= 0 || fi.nChans <= 0) {
+            continue;
+        }
+
+#if CONFIG_HARDWARE_CORE2
+    #if CONFIG_BT_ENABLED && CONFIG_BT_A2DP_ENABLE
+        if (s_bt.connected) {
+            bt_pcm_write_from_decoder(pcm, (size_t)fi.outputSamps, fi.nChans, s_mp3.volume);
+        } else {
+            core2_audio_set_sample_rate((uint32_t)fi.samprate);
+            core2_audio_write_pcm(pcm, (size_t)fi.outputSamps, fi.nChans, s_mp3.volume);
+        }
+    #else
+        core2_audio_set_sample_rate((uint32_t)fi.samprate);
+        core2_audio_write_pcm(pcm, (size_t)fi.outputSamps, fi.nChans, s_mp3.volume);
+    #endif
+#endif
+
+        uint32_t mono_samples = (uint32_t)(fi.outputSamps / fi.nChans);
+        uint32_t frame_ms = (uint32_t)(((uint64_t)mono_samples * 1000ULL) /
+                                       (uint64_t)fi.samprate);
+        if (frame_ms == 0) frame_ms = 1;
+
+        if (!s_mp3.active || s_mp3.paused || opened_token != s_mp3.play_token) {
+            continue;
+        }
+
+        if (s_mp3.position_ms + frame_ms >= s_mp3.duration_ms) {
+            s_mp3.position_ms = s_mp3.duration_ms;
+            s_mp3.paused = true;
+        } else {
+            s_mp3.position_ms += frame_ms;
+        }
+
+        TickType_t now = xTaskGetTickCount();
+        if ((now - s_mp3_last_ui_tick) >= pdMS_TO_TICKS(500)) {
+            s_mp3_last_ui_tick = now;
+            mp3_render_now_playing();
+        }
+    }
+
+    MP3FreeDecoder(dec);
+}
+
+static void mp3_ensure_task(void)
+{
+    if (s_mp3_task) return;
+#if CONFIG_HARDWARE_CORE2
+    core2_audio_init();
+#endif
+    xTaskCreate(mp3_player_task, "mp3_play", 6144, NULL, 4, &s_mp3_task);
+}
+
+static void mp3_format_time(uint32_t ms, char *out, size_t out_sz)
+{
+    uint32_t sec = ms / 1000U;
+    uint32_t m = sec / 60U;
+    uint32_t s = sec % 60U;
+    snprintf(out, out_sz, "%02u:%02u", (unsigned)m, (unsigned)s);
+}
+
+static void mp3_render_now_playing(void)
+{
+    if (!s_mp3.active) return;
+
+    char bar[21];
+    int width = 20;
+    int filled = 0;
+    if (s_mp3.duration_ms > 0) {
+        filled = (int)((((uint64_t)s_mp3.position_ms) * (uint64_t)width) / s_mp3.duration_ms);
+        if (filled < 0) filled = 0;
+        if (filled > width) filled = width;
+    }
+    for (int i = 0; i < width; i++) bar[i] = (i < filled) ? '#' : '-';
+    bar[width] = '\0';
+
+    char cur[8];
+    char total[8];
+    mp3_format_time(s_mp3.position_ms, cur, sizeof(cur));
+    mp3_format_time(s_mp3.duration_ms, total, sizeof(total));
+
+    char msg[700];
+    snprintf(msg, sizeof(msg),
+             "MP3 %s\n"
+             "Folder: %s\n"
+             "File: %s\n"
+             "[%s]\n"
+             "%s / %s\n"
+             "Vol:%d Shuffle:%s",
+             s_mp3.paused ? "Paused" : "Playing",
+             s_mp3.folder_name[0] ? s_mp3.folder_name : "(none)",
+             s_mp3.file_name[0] ? s_mp3.file_name : "(none)",
+             bar,
+             cur,
+             total,
+             s_mp3.volume,
+             s_mp3.shuffle ? "on" : "off");
+    screen_draw_text(msg);
+}
+
+static bool mp3_start_track(int folder_idx, int track_idx, bool keep_position)
+{
+    if (folder_idx < 0 || (size_t)folder_idx >= s_mp3_folder_count) return false;
+    const mp3_folder_t *folder = &s_mp3_folders[folder_idx];
+    if (folder->mp3_count <= 0) return false;
+
+    int resolved_idx = track_idx;
+    if (resolved_idx < 0 || resolved_idx >= folder->mp3_count) {
+        resolved_idx = s_mp3.shuffle ? (int)(esp_random() % (uint32_t)folder->mp3_count) : 0;
+    }
+
+    char file_name[MP3_MAX_FILE_LEN] = {0};
+    int total = 0;
+    if (!mp3_get_nth_file(folder->folder_path, resolved_idx, file_name, sizeof(file_name), &total) || total <= 0) {
+        return false;
+    }
+
+    s_mp3.active = true;
+    s_mp3.paused = false;
+    s_mp3.folder_idx = folder_idx;
+    s_mp3.track_idx = resolved_idx;
+    int path_n = snprintf(s_mp3.file_path, sizeof(s_mp3.file_path), "%s/%s",
+                          folder->folder_path, file_name);
+    if (path_n <= 0 || path_n >= (int)sizeof(s_mp3.file_path)) {
+        return false;
+    }
+    s_mp3.duration_ms = mp3_probe_duration_ms(s_mp3.file_path);
+    s_mp3.position_ms = keep_position ? s_mp3.position_ms : 0;
+    s_mp3.last_tick = xTaskGetTickCount();
+    s_mp3.play_token++;
+    strncpy(s_mp3.folder_name, folder->trigger, sizeof(s_mp3.folder_name) - 1);
+    s_mp3.folder_name[sizeof(s_mp3.folder_name) - 1] = '\0';
+    strncpy(s_mp3.file_name, file_name, sizeof(s_mp3.file_name) - 1);
+    s_mp3.file_name[sizeof(s_mp3.file_name) - 1] = '\0';
+
+    ESP_LOGI(TAG, "mp3: folder='%s' file='%s' idx=%d/%d (audio pipeline pending)",
+             s_mp3.folder_name, s_mp3.file_name, resolved_idx + 1, folder->mp3_count);
+
+    mp3_render_now_playing();
+    return true;
+}
+
+static int mp3_find_folder_trigger(const char *trigger)
+{
+    for (size_t i = 0; i < s_mp3_folder_count; i++) {
+        if (strcasecmp(trigger, s_mp3_folders[i].trigger) == 0) {
+            return (int)i;
+        }
+    }
+    return -1;
+}
+
+static bool mount_sd_card_if_needed(void)
+{
+    if (s_sd_mounted) return true;
+
+    sdmmc_host_t host = SDSPI_HOST_DEFAULT();
+    host.slot = SPI2_HOST;
+
+    sdspi_device_config_t slot_config = SDSPI_DEVICE_CONFIG_DEFAULT();
+    slot_config.host_id = host.slot;
+    slot_config.gpio_cs = GPIO_NUM_4;
+
+    esp_vfs_fat_sdmmc_mount_config_t mount_config = {
+        .format_if_mount_failed = false,
+        .max_files = 8,
+        .allocation_unit_size = 16 * 1024,
+    };
+
+    esp_err_t err = esp_vfs_fat_sdspi_mount(MP3_ROOT_PATH, &host, &slot_config,
+                                            &mount_config, &s_sd_card);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "sd: mount failed at %s: %s", MP3_ROOT_PATH, esp_err_to_name(err));
+        return false;
+    }
+
+    s_sd_mounted = true;
+    ESP_LOGI(TAG, "sd: mounted at %s", MP3_ROOT_PATH);
+    return true;
+}
+
+static void rebuild_mp3_folder_index(void)
+{
+    s_mp3_folder_count = 0;
+
+    if (!mount_sd_card_if_needed()) return;
+
+    DIR *d = opendir(MP3_ROOT_PATH);
+    if (!d) {
+        ESP_LOGW(TAG, "sd: cannot open root %s", MP3_ROOT_PATH);
+        return;
+    }
+
+    struct dirent *e;
+    while ((e = readdir(d)) != NULL) {
+        if (e->d_name[0] == '.') continue;
+        if (s_mp3_folder_count >= MP3_MAX_FOLDERS) break;
+        if (trigger_reserved(e->d_name)) continue;
+
+        char folder_path[MP3_MAX_PATH_LEN];
+        int max_name = (int)sizeof(folder_path) - (int)strlen(MP3_ROOT_PATH) - 2;
+        if (max_name <= 0) continue;
+        int n = snprintf(folder_path, sizeof(folder_path), "%s/%.*s",
+                 MP3_ROOT_PATH, max_name, e->d_name);
+        if (n <= 0 || n >= (int)sizeof(folder_path)) continue;
+
+        struct stat st;
+        if (stat(folder_path, &st) != 0 || !S_ISDIR(st.st_mode)) continue;
+
+        int mp3_count = mp3_count_in_folder(folder_path);
+        if (mp3_count <= 0) continue;
+
+        mp3_folder_t *f = &s_mp3_folders[s_mp3_folder_count++];
+        strncpy(f->trigger, e->d_name, sizeof(f->trigger) - 1);
+        f->trigger[sizeof(f->trigger) - 1] = '\0';
+        strncpy(f->folder_path, folder_path, sizeof(f->folder_path) - 1);
+        f->folder_path[sizeof(f->folder_path) - 1] = '\0';
+        f->mp3_count = mp3_count;
+    }
+    closedir(d);
+
+    ESP_LOGI(TAG, "mp3: discovered %u folders with mp3 content", (unsigned)s_mp3_folder_count);
 }
 
 static esp_err_t nvs_erase_key_local(const char *key)
@@ -749,6 +1955,67 @@ static const pf_cmd_t s_pf_cmds[] = {
 };
 #define PF_CMD_COUNT  (sizeof(s_pf_cmds) / sizeof(s_pf_cmds[0]))
 
+static const pf_cmd_t s_pf_media_cmds[] = {
+    { "play",        "play",        "false", "Resume paused MP3 playback.", "\xE2\x96\xB6\xEF\xB8\x8F" /* ▶️ */ },
+    { "stop",        "stop",        "false", "Pause MP3 playback at the current position.", "\xE2\x8F\xB8\xEF\xB8\x8F" /* ⏸️ */ },
+    { "forward",     "forward",     "false", "Skip to the next MP3 file in the current folder.", "\xE2\x8F\xA9" /* ⏩ */ },
+    { "reverse",     "reverse",     "false", "Go to the previous MP3 file in the current folder.", "\xE2\x8F\xAA" /* ⏪ */ },
+    { "volumeup",    "volumeup",    "false", "Increase playback volume.", "\xF0\x9F\x94\x8A" /* 🔊 */ },
+    { "volumedown",  "volumedown",  "false", "Decrease playback volume.", "\xF0\x9F\x94\x89" /* 🔉 */ },
+    { "shuffle",     "shuffle",     "true",  "Enable or disable shuffle mode. Example: 'shuffle on' or 'shuffle off'", "\xF0\x9F\x94\x80" /* 🔀 */ },
+    { "pair",        "pair",        "true",  "Pair with a Bluetooth headset or speaker. Example: 'pair'", "\xF0\x9F\x8E\xA7" /* 🎧 */ },
+    { "btstatus",    "btstatus",    "false", "Show Bluetooth audio connection status.", "\xF0\x9F\x93\xB6" /* 📶 */ },
+    { "btdisconnect", "btdisconnect", "false", "Disconnect the current Bluetooth audio device.", "\xF0\x9F\x94\x8C" /* 🔌 */ },
+    { "btforget",    "btforget",    "false", "Forget the saved Bluetooth device and stop auto-reconnect.", "\xF0\x9F\xA7\xB9" /* 🧹 */ },
+};
+#define PF_MEDIA_CMD_COUNT (sizeof(s_pf_media_cmds) / sizeof(s_pf_media_cmds[0]))
+
+static bool command_exists_online(const char *list_body, int list_len, const char *trigger)
+{
+    if (!list_body || list_len <= 0 || !trigger[0]) return false;
+    char needle[128];
+    snprintf(needle, sizeof(needle), "\"name\":\"%s\"", trigger);
+    return strstr(list_body, needle) != NULL;
+}
+
+static void sync_command_if_missing(const pf_cmd_t *cmd,
+                                    const char *cmd_url,
+                                    const char *list_body,
+                                    int list_len)
+{
+    if (!cmd || !cmd->trigger || !cmd->trigger[0]) return;
+    if (command_exists_online(list_body, list_len, cmd->trigger)) {
+        ESP_LOGI(TAG, "cmd '%s' already online - skip", cmd->trigger);
+        return;
+    }
+
+    char body[640];
+    char *p = body;
+    char *bend = body + sizeof(body);
+
+#define APPEND_FIELD_LOCAL(k, v) \
+    p = url_encode_append(p, (size_t)(bend - p), (k)); \
+    if (p < bend) *p++ = '='; \
+    p = url_encode_append(p, (size_t)(bend - p), (v)); \
+    if (p < bend) *p++ = '&';
+
+    APPEND_FIELD_LOCAL("name",               cmd->trigger)
+    APPEND_FIELD_LOCAL("computer",           s_computer_id)
+    APPEND_FIELD_LOCAL("voice",              cmd->voice ? cmd->voice : "")
+    APPEND_FIELD_LOCAL("voiceReply",         "")
+    APPEND_FIELD_LOCAL("allowParams",        cmd->allow_params ? cmd->allow_params : "false")
+    APPEND_FIELD_LOCAL("mcpToolDescription", cmd->mcp_desc ? cmd->mcp_desc : "")
+    APPEND_FIELD_LOCAL("icon",               cmd->icon ? cmd->icon : "")
+
+#undef APPEND_FIELD_LOCAL
+
+    if (p > body && *(p - 1) == '&') p--;
+    *p = '\0';
+
+    int cs = https_post_form(cmd_url, s_hw_token, body, NULL);
+    ESP_LOGI(TAG, "cmd/save '%s' -> HTTP %d", cmd->trigger, cs);
+}
+
 /* ── Color parser ──────────────────────────────────────────────────────── */
 
 static bool parse_color(const char *s, uint8_t *r, uint8_t *g, uint8_t *b)
@@ -870,9 +2137,93 @@ static void pf_event_handler(const char *event_name,
             ESP_LOGI(TAG, "save: display state persisted");
         }
 
+    } else if (strcmp(s_trigger, "play") == 0) {
+        if (s_mp3.active) {
+            s_mp3.paused = false;
+            s_mp3.last_tick = xTaskGetTickCount();
+            mp3_render_now_playing();
+        } else if (s_mp3_folder_count > 0) {
+            mp3_start_track(0, -1, false);
+        } else {
+            screen_draw_text("No MP3 folders\nfound on SD card");
+        }
+
+    } else if (strcmp(s_trigger, "stop") == 0) {
+        if (s_mp3.active) {
+            s_mp3.paused = true;
+            mp3_render_now_playing();
+        }
+
+    } else if (strcmp(s_trigger, "forward") == 0) {
+        if (s_mp3.active && s_mp3.folder_idx >= 0 && (size_t)s_mp3.folder_idx < s_mp3_folder_count) {
+            int next_idx = s_mp3.track_idx + 1;
+            if (next_idx >= s_mp3_folders[s_mp3.folder_idx].mp3_count) next_idx = 0;
+            mp3_start_track(s_mp3.folder_idx, next_idx, false);
+        }
+
+    } else if (strcmp(s_trigger, "reverse") == 0) {
+        if (s_mp3.active && s_mp3.folder_idx >= 0 && (size_t)s_mp3.folder_idx < s_mp3_folder_count) {
+            int prev_idx = s_mp3.track_idx - 1;
+            if (prev_idx < 0) prev_idx = s_mp3_folders[s_mp3.folder_idx].mp3_count - 1;
+            mp3_start_track(s_mp3.folder_idx, prev_idx, false);
+        }
+
+    } else if (strcmp(s_trigger, "volumeup") == 0) {
+        s_mp3.volume += 5;
+        if (s_mp3.volume > 100) s_mp3.volume = 100;
+        if (s_mp3.active) mp3_render_now_playing();
+
+    } else if (strcmp(s_trigger, "volumedown") == 0) {
+        s_mp3.volume -= 5;
+        if (s_mp3.volume < 0) s_mp3.volume = 0;
+        if (s_mp3.active) mp3_render_now_playing();
+
+    } else if (strcmp(s_trigger, "shuffle") == 0) {
+        char mode[16] = {0};
+        strncpy(mode, s_params, sizeof(mode) - 1);
+        for (size_t i = 0; mode[i]; i++) mode[i] = (char)tolower((unsigned char)mode[i]);
+        if (strcmp(mode, "on") == 0) {
+            s_mp3.shuffle = true;
+        } else if (strcmp(mode, "off") == 0) {
+            s_mp3.shuffle = false;
+        } else {
+            s_mp3.shuffle = !s_mp3.shuffle;
+        }
+        nvs_write_u8(NVS_KEY_SHUFFLE, s_mp3.shuffle ? 1 : 0);
+        if (s_mp3.active) mp3_render_now_playing();
+
+    } else if (strcmp(s_trigger, "pair") == 0) {
+        bt_cmd_pair_start();
+
+    } else if (strcmp(s_trigger, "btstatus") == 0) {
+        bt_cmd_status();
+
+    } else if (strcmp(s_trigger, "btdisconnect") == 0) {
+        bt_cmd_disconnect();
+
+    } else if (strcmp(s_trigger, "btforget") == 0) {
+        bt_cmd_forget();
+
     } else {
-        ESP_LOGW(TAG, "message: unknown trigger '%s'", s_trigger);
-        return;
+        int folder_idx = mp3_find_folder_trigger(s_trigger);
+        if (folder_idx >= 0) {
+            int requested_idx = -1;
+            const char *p = s_params;
+            while (*p == ' ') p++;
+            if (*p >= '0' && *p <= '9') {
+                int n = atoi(p);
+                if (n >= 1 && n <= 100) {
+                    requested_idx = n - 1;
+                }
+            }
+            if (!mp3_start_track(folder_idx, requested_idx, false)) {
+                ESP_LOGW(TAG, "mp3: unable to start folder trigger '%s'", s_trigger);
+                return;
+            }
+        } else {
+            ESP_LOGW(TAG, "message: unknown trigger '%s'", s_trigger);
+            return;
+        }
     }
 
     /* Queue run/save to the main loop — do NOT call https_post_form here.
@@ -1073,6 +2424,7 @@ void picture_frame_run(void)
     /* Initialise display first — screen_init() creates s_draw_mutex which all
      * screen_draw_*() helpers require.  Must happen before any screen call. */
     screen_init();
+    mp3_ensure_task();
 
     /* ── WiFi ────────────────────────────────────────────────────────────── */
     screen_draw_text("Waiting for WiFi...");
@@ -1225,6 +2577,14 @@ void picture_frame_run(void)
 
         vTaskDelay(pdMS_TO_TICKS(1500));
 
+        {
+            uint8_t shuffle = 0;
+            if (nvs_read_u8(NVS_KEY_SHUFFLE, &shuffle)) {
+                s_mp3.shuffle = (shuffle != 0);
+            }
+        }
+        rebuild_mp3_folder_index();
+
         /* ── Sync commands ────────────────────────────────────────────────── */
         screen_draw_text("Syncing commands...");
 
@@ -1241,51 +2601,32 @@ void picture_frame_run(void)
         snprintf(cmd_url, sizeof(cmd_url), "%s/api/command/save", TCMD_BASE_URL);
 
         for (size_t i = 0; i < PF_CMD_COUNT; i++) {
-            const pf_cmd_t *cmd = &s_pf_cmds[i];
+            sync_command_if_missing(&s_pf_cmds[i], cmd_url, list_body, list_len);
+        }
 
-            /* Check if trigger name already exists in online list */
-            bool found = false;
-            if (list_len > 0 && list_body) {
-                /* Search for "name":"<trigger>" in the JSON response */
-                char needle[96];
-                snprintf(needle, sizeof(needle), "\"name\":\"%s\"", cmd->trigger);
-                if (strstr(list_body, needle)) found = true;
-            }
+        for (size_t i = 0; i < PF_MEDIA_CMD_COUNT; i++) {
+            sync_command_if_missing(&s_pf_media_cmds[i], cmd_url, list_body, list_len);
+        }
 
-            if (found) {
-                ESP_LOGI(TAG, "cmd '%s' already online — skip", cmd->trigger);
-                continue;
-            }
-
-            /* Build url-encoded form body */
-            char body[512];
-            char *p    = body;
-            char *bend = body + sizeof(body);
-
-#define APPEND_FIELD(k, v) \
-            p = url_encode_append(p, (size_t)(bend - p), (k)); \
-            if (p < bend) *p++ = '='; \
-            p = url_encode_append(p, (size_t)(bend - p), (v)); \
-            if (p < bend) *p++ = '&';
-
-            APPEND_FIELD("name",               cmd->trigger)
-            APPEND_FIELD("computer",           s_computer_id)
-            APPEND_FIELD("voice",              cmd->voice)
-            APPEND_FIELD("voiceReply",         "")
-            APPEND_FIELD("allowParams",        cmd->allow_params)
-            APPEND_FIELD("mcpToolDescription", cmd->mcp_desc)
-            APPEND_FIELD("icon",               cmd->icon)
-#undef APPEND_FIELD
-            /* remove trailing '&' */
-            if (p > body && *(p-1) == '&') p--;
-            *p = '\0';
-
-            int cs = https_post_form(cmd_url, s_hw_token, body, NULL);
-            ESP_LOGI(TAG, "cmd/save '%s' → HTTP %d", cmd->trigger, cs);
+        for (size_t i = 0; i < s_mp3_folder_count; i++) {
+            char desc[320];
+            snprintf(desc, sizeof(desc),
+                     "Play mp3 files in the %s folder. If the parameter is a number from 1 to 100 to specify one of the mp3 files, otherwise, this command will play the first mp3 file, or a random file in the folder if shuffle mode is on.",
+                     s_mp3_folders[i].trigger);
+            pf_cmd_t dyn_cmd = {
+                .trigger = s_mp3_folders[i].trigger,
+                .voice = s_mp3_folders[i].trigger,
+                .allow_params = "true",
+                .mcp_desc = desc,
+                .icon = "\xF0\x9F\x8E\xB6", /* 🎶 */
+            };
+            sync_command_if_missing(&dyn_cmd, cmd_url, list_body, list_len);
         }
 
         if (list_body) free(list_body);
     }
+
+    bt_try_reconnect_on_boot();
 
     /* ── Connect + subscribe loop ────────────────────────────────────────── */
     bool restored_display_state = false;

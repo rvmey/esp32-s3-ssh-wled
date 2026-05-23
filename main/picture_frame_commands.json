@@ -58,8 +58,85 @@
 {
   "trigger": "save",
   "command": "save",
-  "allowParams": "true",
+  "allowParams": "false",
   "mcpToolDescription": "Save the screen settings to non-volatile memory. Example: 'save'",
   "icon": "💾"
+ },
+ {
+  "trigger": "play",
+  "command": "play",
+  "allowParams": "false",
+  "mcpToolDescription": "Resume paused MP3 playback.",
+  "icon": "▶️"
+ },
+ {
+  "trigger": "stop",
+  "command": "stop",
+  "allowParams": "false",
+  "mcpToolDescription": "Pause MP3 playback and keep the current position visible.",
+  "icon": "⏸️"
+ },
+ {
+  "trigger": "forward",
+  "command": "forward",
+  "allowParams": "false",
+  "mcpToolDescription": "Skip to the next MP3 file in the current folder.",
+  "icon": "⏩"
+ },
+ {
+  "trigger": "reverse",
+  "command": "reverse",
+  "allowParams": "false",
+  "mcpToolDescription": "Go to the previous MP3 file in the current folder.",
+  "icon": "⏪"
+ },
+ {
+  "trigger": "volumeup",
+  "command": "volumeup",
+  "allowParams": "false",
+  "mcpToolDescription": "Increase playback volume.",
+  "icon": "🔊"
+ },
+ {
+  "trigger": "volumedown",
+  "command": "volumedown",
+  "allowParams": "false",
+  "mcpToolDescription": "Decrease playback volume.",
+  "icon": "🔉"
+ },
+ {
+  "trigger": "shuffle",
+  "command": "shuffle",
+  "allowParams": "true",
+  "mcpToolDescription": "Enable or disable shuffle mode. Example: 'shuffle on' or 'shuffle off'",
+  "icon": "🔀"
+ },
+ {
+  "trigger": "pair",
+  "command": "pair",
+  "allowParams": "true",
+  "mcpToolDescription": "Pair with a Bluetooth headset or speaker. Example: 'pair'",
+  "icon": "🎧"
+ },
+ {
+  "trigger": "btstatus",
+  "command": "btstatus",
+  "allowParams": "false",
+  "mcpToolDescription": "Show Bluetooth audio connection status.",
+  "icon": "📶"
+ },
+ {
+  "trigger": "btdisconnect",
+  "command": "btdisconnect",
+  "allowParams": "false",
+  "mcpToolDescription": "Disconnect the current Bluetooth audio device.",
+  "icon": "🔌"
+ },
+ {
+  "trigger": "btforget",
+  "command": "btforget",
+  "allowParams": "false",
+  "mcpToolDescription": "Forget the saved Bluetooth device and stop auto-reconnect.",
+  "icon": "🧹"
  }
 ]
