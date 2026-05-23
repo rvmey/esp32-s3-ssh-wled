@@ -414,10 +414,35 @@ static bool bt_name_has_token(const char *name, const char *token)
     return false;
 }
 
-static int bt_score_candidate(const char *name, int rssi)
+static int bt_score_candidate(const char *name, int rssi, uint32_t cod)
 {
     int score = rssi;
     if (!name || !name[0]) return score - 100;
+
+    /*
+     * Class of Device filter — most reliable signal.
+     * CoD bit layout: [12:8]=major device class, [7:2]=minor device class.
+     *
+     * Major 4 = Audio/Video.  Audio-only minor classes:
+     *   1=wearable headset, 2=hands-free, 5=loudspeaker, 6=headphones,
+     *   7=portable audio, 8=car audio, 10=HiFi audio device.
+     * Video/other minor classes (9=set-top box, 11-16=video):
+     *   strongly penalise — these are TVs, cameras, etc.
+     */
+    if (cod != 0) {
+        uint32_t major = (cod >> 8) & 0x1F;
+        uint32_t minor = (cod >> 2) & 0x3F;
+        if (major == 4) {
+            if (minor == 1 || minor == 2 || minor == 5 ||
+                minor == 6 || minor == 7 || minor == 8 || minor == 10) {
+                score += 50;   /* confirmed audio sink */
+            } else if (minor != 0) {
+                score -= 200;  /* video device (TV, camera, set-top box…) */
+            }
+        } else if (major != 0) {
+            score -= 80;       /* computer, phone, peripheral, etc. */
+        }
+    }
 
     if (bt_name_has_token(name, "head") || bt_name_has_token(name, "buds") ||
         bt_name_has_token(name, "speaker") || bt_name_has_token(name, "audio") ||
@@ -430,7 +455,8 @@ static int bt_score_candidate(const char *name, int rssi)
     }
     if (bt_name_has_token(name, "phone") || bt_name_has_token(name, "laptop") ||
         bt_name_has_token(name, "pc") || bt_name_has_token(name, "keyboard") ||
-        bt_name_has_token(name, "mouse")) {
+        bt_name_has_token(name, "mouse") || bt_name_has_token(name, "tv") ||
+        bt_name_has_token(name, "television") || bt_name_has_token(name, "webos")) {
         score -= 60;
     }
     return score;
@@ -700,22 +726,25 @@ static void bt_gap_cb(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t *param)
     }
 
     int rssi = -90;
+    uint32_t cod = 0;
     for (int i = 0; i < param->disc_res.num_prop; i++) {
         esp_bt_gap_dev_prop_t *p = &param->disc_res.prop[i];
         if (p->type == ESP_BT_GAP_DEV_PROP_RSSI && p->val) {
             rssi = (int)(*(int8_t *)p->val);
-            break;
+        } else if (p->type == ESP_BT_GAP_DEV_PROP_COD && p->val) {
+            cod = *(uint32_t *)p->val;
         }
     }
 
-    int score = bt_score_candidate(name, rssi);
+    int score = bt_score_candidate(name, rssi, cod);
     if (!s_bt.has_candidate || score > s_bt.candidate_score) {
         s_bt.has_candidate = true;
         s_bt.candidate_score = score;
         strlcpy(s_bt.candidate_name, name, sizeof(s_bt.candidate_name));
         bt_bda_to_str(param->disc_res.bda, s_bt.candidate_bda_str, sizeof(s_bt.candidate_bda_str));
         memcpy(s_bt.candidate_bda, param->disc_res.bda, ESP_BD_ADDR_LEN);
-        ESP_LOGI(TAG, "bt: candidate %s (%s) score=%d rssi=%d",
+        ESP_LOGI(TAG, "bt: candidate [CoD 0x%05" PRIx32 "] %s (%s) score=%d rssi=%d",
+                 cod,
                  s_bt.candidate_name,
                  s_bt.candidate_bda_str,
                  score,
