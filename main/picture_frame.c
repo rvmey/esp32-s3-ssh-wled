@@ -232,6 +232,7 @@ static void pf_softap_provision(void)
 #include "sdmmc_cmd.h"
 #include "driver/sdspi_host.h"
 #include "driver/gpio.h"
+#include "driver/i2c.h"
 #include "mp3dec.h"
 
 #if CONFIG_HARDWARE_CORE2
@@ -1558,6 +1559,57 @@ static bool mp3_start_track(int folder_idx, int track_idx, bool keep_position)
     return true;
 }
 
+#if CONFIG_HARDWARE_CORE2
+#define CORE2_AXP_I2C_NUM   I2C_NUM_0
+#define CORE2_AXP_I2C_ADDR  0x34
+
+static esp_err_t core2_axp_read_reg(uint8_t reg, uint8_t *out)
+{
+    if (!out) return ESP_ERR_INVALID_ARG;
+    return i2c_master_write_read_device(CORE2_AXP_I2C_NUM,
+                                        CORE2_AXP_I2C_ADDR,
+                                        &reg, 1,
+                                        out, 1,
+                                        pdMS_TO_TICKS(30));
+}
+
+static esp_err_t core2_axp_write_reg(uint8_t reg, uint8_t val)
+{
+    uint8_t buf[2] = { reg, val };
+    return i2c_master_write_to_device(CORE2_AXP_I2C_NUM,
+                                      CORE2_AXP_I2C_ADDR,
+                                      buf, sizeof(buf),
+                                      pdMS_TO_TICKS(30));
+}
+
+static void core2_reassert_sd_power(void)
+{
+    uint8_t reg = 0;
+
+    /* LDO2 voltage (LCD logic + SD card rail) to 3.3V. */
+    if (core2_axp_read_reg(0x28, &reg) == ESP_OK) {
+        uint8_t next = (uint8_t)((reg & 0x0F) | 0xF0);
+        if (next != reg) {
+            (void)core2_axp_write_reg(0x28, next);
+        }
+    }
+
+    /* Ensure LCD logic/SD rail enabled and vibration rail disabled. */
+    if (core2_axp_read_reg(0x12, &reg) == ESP_OK) {
+        uint8_t next = (uint8_t)((reg & (uint8_t)~0x0E) | 0x06);
+        if (next != reg) {
+            (void)core2_axp_write_reg(0x12, next);
+        }
+    }
+
+    /* Re-assert Core2 GPIO4 function used by LCD reset/peripheral routing. */
+    (void)core2_axp_write_reg(0x95, 0x84);
+
+    /* Give rail state a short settle window before card init commands. */
+    vTaskDelay(pdMS_TO_TICKS(20));
+}
+#endif
+
 static int mp3_find_folder_trigger(const char *trigger)
 {
     for (size_t i = 0; i < s_mp3_folder_count; i++) {
@@ -1577,6 +1629,10 @@ static bool mount_sd_card_if_needed(void)
         ESP_LOGW(TAG, "sd: could not acquire screen SPI lock before mount attempt");
         return false;
     }
+
+#if CONFIG_HARDWARE_CORE2
+    core2_reassert_sd_power();
+#endif
 
     /* Keep LCD and SD deselected while probing so only one device can drive MISO. */
     gpio_set_direction(GPIO_NUM_5, GPIO_MODE_OUTPUT);
