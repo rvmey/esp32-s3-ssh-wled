@@ -6,6 +6,7 @@
 // This protects users with an older cached index.html that references:
 //   - manifest-core2.json
 //   - firmware/esp32_core2_picture_frame.bin
+//   - firmware/esp32_core2_picture_frame-2.0.107.bin
 
 self.addEventListener('install', () => self.skipWaiting());
 
@@ -26,8 +27,11 @@ self.addEventListener('fetch', event => {
     return;
   }
 
-  if (reqUrl.pathname.endsWith('/firmware/esp32_core2_picture_frame.bin')) {
-    const target = new URL('/esp32-s3-ssh-wled/firmware/esp32_core2_picture_frame-2.0.107.bin', self.location.origin);
+  if (
+    reqUrl.pathname.endsWith('/firmware/esp32_core2_picture_frame.bin') ||
+    reqUrl.pathname.endsWith('/firmware/esp32_core2_picture_frame-2.0.107.bin')
+  ) {
+    const target = new URL('/esp32-s3-ssh-wled/firmware/esp32_core2_picture_frame-2.0.107-rebuild1.bin', self.location.origin);
     event.respondWith(fetch(target.toString(), { cache: 'no-store' }));
   }
 });
