@@ -231,6 +231,7 @@ static void pf_softap_provision(void)
 #include "esp_vfs_fat.h"
 #include "sdmmc_cmd.h"
 #include "driver/sdspi_host.h"
+#include "driver/gpio.h"
 #include "mp3dec.h"
 
 #if CONFIG_HARDWARE_CORE2
@@ -1574,6 +1575,11 @@ static bool mount_sd_card_if_needed(void)
     /* Core2 display already initializes SPI3 (MOSI=23, MISO=38, SCK=18). */
     const spi_host_device_t sd_host = SPI3_HOST;
 
+    /* Deselect LCD (CS=GPIO5) so it never contends while probing the SD card. */
+    gpio_set_direction(GPIO_NUM_5, GPIO_MODE_OUTPUT);
+    gpio_set_level(GPIO_NUM_5, 1);
+    vTaskDelay(pdMS_TO_TICKS(5));
+
     sdmmc_host_t host = SDSPI_HOST_DEFAULT();
     host.slot = sd_host;
 
@@ -1587,8 +1593,19 @@ static bool mount_sd_card_if_needed(void)
         .allocation_unit_size = 16 * 1024,
     };
 
-    esp_err_t err = esp_vfs_fat_sdspi_mount(MP3_ROOT_PATH, &host, &slot_config,
-                                            &mount_config, &s_sd_card);
+    const int freq_candidates_khz[] = {10000, 4000};
+    esp_err_t err = ESP_FAIL;
+    for (size_t i = 0; i < sizeof(freq_candidates_khz) / sizeof(freq_candidates_khz[0]); i++) {
+        host.max_freq_khz = freq_candidates_khz[i];
+        err = esp_vfs_fat_sdspi_mount(MP3_ROOT_PATH, &host, &slot_config,
+                                      &mount_config, &s_sd_card);
+        if (err == ESP_OK) break;
+
+        ESP_LOGW(TAG, "sd: mount retry failed at %d kHz: %s",
+                 freq_candidates_khz[i], esp_err_to_name(err));
+        vTaskDelay(pdMS_TO_TICKS(50));
+    }
+
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "sd: mount failed at %s: %s", MP3_ROOT_PATH, esp_err_to_name(err));
         return false;
