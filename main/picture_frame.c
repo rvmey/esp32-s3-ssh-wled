@@ -449,6 +449,24 @@ static bool bt_name_has_token(const char *name, const char *token)
     return false;
 }
 
+#if CONFIG_BT_A2DP_ENABLE
+static void bt_persist_current_peer(void)
+{
+    if (s_bt.selected_bda[0]) {
+        esp_err_t e = nvs_write_str(NVS_KEY_BT_BDA, s_bt.selected_bda);
+        if (e != ESP_OK) {
+            ESP_LOGW(TAG, "bt: persist bda failed: %s", esp_err_to_name(e));
+        }
+    }
+    if (s_bt.selected_name[0]) {
+        esp_err_t e = nvs_write_str(NVS_KEY_BT_NAME, s_bt.selected_name);
+        if (e != ESP_OK) {
+            ESP_LOGW(TAG, "bt: persist name failed: %s", esp_err_to_name(e));
+        }
+    }
+}
+#endif
+
 static int bt_score_candidate(const char *name, int rssi, uint32_t cod)
 {
     int score = rssi;
@@ -891,6 +909,8 @@ static int32_t bt_a2dp_data_cb(uint8_t *data, int32_t len)
     return len;
 }
 
+static void bt_bda_to_str(const esp_bd_addr_t bda, char *out, size_t out_sz);
+
 static void bt_a2dp_cb(esp_a2d_cb_event_t event, esp_a2d_cb_param_t *param)
 {
     if (!param) return;
@@ -898,6 +918,14 @@ static void bt_a2dp_cb(esp_a2d_cb_event_t event, esp_a2d_cb_param_t *param)
     if (event == ESP_A2D_CONNECTION_STATE_EVT) {
         esp_a2d_connection_state_t st = param->conn_stat.state;
         if (st == ESP_A2D_CONNECTION_STATE_CONNECTED) {
+            char connected_bda[18] = {0};
+            bt_bda_to_str(param->conn_stat.remote_bda, connected_bda, sizeof(connected_bda));
+            if (connected_bda[0]) {
+                memcpy(s_bt.bda, param->conn_stat.remote_bda, ESP_BD_ADDR_LEN);
+                s_bt.has_bda = true;
+                s_bt.has_device = true;
+                strlcpy(s_bt.selected_bda, connected_bda, sizeof(s_bt.selected_bda));
+            }
             s_bt.connected = true;
             s_bt.connecting = false;
             s_bt_connect_started_at = 0;
@@ -916,7 +944,7 @@ static void bt_a2dp_cb(esp_a2d_cb_event_t event, esp_a2d_cb_param_t *param)
             /* Hard handoff: stop local I2S speaker path while BT sink is active. */
             core2_audio_deinit();
 #endif
-            ESP_LOGI(TAG, "bt: A2DP connected to %s", s_bt.selected_bda);
+            ESP_LOGI(TAG, "bt: A2DP connected to %s", s_bt.selected_bda[0] ? s_bt.selected_bda : connected_bda);
 
             if (s_bt.pairing_ui_active) {
                 char msg[192];
@@ -927,12 +955,7 @@ static void bt_a2dp_cb(esp_a2d_cb_event_t event, esp_a2d_cb_param_t *param)
                 screen_draw_text(msg);
                 s_bt.pairing_ui_active = false;
             }
-            if (s_bt.selected_bda[0]) {
-                nvs_write_str(NVS_KEY_BT_BDA, s_bt.selected_bda);
-            }
-            if (s_bt.selected_name[0]) {
-                nvs_write_str(NVS_KEY_BT_NAME, s_bt.selected_name);
-            }
+            bt_persist_current_peer();
         } else if (st == ESP_A2D_CONNECTION_STATE_CONNECTING) {
             s_bt.connecting = true;
             s_bt.connected = false;
@@ -949,13 +972,16 @@ static void bt_a2dp_cb(esp_a2d_cb_event_t event, esp_a2d_cb_param_t *param)
             s_bt_resample_phase_q16 = 0;
             s_bt_a2dp_sample_rate = BT_A2DP_TARGET_SAMPLE_RATE;
             bt_pcm_clear();
-            ESP_LOGI(TAG, "bt: A2DP disconnected");
+            ESP_LOGI(TAG, "bt: A2DP disconnected reason=%d", (int)param->conn_stat.disc_rsn);
             /* Schedule a retry on transient open/disconnect failures. */
             bool scheduled_retry = false;
-            if (s_bt.has_bda && !s_bt.discovering &&
+            bool allow_runtime_retry = s_bt.pairing_ui_active || s_mp3.active;
+            if (s_bt.has_bda && !s_bt.discovering && allow_runtime_retry &&
                 s_bt.connect_retries < BT_CONNECT_RETRY_MAX && !s_bt_pending_reconnect) {
                 bt_schedule_reconnect("A2DP disconnected");
                 scheduled_retry = true;
+            } else {
+                s_bt.connect_retries = 0;
             }
             if (s_bt.pairing_ui_active) {
                 if (scheduled_retry) {
@@ -1418,6 +1444,7 @@ static void bt_try_reconnect_on_boot(void)
     esp_err_t err = esp_a2d_source_connect(s_bt.bda);
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "bt: reconnect on boot failed: %s", esp_err_to_name(err));
+        bt_schedule_reconnect("boot reconnect");
         s_bt_hold_local_speaker = false;
         return;
     }
