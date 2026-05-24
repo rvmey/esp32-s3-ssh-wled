@@ -612,6 +612,13 @@ static void bt_a2dp_cb(esp_a2d_cb_event_t event, esp_a2d_cb_param_t *param)
             s_bt_pending_reconnect = false;
             bt_pcm_clear();
             ESP_LOGI(TAG, "bt: A2DP connected to %s", s_bt.selected_bda);
+
+            /* Required for source role: begin media streaming after link open. */
+            esp_err_t start_err = esp_a2d_media_ctrl(ESP_A2D_MEDIA_CTRL_START);
+            if (start_err != ESP_OK) {
+                ESP_LOGW(TAG, "bt: media start failed: %s", esp_err_to_name(start_err));
+            }
+
             if (s_bt.pairing_ui_active) {
                 char msg[192];
                 snprintf(msg, sizeof(msg),
@@ -1543,7 +1550,8 @@ static bool mp3_start_track(int folder_idx, int track_idx, bool keep_position)
     if (path_n <= 0 || path_n >= (int)sizeof(s_mp3.file_path)) {
         return false;
     }
-    s_mp3.duration_ms = mp3_probe_duration_ms(s_mp3.file_path);
+    /* Keep command handling non-blocking; deep file probe stalls WS callback. */
+    s_mp3.duration_ms = 180000;
     s_mp3.position_ms = keep_position ? s_mp3.position_ms : 0;
     s_mp3.last_tick = xTaskGetTickCount();
     s_mp3.play_token++;

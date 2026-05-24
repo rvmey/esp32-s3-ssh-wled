@@ -28,7 +28,7 @@
 #include "screen_control.h"
 #endif
 
-#define APP_VERSION "2.0.133"
+#define APP_VERSION "2.0.134"
 
 static const char *TAG = "main";
 
