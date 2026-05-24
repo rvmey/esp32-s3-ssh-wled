@@ -399,8 +399,11 @@ static TickType_t    s_bt_reconnect_after   = 0;
 static TickType_t    s_bt_connect_started_at = 0;
 
 #define BT_CONNECT_RETRY_MAX          5
-#define BT_CONNECT_RETRY_BASE_DELAY_MS 1500U
-#define BT_CONNECT_TIMEOUT_MS         12000U
+#define BT_CONNECT_TIMEOUT_MS          8000U
+
+static const uint16_t s_bt_retry_delay_ms[BT_CONNECT_RETRY_MAX] = {
+    900, 1800, 3000, 4500, 6000
+};
 
 #define BT_STARTUP_MIN_INTERNAL_FREE    (44 * 1024)
 #define BT_STARTUP_MIN_INTERNAL_LARGEST (12 * 1024)
@@ -526,7 +529,7 @@ static void bt_schedule_reconnect(const char *reason)
     if (s_bt.connect_retries >= BT_CONNECT_RETRY_MAX) return;
 
     s_bt.connect_retries++;
-    uint32_t delay_ms = BT_CONNECT_RETRY_BASE_DELAY_MS * (uint32_t)s_bt.connect_retries;
+    uint32_t delay_ms = s_bt_retry_delay_ms[s_bt.connect_retries - 1];
     s_bt_reconnect_after = xTaskGetTickCount() + pdMS_TO_TICKS(delay_ms);
     s_bt_pending_reconnect = true;
 
