@@ -1660,7 +1660,6 @@ static bool mount_sd_card_if_needed(void)
     gpio_pullup_en(GPIO_NUM_4);
     gpio_pullup_en(GPIO_NUM_18);
     gpio_pullup_en(GPIO_NUM_23);
-    gpio_pullup_en(GPIO_NUM_38);
     gpio_set_drive_capability(GPIO_NUM_4, GPIO_DRIVE_CAP_3);
     gpio_set_drive_capability(GPIO_NUM_18, GPIO_DRIVE_CAP_3);
     gpio_set_drive_capability(GPIO_NUM_23, GPIO_DRIVE_CAP_3);
