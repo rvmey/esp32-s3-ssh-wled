@@ -364,6 +364,7 @@ typedef struct {
 #if CONFIG_BT_A2DP_ENABLE
     volatile bool connecting;
     volatile bool connected;
+    volatile bool media_started;
     bool connect_after_discovery;
     int  connect_retries;     /* auto-retry on page timeout */
     bool pairing_ui_active;   /* true when pair command initiated current flow */
@@ -589,6 +590,28 @@ static void bt_pcm_write_from_decoder(const int16_t *samples,
 }
 
 #if CONFIG_BT_A2DP_ENABLE
+static void bt_media_start_if_needed(void)
+{
+    if (!s_bt.connected || s_bt.media_started) return;
+    esp_err_t err = esp_a2d_media_ctrl(ESP_A2D_MEDIA_CTRL_START);
+    if (err == ESP_OK) {
+        s_bt.media_started = true;
+    } else {
+        ESP_LOGW(TAG, "bt: media start failed: %s", esp_err_to_name(err));
+    }
+}
+
+static void bt_media_stop_if_needed(void)
+{
+    if (!s_bt.connected || !s_bt.media_started) return;
+    esp_err_t err = esp_a2d_media_ctrl(ESP_A2D_MEDIA_CTRL_SUSPEND);
+    if (err == ESP_OK) {
+        s_bt.media_started = false;
+    } else {
+        ESP_LOGW(TAG, "bt: media stop failed: %s", esp_err_to_name(err));
+    }
+}
+
 static int32_t bt_a2dp_data_cb(uint8_t *data, int32_t len)
 {
     if (!data || len <= 0) return 0;
@@ -608,6 +631,7 @@ static void bt_a2dp_cb(esp_a2d_cb_event_t event, esp_a2d_cb_param_t *param)
         if (st == ESP_A2D_CONNECTION_STATE_CONNECTED) {
             s_bt.connected = true;
             s_bt.connecting = false;
+            s_bt.media_started = false;
             s_bt.connect_retries = 0;    /* reset — connection succeeded */
             s_bt_pending_reconnect = false;
             bt_pcm_clear();
@@ -616,12 +640,6 @@ static void bt_a2dp_cb(esp_a2d_cb_event_t event, esp_a2d_cb_param_t *param)
             core2_audio_deinit();
 #endif
             ESP_LOGI(TAG, "bt: A2DP connected to %s", s_bt.selected_bda);
-
-            /* Required for source role: begin media streaming after link open. */
-            esp_err_t start_err = esp_a2d_media_ctrl(ESP_A2D_MEDIA_CTRL_START);
-            if (start_err != ESP_OK) {
-                ESP_LOGW(TAG, "bt: media start failed: %s", esp_err_to_name(start_err));
-            }
 
             if (s_bt.pairing_ui_active) {
                 char msg[192];
@@ -641,9 +659,11 @@ static void bt_a2dp_cb(esp_a2d_cb_event_t event, esp_a2d_cb_param_t *param)
         } else if (st == ESP_A2D_CONNECTION_STATE_CONNECTING) {
             s_bt.connecting = true;
             s_bt.connected = false;
+            s_bt.media_started = false;
         } else {
             s_bt.connecting = false;
             s_bt.connected = false;
+            s_bt.media_started = false;
             bt_pcm_clear();
             ESP_LOGI(TAG, "bt: A2DP disconnected");
             /* Schedule a retry on page-timeout / transient failure (up to 3 attempts) */
@@ -676,6 +696,11 @@ static void bt_a2dp_cb(esp_a2d_cb_event_t event, esp_a2d_cb_param_t *param)
     }
 
     if (event == ESP_A2D_AUDIO_STATE_EVT) {
+        if (param->audio_stat.state == ESP_A2D_AUDIO_STATE_STARTED) {
+            s_bt.media_started = true;
+        } else {
+            s_bt.media_started = false;
+        }
         ESP_LOGI(TAG, "bt: A2DP audio state=%d", (int)param->audio_stat.state);
     }
 }
@@ -1569,6 +1594,10 @@ static bool mp3_start_track(int folder_idx, int track_idx, bool keep_position)
     ESP_LOGI(TAG, "mp3: folder='%s' file='%s' idx=%d/%d (audio pipeline pending)",
              s_mp3.folder_name, s_mp3.file_name, resolved_idx + 1, folder->mp3_count);
 
+#if CONFIG_BT_ENABLED && CONFIG_BT_A2DP_ENABLE
+    bt_media_start_if_needed();
+#endif
+
     mp3_render_now_playing();
     return true;
 }
@@ -2430,6 +2459,9 @@ static void pf_event_handler(const char *event_name,
         if (s_mp3.active) {
             s_mp3.paused = false;
             s_mp3.last_tick = xTaskGetTickCount();
+#if CONFIG_BT_ENABLED && CONFIG_BT_A2DP_ENABLE
+            bt_media_start_if_needed();
+#endif
             mp3_render_now_playing();
         } else if (s_mp3_folder_count > 0) {
             mp3_start_track(0, -1, false);
@@ -2440,6 +2472,9 @@ static void pf_event_handler(const char *event_name,
     } else if (strcmp(s_trigger, "stop") == 0) {
         if (s_mp3.active) {
             s_mp3.paused = true;
+#if CONFIG_BT_ENABLED && CONFIG_BT_A2DP_ENABLE
+            bt_media_stop_if_needed();
+#endif
             mp3_render_now_playing();
         }
 
