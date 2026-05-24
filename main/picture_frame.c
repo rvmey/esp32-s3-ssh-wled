@@ -616,6 +616,7 @@ static void bt_update_coex_streaming_hint(bool streaming)
         err = esp_coex_status_bit_set(ESP_COEX_ST_TYPE_BT, ESP_COEX_BT_ST_A2DP_STREAMING);
         if (err == ESP_OK) {
             s_bt_coex_streaming_hint = true;
+            ESP_LOGI(TAG, "bt: coex hint set: A2DP streaming");
         } else {
             ESP_LOGW(TAG, "bt: coex set streaming hint failed: %s", esp_err_to_name(err));
         }
@@ -623,6 +624,7 @@ static void bt_update_coex_streaming_hint(bool streaming)
         err = esp_coex_status_bit_clear(ESP_COEX_ST_TYPE_BT, ESP_COEX_BT_ST_A2DP_STREAMING);
         if (err == ESP_OK) {
             s_bt_coex_streaming_hint = false;
+            ESP_LOGI(TAG, "bt: coex hint cleared: A2DP streaming");
         } else {
             ESP_LOGW(TAG, "bt: coex clear streaming hint failed: %s", esp_err_to_name(err));
         }
@@ -1044,6 +1046,12 @@ static void bt_a2dp_cb(esp_a2d_cb_event_t event, esp_a2d_cb_param_t *param)
 
     if (event == ESP_A2D_AUDIO_CFG_EVT) {
         uint8_t sf = param->audio_cfg.mcc.cie.sbc_info.samp_freq;
+        uint8_t ch_mode = param->audio_cfg.mcc.cie.sbc_info.ch_mode;
+        uint8_t block_len = param->audio_cfg.mcc.cie.sbc_info.block_len;
+        uint8_t subbands = param->audio_cfg.mcc.cie.sbc_info.num_subbands;
+        uint8_t alloc = param->audio_cfg.mcc.cie.sbc_info.alloc_mthd;
+        uint8_t min_bp = param->audio_cfg.mcc.cie.sbc_info.min_bitpool;
+        uint8_t max_bp = param->audio_cfg.mcc.cie.sbc_info.max_bitpool;
         if (sf & ESP_A2D_SBC_CIE_SF_48K) {
             s_bt_a2dp_sample_rate = 48000;
         } else if (sf & ESP_A2D_SBC_CIE_SF_44K) {
@@ -1056,7 +1064,15 @@ static void bt_a2dp_cb(esp_a2d_cb_event_t event, esp_a2d_cb_param_t *param)
             s_bt_a2dp_sample_rate = BT_A2DP_TARGET_SAMPLE_RATE;
         }
         s_bt_resample_phase_q16 = 0;
-        ESP_LOGI(TAG, "bt: negotiated audio cfg sample_rate=%lu", (unsigned long)s_bt_a2dp_sample_rate);
+        ESP_LOGI(TAG,
+                 "bt: negotiated SBC cfg sr=%lu ch_mode=0x%02X blk=0x%02X sub=0x%02X alloc=0x%02X bitpool=%u..%u",
+                 (unsigned long)s_bt_a2dp_sample_rate,
+                 ch_mode,
+                 block_len,
+                 subbands,
+                 alloc,
+                 (unsigned)min_bp,
+                 (unsigned)max_bp);
     }
 }
 #endif
