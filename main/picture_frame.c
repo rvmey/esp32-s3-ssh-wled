@@ -593,6 +593,33 @@ static size_t bt_pcm_write_from_decoder(const int16_t *samples,
 }
 
 #if CONFIG_BT_A2DP_ENABLE
+static void bt_build_sbc_pref_mcc(esp_a2d_mcc_t *mcc)
+{
+    if (!mcc) return;
+    memset(mcc, 0, sizeof(*mcc));
+    mcc->type = ESP_A2D_MCT_SBC;
+    /* Conservative SBC profile to reduce ACL/L2CAP congestion on weaker links. */
+    mcc->cie.sbc_info.ch_mode = ESP_A2D_SBC_CIE_CH_MODE_JOINT_STEREO;
+    mcc->cie.sbc_info.samp_freq = ESP_A2D_SBC_CIE_SF_44K;
+    mcc->cie.sbc_info.alloc_mthd = ESP_A2D_SBC_CIE_ALLOC_MTHD_LOUDNESS;
+    mcc->cie.sbc_info.num_subbands = ESP_A2D_SBC_CIE_NUM_SUBBANDS_8;
+    mcc->cie.sbc_info.block_len = ESP_A2D_SBC_CIE_BLOCK_LEN_16;
+    mcc->cie.sbc_info.min_bitpool = 2;
+    mcc->cie.sbc_info.max_bitpool = 32;
+}
+
+static void bt_set_pref_codec(esp_a2d_conn_hdl_t conn_hdl)
+{
+    esp_a2d_mcc_t pref_mcc;
+    bt_build_sbc_pref_mcc(&pref_mcc);
+    esp_err_t err = esp_a2d_source_set_pref_mcc(conn_hdl, &pref_mcc);
+    if (err == ESP_OK) {
+        ESP_LOGI(TAG, "bt: preferred SBC codec set (44.1k, bitpool<=32)");
+    } else {
+        ESP_LOGW(TAG, "bt: preferred codec set failed: %s", esp_err_to_name(err));
+    }
+}
+
 static void bt_media_start_if_needed(void)
 {
     if (!s_bt.connected || s_bt.media_started) return;
@@ -635,6 +662,7 @@ static void bt_a2dp_cb(esp_a2d_cb_event_t event, esp_a2d_cb_param_t *param)
             s_bt.connected = true;
             s_bt.connecting = false;
             s_bt.media_started = false;
+            bt_set_pref_codec(param->conn_stat.conn_hdl);
             s_bt.connect_retries = 0;    /* reset — connection succeeded */
             s_bt_pending_reconnect = false;
             bt_pcm_clear();
@@ -904,6 +932,13 @@ static bool bt_init_if_needed(void)
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "bt: A2DP source init failed: %s", esp_err_to_name(err));
         return false;
+    }
+
+    esp_a2d_mcc_t sep_mcc;
+    bt_build_sbc_pref_mcc(&sep_mcc);
+    err = esp_a2d_source_register_stream_endpoint(0, &sep_mcc);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "bt: register SEP(0) failed: %s", esp_err_to_name(err));
     }
 #endif
 
