@@ -240,6 +240,7 @@ void core2_audio_write_pcm(const int16_t *samples,
     if (!s_tx_chan || !samples || sample_count == 0) return;
     if (channels != 1 && channels != 2) return;
     if (!s_ring_buf || s_ring_capacity == 0) return;
+    if (!s_writer_running || !s_writer_task) return;
 
     int16_t out[CORE2_I2S_CHUNK_FRAMES * 2];
     size_t in_pos = 0;
@@ -279,14 +280,19 @@ void core2_audio_write_pcm(const int16_t *samples,
                 xSemaphoreGive(s_ring_mutex);
             }
 
+            TaskHandle_t writer_task = s_writer_task;
+            if (!s_writer_running || writer_task == NULL) {
+                return;
+            }
+
             if (pushed == 0) {
-                xTaskNotifyGive(s_writer_task);
+                xTaskNotifyGive(writer_task);
                 vTaskDelay(pdMS_TO_TICKS(1));
                 continue;
             }
 
             queued += pushed;
-            xTaskNotifyGive(s_writer_task);
+            xTaskNotifyGive(writer_task);
         }
     }
 }
