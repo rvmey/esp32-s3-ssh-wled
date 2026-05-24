@@ -369,6 +369,7 @@ static mp3_state_t   s_mp3 = {
 static volatile bool s_mp3_resume_on_bt_reconnect = false;
 static TickType_t s_mp3_last_ui_tick __attribute__((unused)) = 0;
 static volatile bool s_mp3_ui_pending = false;
+static bool          s_mp3_ui_override_allowed = true;
 static TaskHandle_t s_mp3_task = NULL;
 static TickType_t s_mp3_next_mount_retry __attribute__((unused)) = 0;
 static bool s_sd_mount_warned __attribute__((unused)) = false;
@@ -2552,6 +2553,8 @@ static void mp3_render_now_playing(void)
 {
     if (!s_mp3.active) return;
 
+    if (!s_mp3_ui_override_allowed) return;
+
     char bar[21];
     int width = 20;
     int filled = 0;
@@ -2568,25 +2571,40 @@ static void mp3_render_now_playing(void)
     mp3_format_time(s_mp3.position_ms, cur, sizeof(cur));
     mp3_format_time(s_mp3.duration_ms, total, sizeof(total));
 
-    char msg[700];
+    char file_short[44];
+    if (strlen(s_mp3.file_name) > 40) {
+        memcpy(file_short, s_mp3.file_name, 37);
+        strcpy(file_short + 37, "...");
+    } else {
+        strncpy(file_short, s_mp3.file_name, sizeof(file_short) - 1);
+        file_short[sizeof(file_short) - 1] = '\0';
+    }
+
+    char msg[1000];
     snprintf(msg, sizeof(msg),
-             "MP3 %s\n"
+             "MUSIC %s\n"
+             "Song: %s\n"
              "Folder: %s\n"
-             "File: %s\n"
              "[%s]\n"
              "%s / %s\n"
-             "Vol:%d Shuffle:%s\n"
-             "Repeat Track:%s Repeat Playlist:%s",
+             "Vol:%d%%  Shuffle:%s\n"
+             "RptTrack:%s  RptList:%s\n"
+             "\n"
+             "[      %s      ]\n"
+             "[ PREV ] [ NEXT ]\n"
+             "[ REV-10 ] [ FWD+10 ]\n"
+             "[ VOL- ] [ VOL+ ]",
              s_mp3.paused ? "Paused" : "Playing",
+             file_short[0] ? file_short : "(none)",
              s_mp3.folder_name[0] ? s_mp3.folder_name : "(none)",
-             s_mp3.file_name[0] ? s_mp3.file_name : "(none)",
              bar,
              cur,
              total,
              s_mp3.volume,
              s_mp3.shuffle ? "on" : "off",
              s_mp3.repeat_track ? "on" : "off",
-             s_mp3.repeat_playlist ? "on" : "off");
+             s_mp3.repeat_playlist ? "on" : "off",
+             s_mp3.paused ? "PLAY" : "PAUSE");
     screen_draw_text(msg);
 }
 
@@ -2645,6 +2663,7 @@ static bool mp3_start_track(int folder_idx, int track_idx, bool keep_position)
     ESP_LOGI(TAG, "mp3: folder='%s' file='%s' idx=%d/%d (audio pipeline pending)",
              s_mp3.folder_name, s_mp3.file_name, resolved_idx + 1, folder->mp3_count);
 
+    s_mp3_ui_override_allowed = true;
     mp3_request_ui_refresh();
     return true;
 }
@@ -3625,6 +3644,7 @@ static void pf_event_handler(const char *event_name,
     if (strcmp(s_trigger, "text") == 0) {
         /* Discard any cached JPEG so orientation changes redraw text, not image */
         if (s_jpeg_cache) { free(s_jpeg_cache); s_jpeg_cache = NULL; s_jpeg_cache_len = 0; }
+        s_mp3_ui_override_allowed = false;
         strncpy(s_last_text, s_params[0] ? s_params : " ", sizeof(s_last_text) - 1);
         s_last_text[sizeof(s_last_text) - 1] = '\0';
         s_current_jpeg_url[0] = '\0';
@@ -3664,6 +3684,7 @@ static void pf_event_handler(const char *event_name,
 
     } else if (strcmp(s_trigger, "jpeg") == 0) {
         if (s_params[0]) {
+            s_mp3_ui_override_allowed = false;
             /* Trim leading whitespace from URL */
             const char *url = s_params;
             while (*url == ' ') url++;
@@ -3684,6 +3705,7 @@ static void pf_event_handler(const char *event_name,
         }
 
     } else if (strcmp(s_trigger, "play") == 0) {
+        s_mp3_ui_override_allowed = true;
         if (s_mp3.active) {
             s_mp3.paused = false;
             s_mp3_resume_on_bt_reconnect = false;
@@ -3716,6 +3738,7 @@ static void pf_event_handler(const char *event_name,
         }
 
     } else if (strcmp(s_trigger, "stop") == 0) {
+        s_mp3_ui_override_allowed = true;
         if (s_mp3.active) {
             s_mp3.paused = true;
             s_mp3_resume_on_bt_reconnect = false;
@@ -3729,28 +3752,35 @@ static void pf_event_handler(const char *event_name,
         }
 
     } else if (strcmp(s_trigger, "next") == 0) {
+        s_mp3_ui_override_allowed = true;
         (void)mp3_advance_track(1, "next command");
 
     } else if (strcmp(s_trigger, "previous") == 0) {
+        s_mp3_ui_override_allowed = true;
         (void)mp3_advance_track(-1, "previous command");
 
     } else if (strcmp(s_trigger, "forward") == 0) {
+        s_mp3_ui_override_allowed = true;
         (void)mp3_queue_seek_relative((int32_t)MP3_SEEK_STEP_MS, "forward command");
 
     } else if (strcmp(s_trigger, "reverse") == 0) {
+        s_mp3_ui_override_allowed = true;
         (void)mp3_queue_seek_relative(-(int32_t)MP3_SEEK_STEP_MS, "reverse command");
 
     } else if (strcmp(s_trigger, "volumeup") == 0) {
+        s_mp3_ui_override_allowed = true;
         s_mp3.volume += 5;
         if (s_mp3.volume > 100) s_mp3.volume = 100;
         if (s_mp3.active) mp3_request_ui_refresh();
 
     } else if (strcmp(s_trigger, "volumedown") == 0) {
+        s_mp3_ui_override_allowed = true;
         s_mp3.volume -= 5;
         if (s_mp3.volume < 0) s_mp3.volume = 0;
         if (s_mp3.active) mp3_request_ui_refresh();
 
     } else if (strcmp(s_trigger, "shuffle") == 0) {
+        s_mp3_ui_override_allowed = true;
         char mode[16] = {0};
         strncpy(mode, s_params, sizeof(mode) - 1);
         for (size_t i = 0; mode[i]; i++) mode[i] = (char)tolower((unsigned char)mode[i]);
@@ -3766,6 +3796,7 @@ static void pf_event_handler(const char *event_name,
         if (s_mp3.active) mp3_request_ui_refresh();
 
     } else if (strcmp(s_trigger, "repeattrack") == 0) {
+        s_mp3_ui_override_allowed = true;
         char mode[16] = {0};
         strncpy(mode, s_params, sizeof(mode) - 1);
         for (size_t i = 0; mode[i]; i++) mode[i] = (char)tolower((unsigned char)mode[i]);
@@ -3781,6 +3812,7 @@ static void pf_event_handler(const char *event_name,
         if (s_mp3.active) mp3_request_ui_refresh();
 
     } else if (strcmp(s_trigger, "repeatplaylist") == 0) {
+        s_mp3_ui_override_allowed = true;
         char mode[16] = {0};
         strncpy(mode, s_params, sizeof(mode) - 1);
         for (size_t i = 0; mode[i]; i++) mode[i] = (char)tolower((unsigned char)mode[i]);
@@ -4260,10 +4292,13 @@ void picture_frame_run(void)
                 }
             }
 
-            if (s_mp3_ui_pending && s_mp3.active && !s_pending_jpeg && !s_pending_jpeg_redraw) {
+            if (s_mp3_ui_pending && s_mp3.active && s_mp3_ui_override_allowed &&
+                !s_pending_jpeg && !s_pending_jpeg_redraw) {
                 s_mp3_ui_pending = false;
                 mp3_render_now_playing();
             } else if (s_mp3_ui_pending && !s_mp3.active) {
+                s_mp3_ui_pending = false;
+            } else if (s_mp3_ui_pending && !s_mp3_ui_override_allowed) {
                 s_mp3_ui_pending = false;
             }
 
