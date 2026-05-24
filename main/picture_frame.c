@@ -635,6 +635,9 @@ static bool s_bt_coex_streaming_hint = false;
 static esp_coex_prefer_t s_bt_coex_preference = ESP_COEX_PREFER_BALANCE;
 #endif
 static TickType_t s_bt_speaker_resume_after = 0;
+#define BT_SPEAKER_REINIT_BACKOFF_MIN_MS 3000U
+#define BT_SPEAKER_REINIT_BACKOFF_MAX_MS 15000U
+static uint32_t s_bt_speaker_resume_backoff_ms = BT_SPEAKER_REINIT_BACKOFF_MIN_MS;
 
 static void bt_update_coex_preference(bool streaming)
 {
@@ -942,7 +945,9 @@ static void bt_set_pref_codec(esp_a2d_conn_hdl_t conn_hdl)
     bt_build_sbc_pref_mcc(&pref_mcc);
     esp_err_t err = esp_a2d_source_set_pref_mcc(conn_hdl, &pref_mcc);
     if (err == ESP_OK) {
-        ESP_LOGI(TAG, "bt: preferred SBC codec set (44.1k, bitpool<=31)");
+        ESP_LOGI(TAG,
+                 "bt: preferred SBC codec set (44.1k, bitpool<=%u)",
+                 (unsigned int)pref_mcc.cie.sbc_info.max_bitpool);
     } else {
         ESP_LOGW(TAG, "bt: preferred codec set failed: %s", esp_err_to_name(err));
     }
@@ -2120,8 +2125,8 @@ static void mp3_player_task(void *arg)
                     bt_fill = bt_pcm_fill_bytes();
                 }
             }
-        } else if (s_bt_hold_local_speaker || s_bt.connecting || s_bt.discovering) {
-            /* Keep local I2S path down while BT stack is starting/pairing. */
+        } else if (s_bt_hold_local_speaker || s_bt.connecting || s_bt.discovering || s_bt_pending_reconnect) {
+            /* Keep local I2S path down while BT stack is starting/pairing/retrying. */
             speaker_path_ready = false;
             speaker_last_rate = 0;
             vTaskDelay(pdMS_TO_TICKS(8));
@@ -2137,11 +2142,24 @@ static void mp3_player_task(void *arg)
                 bt_log_heap_snapshot("speaker_init_deferred", speaker_err);
                 speaker_path_ready = false;
                 speaker_last_rate = 0;
-                s_bt_speaker_resume_after = xTaskGetTickCount() + pdMS_TO_TICKS(3000);
+                uint32_t cooldown_ms = BT_SPEAKER_REINIT_BACKOFF_MIN_MS;
+                if (speaker_err == ESP_ERR_NO_MEM) {
+                    cooldown_ms = s_bt_speaker_resume_backoff_ms;
+                    if (s_bt_speaker_resume_backoff_ms < BT_SPEAKER_REINIT_BACKOFF_MAX_MS) {
+                        s_bt_speaker_resume_backoff_ms *= 2;
+                        if (s_bt_speaker_resume_backoff_ms > BT_SPEAKER_REINIT_BACKOFF_MAX_MS) {
+                            s_bt_speaker_resume_backoff_ms = BT_SPEAKER_REINIT_BACKOFF_MAX_MS;
+                        }
+                    }
+                } else {
+                    s_bt_speaker_resume_backoff_ms = BT_SPEAKER_REINIT_BACKOFF_MIN_MS;
+                }
+                s_bt_speaker_resume_after = xTaskGetTickCount() + pdMS_TO_TICKS(cooldown_ms);
                 vTaskDelay(pdMS_TO_TICKS(20));
                 continue;
             }
             s_bt_speaker_resume_after = 0;
+            s_bt_speaker_resume_backoff_ms = BT_SPEAKER_REINIT_BACKOFF_MIN_MS;
             if (!speaker_path_ready) {
                 speaker_path_ready = true;
                 speaker_last_rate = 0;
