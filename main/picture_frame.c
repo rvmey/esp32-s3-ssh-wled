@@ -467,6 +467,8 @@ static int bt_score_candidate(const char *name, int rssi, uint32_t cod)
 }
 
 #define BT_PCM_RING_BYTES (64 * 1024)
+#define BT_PCM_LOW_WATER_BYTES  (8 * 1024)
+#define BT_PCM_HIGH_WATER_BYTES (32 * 1024)
 static uint8_t *s_bt_pcm_ring = NULL;
 static size_t s_bt_pcm_rpos = 0;
 static size_t s_bt_pcm_wpos = 0;
@@ -527,6 +529,15 @@ static size_t bt_pcm_read_bytes(uint8_t *dst, size_t len)
     s_bt_pcm_fill -= take;
     taskEXIT_CRITICAL(&s_bt_pcm_mux);
     return take;
+}
+
+static size_t bt_pcm_fill_bytes(void)
+{
+    size_t fill;
+    taskENTER_CRITICAL(&s_bt_pcm_mux);
+    fill = s_bt_pcm_fill;
+    taskEXIT_CRITICAL(&s_bt_pcm_mux);
+    return fill;
 }
 
 static int16_t bt_scale_sample(int16_t s, int volume_percent)
@@ -1544,8 +1555,13 @@ static void mp3_player_task(void *arg)
 
 #if CONFIG_BT_ENABLED && CONFIG_BT_A2DP_ENABLE
         if (s_bt.connected) {
-            /* Speaker path blocks on I2S writes; BT path must be paced manually. */
-            vTaskDelay(pdMS_TO_TICKS(frame_ms));
+            size_t bt_fill = bt_pcm_fill_bytes();
+            /* Let the decoder build some headroom; only yield once the ring is healthy. */
+            if (bt_fill >= BT_PCM_HIGH_WATER_BYTES) {
+                vTaskDelay(pdMS_TO_TICKS((frame_ms > 3U) ? 3U : frame_ms));
+            } else if (bt_fill <= BT_PCM_LOW_WATER_BYTES) {
+                taskYIELD();
+            }
         }
 #endif
     }
