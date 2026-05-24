@@ -205,6 +205,7 @@ static void pf_softap_provision(void)
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_AP));
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &ap_cfg));
     ESP_ERROR_CHECK(esp_wifi_start());
+    ESP_LOGI("pf_c2", "Provisioning: connect a computer or phone to '%s', then open http://192.168.4.1 and enter your WiFi SSID/password.", ap_ssid);
 
     httpd_config_t http_cfg = HTTPD_DEFAULT_CONFIG();
     http_cfg.max_open_sockets = 4;
