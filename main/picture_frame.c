@@ -360,10 +360,10 @@ static esp_err_t nvs_erase_key_local(const char *key);
 #if CONFIG_BT_ENABLED
 typedef struct {
     bool initialized;
-    bool discovering;
+    volatile bool discovering;
 #if CONFIG_BT_A2DP_ENABLE
-    bool connecting;
-    bool connected;
+    volatile bool connecting;
+    volatile bool connected;
     bool connect_after_discovery;
     int  connect_retries;     /* auto-retry on page timeout */
     bool pairing_ui_active;   /* true when pair command initiated current flow */
@@ -611,6 +611,10 @@ static void bt_a2dp_cb(esp_a2d_cb_event_t event, esp_a2d_cb_param_t *param)
             s_bt.connect_retries = 0;    /* reset — connection succeeded */
             s_bt_pending_reconnect = false;
             bt_pcm_clear();
+#if CONFIG_HARDWARE_CORE2
+            /* Hard handoff: stop local I2S speaker path while BT sink is active. */
+            core2_audio_deinit();
+#endif
             ESP_LOGI(TAG, "bt: A2DP connected to %s", s_bt.selected_bda);
 
             /* Required for source role: begin media streaming after link open. */
@@ -1431,6 +1435,8 @@ static void mp3_player_task(void *arg)
         if (s_bt.connected) {
             bt_pcm_write_from_decoder(pcm, (size_t)fi.outputSamps, fi.nChans, s_mp3.volume);
         } else {
+            /* Re-enable speaker path if BT is not connected. */
+            core2_audio_init();
             core2_audio_set_sample_rate((uint32_t)fi.samprate);
             core2_audio_write_pcm(pcm, (size_t)fi.outputSamps, fi.nChans, s_mp3.volume);
         }
