@@ -539,18 +539,19 @@ static int16_t bt_scale_sample(int16_t s, int volume_percent)
     return (int16_t)scaled;
 }
 
-static void bt_pcm_write_from_decoder(const int16_t *samples,
-                                      size_t sample_count,
-                                      int channels,
-                                      int volume_percent)
+static size_t bt_pcm_write_from_decoder(const int16_t *samples,
+                                        size_t sample_count,
+                                        int channels,
+                                        int volume_percent)
 {
-    if (!samples || sample_count == 0) return;
-    if (!s_bt.connected) return;
-    if (channels != 1 && channels != 2) return;
+    if (!samples || sample_count == 0) return 0;
+    if (!s_bt.connected) return 0;
+    if (channels != 1 && channels != 2) return 0;
 
     uint8_t frame_bytes[512];
     size_t in_pos = 0;
     size_t frames_per_chunk = sizeof(frame_bytes) / 4;
+    size_t written_total = 0;
 
     while (in_pos < sample_count) {
         size_t frames = frames_per_chunk;
@@ -580,13 +581,15 @@ static void bt_pcm_write_from_decoder(const int16_t *samples,
             frame_bytes[(i * 4) + 3] = (uint8_t)((r >> 8) & 0xFF);
         }
 
-        (void)bt_pcm_write_bytes(frame_bytes, frames * 4);
+        written_total += bt_pcm_write_bytes(frame_bytes, frames * 4);
         if (channels == 2) {
             in_pos += frames * 2;
         } else {
             in_pos += frames;
         }
     }
+
+    return written_total;
 }
 
 #if CONFIG_BT_A2DP_ENABLE
@@ -1458,7 +1461,18 @@ static void mp3_player_task(void *arg)
 #if CONFIG_HARDWARE_CORE2
     #if CONFIG_BT_ENABLED && CONFIG_BT_A2DP_ENABLE
         if (s_bt.connected) {
-            bt_pcm_write_from_decoder(pcm, (size_t)fi.outputSamps, fi.nChans, s_mp3.volume);
+            size_t bt_written = bt_pcm_write_from_decoder(pcm,
+                                                          (size_t)fi.outputSamps,
+                                                          fi.nChans,
+                                                          s_mp3.volume);
+            size_t frame_count = (fi.nChans == 2)
+                                     ? ((size_t)fi.outputSamps / 2U)
+                                     : (size_t)fi.outputSamps;
+            size_t bt_expected = frame_count * 4U;
+            if (bt_written < bt_expected) {
+                /* Back off when ring is full so BT stack can drain encoder output. */
+                vTaskDelay(pdMS_TO_TICKS(8));
+            }
         } else {
             /* Re-enable speaker path if BT is not connected. */
             core2_audio_init();
@@ -1492,6 +1506,13 @@ static void mp3_player_task(void *arg)
             s_mp3_last_ui_tick = now;
             mp3_render_now_playing();
         }
+
+#if CONFIG_BT_ENABLED && CONFIG_BT_A2DP_ENABLE
+        if (s_bt.connected) {
+            /* Speaker path blocks on I2S writes; BT path must be paced manually. */
+            vTaskDelay(pdMS_TO_TICKS(frame_ms));
+        }
+#endif
     }
 
     MP3FreeDecoder(dec);
