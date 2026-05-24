@@ -39,6 +39,7 @@
 #include "nvs.h"
 #include "esp_http_client.h"
 #include "esp_crt_bundle.h"
+#include "esp_timer.h"
 
 #include "wifi_manager.h"
 #include "improv_wifi.h"
@@ -351,6 +352,7 @@ static mp3_state_t   s_mp3 = {
     .last_tick = 0,
 };
 static TickType_t s_mp3_last_ui_tick = 0;
+static volatile bool s_mp3_ui_pending = false;
 static TaskHandle_t s_mp3_task = NULL;
 static TickType_t s_mp3_next_mount_retry = 0;
 static bool s_sd_mount_warned = false;
@@ -1278,6 +1280,11 @@ static void bt_try_reconnect_on_boot(void)
 
 static void mp3_render_now_playing(void);
 
+static inline void mp3_request_ui_refresh(void)
+{
+    s_mp3_ui_pending = true;
+}
+
 static void pf_status_draw(const char *msg)
 {
     /* Keep status screens legible even if saved colors are invalid/invisible. */
@@ -1527,6 +1534,25 @@ static void mp3_player_task(void *arg)
     unsigned char *read_ptr = inbuf;
     int bytes_left = 0;
     bool speaker_path_ready = false;
+    uint32_t speaker_last_rate = 0;
+
+    int64_t tel_window_start_us = esp_timer_get_time();
+    uint32_t tel_decoded_frames = 0;
+    uint32_t tel_underflows = 0;
+    uint32_t tel_decode_errors = 0;
+    uint32_t tel_refills = 0;
+    size_t tel_refill_bytes = 0;
+    uint64_t tel_refill_us_total = 0;
+    uint64_t tel_refill_us_max = 0;
+    uint64_t tel_decode_us_total = 0;
+    uint64_t tel_decode_us_max = 0;
+    uint64_t tel_output_us_total = 0;
+    uint64_t tel_output_us_max = 0;
+    uint32_t tel_output_calls = 0;
+    uint32_t tel_audio_ms = 0;
+    size_t tel_bt_fill_peak = 0;
+    int tel_last_rate = 0;
+    int tel_last_channels = 0;
 
     while (true) {
         if (!s_mp3.active) {
@@ -1537,6 +1563,25 @@ static void mp3_player_task(void *arg)
             }
             bytes_left = 0;
             read_ptr = inbuf;
+            speaker_last_rate = 0;
+
+            tel_window_start_us = esp_timer_get_time();
+            tel_decoded_frames = 0;
+            tel_underflows = 0;
+            tel_decode_errors = 0;
+            tel_refills = 0;
+            tel_refill_bytes = 0;
+            tel_refill_us_total = 0;
+            tel_refill_us_max = 0;
+            tel_decode_us_total = 0;
+            tel_decode_us_max = 0;
+            tel_output_us_total = 0;
+            tel_output_us_max = 0;
+            tel_output_calls = 0;
+            tel_audio_ms = 0;
+            tel_bt_fill_peak = 0;
+            tel_last_rate = 0;
+            tel_last_channels = 0;
             vTaskDelay(pdMS_TO_TICKS(100));
             continue;
         }
@@ -1555,6 +1600,7 @@ static void mp3_player_task(void *arg)
             if (!fp) {
                 ESP_LOGW(TAG, "mp3: failed to open %s", s_mp3.file_path);
                 s_mp3.paused = true;
+                mp3_request_ui_refresh();
                 vTaskDelay(pdMS_TO_TICKS(200));
                 continue;
             }
@@ -1565,17 +1611,23 @@ static void mp3_player_task(void *arg)
                 memmove(inbuf, read_ptr, (size_t)bytes_left);
             }
             read_ptr = inbuf;
+            int64_t refill_t0 = esp_timer_get_time();
             size_t n = fread(inbuf + bytes_left,
                              1,
                              (size_t)MP3_INPUT_BUF_BYTES - (size_t)bytes_left,
                              fp);
+            uint64_t refill_us = (uint64_t)(esp_timer_get_time() - refill_t0);
+            tel_refills++;
+            tel_refill_bytes += n;
+            tel_refill_us_total += refill_us;
+            if (refill_us > tel_refill_us_max) tel_refill_us_max = refill_us;
             bytes_left += (int)n;
         }
 
         if (bytes_left <= 4) {
             s_mp3.paused = true;
             s_mp3.position_ms = s_mp3.duration_ms;
-            mp3_render_now_playing();
+            mp3_request_ui_refresh();
             vTaskDelay(pdMS_TO_TICKS(100));
             continue;
         }
@@ -1590,12 +1642,16 @@ static void mp3_player_task(void *arg)
         read_ptr += sync;
         bytes_left -= sync;
 
+        int64_t decode_t0 = esp_timer_get_time();
         int err = MP3Decode(dec, &read_ptr, &bytes_left, pcm, 0);
+        uint64_t decode_us = (uint64_t)(esp_timer_get_time() - decode_t0);
         if (err == ERR_MP3_INDATA_UNDERFLOW || err == ERR_MP3_MAINDATA_UNDERFLOW) {
+            tel_underflows++;
             vTaskDelay(pdMS_TO_TICKS(2));
             continue;
         }
         if (err != ERR_MP3_NONE) {
+            tel_decode_errors++;
             if (bytes_left > 0) {
                 read_ptr++;
                 bytes_left--;
@@ -1612,6 +1668,14 @@ static void mp3_player_task(void *arg)
             continue;
         }
 
+        tel_decoded_frames++;
+        tel_decode_us_total += decode_us;
+        if (decode_us > tel_decode_us_max) tel_decode_us_max = decode_us;
+        tel_last_rate = fi.samprate;
+        tel_last_channels = fi.nChans;
+
+        int64_t output_t0 = esp_timer_get_time();
+
 #if CONFIG_HARDWARE_CORE2
     #if CONFIG_BT_ENABLED && CONFIG_BT_A2DP_ENABLE
         if (s_bt.connected) {
@@ -1621,6 +1685,7 @@ static void mp3_player_task(void *arg)
                                                            fi.samprate,
                                                            s_mp3.volume);
             speaker_path_ready = false;
+            speaker_last_rate = 0;
             size_t frame_count = (fi.nChans == 2)
                                      ? ((size_t)fi.outputSamps / 2U)
                                      : (size_t)fi.outputSamps;
@@ -1628,6 +1693,8 @@ static void mp3_player_task(void *arg)
             size_t bt_expected = (frame_count * 4U * (size_t)out_rate) /
                                  (size_t)fi.samprate;
             if (bt_expected < 4U) bt_expected = 4U;
+            size_t bt_fill = bt_pcm_fill_bytes();
+            if (bt_fill > tel_bt_fill_peak) tel_bt_fill_peak = bt_fill;
             if (bt_written < bt_expected) {
                 /* Back off when ring is full so BT stack can drain encoder output. */
                 vTaskDelay(pdMS_TO_TICKS(10));
@@ -1636,20 +1703,33 @@ static void mp3_player_task(void *arg)
             if (!speaker_path_ready) {
                 core2_audio_init();
                 speaker_path_ready = true;
+                speaker_last_rate = 0;
             }
-            core2_audio_set_sample_rate((uint32_t)fi.samprate);
+            if (speaker_last_rate != (uint32_t)fi.samprate) {
+                core2_audio_set_sample_rate((uint32_t)fi.samprate);
+                speaker_last_rate = (uint32_t)fi.samprate;
+            }
             core2_audio_write_pcm(pcm, (size_t)fi.outputSamps, fi.nChans, s_mp3.volume);
         }
     #else
-        core2_audio_set_sample_rate((uint32_t)fi.samprate);
+        if (speaker_last_rate != (uint32_t)fi.samprate) {
+            core2_audio_set_sample_rate((uint32_t)fi.samprate);
+            speaker_last_rate = (uint32_t)fi.samprate;
+        }
         core2_audio_write_pcm(pcm, (size_t)fi.outputSamps, fi.nChans, s_mp3.volume);
     #endif
 #endif
+
+        uint64_t output_us = (uint64_t)(esp_timer_get_time() - output_t0);
+        tel_output_calls++;
+        tel_output_us_total += output_us;
+        if (output_us > tel_output_us_max) tel_output_us_max = output_us;
 
         uint32_t mono_samples = (uint32_t)(fi.outputSamps / fi.nChans);
         uint32_t frame_ms = (uint32_t)(((uint64_t)mono_samples * 1000ULL) /
                                        (uint64_t)fi.samprate);
         if (frame_ms == 0) frame_ms = 1;
+        tel_audio_ms += frame_ms;
 
         if (!s_mp3.active || s_mp3.paused || opened_token != s_mp3.play_token) {
             continue;
@@ -1658,6 +1738,7 @@ static void mp3_player_task(void *arg)
         if (s_mp3.position_ms + frame_ms >= s_mp3.duration_ms) {
             s_mp3.position_ms = s_mp3.duration_ms;
             s_mp3.paused = true;
+            mp3_request_ui_refresh();
         } else {
             s_mp3.position_ms += frame_ms;
         }
@@ -1665,7 +1746,61 @@ static void mp3_player_task(void *arg)
         TickType_t now = xTaskGetTickCount();
         if ((now - s_mp3_last_ui_tick) >= pdMS_TO_TICKS(3000)) {
             s_mp3_last_ui_tick = now;
-            mp3_render_now_playing();
+            mp3_request_ui_refresh();
+        }
+
+        int64_t tel_now_us = esp_timer_get_time();
+        if ((tel_now_us - tel_window_start_us) >= 5000000LL) {
+            uint32_t win_ms = (uint32_t)((tel_now_us - tel_window_start_us) / 1000LL);
+            uint64_t decode_avg_us = tel_decoded_frames ? (tel_decode_us_total / tel_decoded_frames) : 0;
+            uint64_t output_avg_us = tel_output_calls ? (tel_output_us_total / tel_output_calls) : 0;
+            uint64_t refill_avg_us = tel_refills ? (tel_refill_us_total / tel_refills) : 0;
+#if CONFIG_BT_ENABLED && CONFIG_BT_A2DP_ENABLE
+            size_t bt_fill = s_bt.connected ? bt_pcm_fill_bytes() : 0;
+#else
+            size_t bt_fill = 0;
+#endif
+            ESP_LOGI(TAG,
+                     "mp3 tel: mode=%s sr=%d ch=%d win=%ums audio=%ums dec=%u uf=%u err=%u in=%d refill=%u/%uB refill_us(avg/max)=%llu/%llu dec_us(avg/max)=%llu/%llu out_us(avg/max)=%llu/%llu bt_fill(cur/peak)=%u/%u",
+#if CONFIG_BT_ENABLED && CONFIG_BT_A2DP_ENABLE
+                     s_bt.connected ? "bt" : "speaker",
+#else
+                     "speaker",
+#endif
+                     tel_last_rate,
+                     tel_last_channels,
+                     win_ms,
+                     tel_audio_ms,
+                     tel_decoded_frames,
+                     tel_underflows,
+                     tel_decode_errors,
+                     bytes_left,
+                     tel_refills,
+                     (unsigned int)tel_refill_bytes,
+                     (unsigned long long)refill_avg_us,
+                     (unsigned long long)tel_refill_us_max,
+                     (unsigned long long)decode_avg_us,
+                     (unsigned long long)tel_decode_us_max,
+                     (unsigned long long)output_avg_us,
+                     (unsigned long long)tel_output_us_max,
+                     (unsigned int)bt_fill,
+                     (unsigned int)tel_bt_fill_peak);
+
+            tel_window_start_us = tel_now_us;
+            tel_decoded_frames = 0;
+            tel_underflows = 0;
+            tel_decode_errors = 0;
+            tel_refills = 0;
+            tel_refill_bytes = 0;
+            tel_refill_us_total = 0;
+            tel_refill_us_max = 0;
+            tel_decode_us_total = 0;
+            tel_decode_us_max = 0;
+            tel_output_us_total = 0;
+            tel_output_us_max = 0;
+            tel_output_calls = 0;
+            tel_audio_ms = 0;
+            tel_bt_fill_peak = bt_fill;
         }
 
 #if CONFIG_BT_ENABLED && CONFIG_BT_A2DP_ENABLE
@@ -1692,7 +1827,7 @@ static void mp3_ensure_task(void)
 #if CONFIG_HARDWARE_CORE2
     core2_audio_init();
 #endif
-    xTaskCreate(mp3_player_task, "mp3_play", 6144, NULL, 4, &s_mp3_task);
+    xTaskCreate(mp3_player_task, "mp3_play", 6144, NULL, 5, &s_mp3_task);
 }
 
 static void mp3_format_time(uint32_t ms, char *out, size_t out_sz)
@@ -1789,7 +1924,7 @@ static bool mp3_start_track(int folder_idx, int track_idx, bool keep_position)
     bt_media_start_if_needed();
 #endif
 
-    mp3_render_now_playing();
+    mp3_request_ui_refresh();
     return true;
 }
 
@@ -2660,7 +2795,7 @@ static void pf_event_handler(const char *event_name,
 #if CONFIG_BT_ENABLED && CONFIG_BT_A2DP_ENABLE
             bt_media_start_if_needed();
 #endif
-            mp3_render_now_playing();
+            mp3_request_ui_refresh();
         } else if (s_mp3_folder_count > 0) {
             mp3_start_track(0, -1, false);
         } else {
@@ -2673,7 +2808,7 @@ static void pf_event_handler(const char *event_name,
 #if CONFIG_BT_ENABLED && CONFIG_BT_A2DP_ENABLE
             bt_media_stop_if_needed();
 #endif
-            mp3_render_now_playing();
+            mp3_request_ui_refresh();
         }
 
     } else if (strcmp(s_trigger, "forward") == 0) {
@@ -2693,12 +2828,12 @@ static void pf_event_handler(const char *event_name,
     } else if (strcmp(s_trigger, "volumeup") == 0) {
         s_mp3.volume += 5;
         if (s_mp3.volume > 100) s_mp3.volume = 100;
-        if (s_mp3.active) mp3_render_now_playing();
+        if (s_mp3.active) mp3_request_ui_refresh();
 
     } else if (strcmp(s_trigger, "volumedown") == 0) {
         s_mp3.volume -= 5;
         if (s_mp3.volume < 0) s_mp3.volume = 0;
-        if (s_mp3.active) mp3_render_now_playing();
+        if (s_mp3.active) mp3_request_ui_refresh();
 
     } else if (strcmp(s_trigger, "shuffle") == 0) {
         char mode[16] = {0};
@@ -2712,7 +2847,7 @@ static void pf_event_handler(const char *event_name,
             s_mp3.shuffle = !s_mp3.shuffle;
         }
         nvs_write_u8(NVS_KEY_SHUFFLE, s_mp3.shuffle ? 1 : 0);
-        if (s_mp3.active) mp3_render_now_playing();
+        if (s_mp3.active) mp3_request_ui_refresh();
 
     } else if (strcmp(s_trigger, "pair") == 0) {
         bt_cmd_pair_start();
@@ -3198,6 +3333,13 @@ void picture_frame_run(void)
                     strncpy(s_current_jpeg_url, jpeg_url, sizeof(s_current_jpeg_url) - 1);
                     s_current_jpeg_url[sizeof(s_current_jpeg_url) - 1] = '\0';
                 }
+            }
+
+            if (s_mp3_ui_pending && s_mp3.active && !s_pending_jpeg && !s_pending_jpeg_redraw) {
+                s_mp3_ui_pending = false;
+                mp3_render_now_playing();
+            } else if (s_mp3_ui_pending && !s_mp3.active) {
+                s_mp3_ui_pending = false;
             }
 
             /* Post run/save from the main task — over existing Socket.IO session
