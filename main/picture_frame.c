@@ -3249,7 +3249,8 @@ void picture_frame_run(void)
             s_mp3.shuffle = (shuffle != 0);
         }
     }
-    rebuild_mp3_folder_index();
+    /* Defer SD mount/index work until the main loop so boot UI is responsive. */
+    s_mp3_next_mount_retry = xTaskGetTickCount();
 
     /* ── Pair code flow — runs until a user JWT is obtained ─────────────── */
     if (!have_token) {
@@ -3380,6 +3381,8 @@ void picture_frame_run(void)
         if (resp) free(resp);
 
         vTaskDelay(pdMS_TO_TICKS(1500));
+
+        rebuild_mp3_folder_index();
 
         /* ── Sync commands ────────────────────────────────────────────────── */
         pf_status_draw("Syncing commands...");
