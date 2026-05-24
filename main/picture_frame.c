@@ -392,6 +392,11 @@ static volatile bool s_bt_hold_local_speaker = false;
 static bool      s_bt_reconnect_attempted  = false;
 static volatile bool s_bt_pending_reconnect = false;
 static TickType_t    s_bt_reconnect_after   = 0;
+static TickType_t    s_bt_connect_started_at = 0;
+
+#define BT_CONNECT_RETRY_MAX          5
+#define BT_CONNECT_RETRY_BASE_DELAY_MS 1500U
+#define BT_CONNECT_TIMEOUT_MS         12000U
 
 #define BT_STARTUP_MIN_INTERNAL_FREE    (44 * 1024)
 #define BT_STARTUP_MIN_INTERNAL_LARGEST (12 * 1024)
@@ -491,6 +496,66 @@ static int bt_score_candidate(const char *name, int rssi, uint32_t cod)
     }
     return score;
 }
+
+#if CONFIG_BT_A2DP_ENABLE
+static void bt_schedule_reconnect(const char *reason)
+{
+    if (!s_bt.has_bda || s_bt.discovering || s_bt_pending_reconnect) return;
+    if (s_bt.connect_retries >= BT_CONNECT_RETRY_MAX) return;
+
+    s_bt.connect_retries++;
+    uint32_t delay_ms = BT_CONNECT_RETRY_BASE_DELAY_MS * (uint32_t)s_bt.connect_retries;
+    s_bt_reconnect_after = xTaskGetTickCount() + pdMS_TO_TICKS(delay_ms);
+    s_bt_pending_reconnect = true;
+
+    ESP_LOGW(TAG,
+             "bt: scheduling reconnect attempt %d/%d in %lu ms (%s)",
+             s_bt.connect_retries,
+             BT_CONNECT_RETRY_MAX,
+             (unsigned long)delay_ms,
+             reason ? reason : "retry");
+
+    if (s_bt.pairing_ui_active) {
+        char msg[96];
+        snprintf(msg, sizeof(msg),
+                 "Bluetooth pairing\nretry %d/%d...",
+                 s_bt.connect_retries,
+                 BT_CONNECT_RETRY_MAX);
+        screen_draw_text(msg);
+    }
+}
+
+static bool bt_start_connect_now(const char *reason)
+{
+    if (!s_bt.has_bda || s_bt.discovering || s_bt.connected || s_bt.connecting) {
+        return false;
+    }
+
+    if (s_bt.pairing_ui_active) {
+        screen_draw_text("Bluetooth pairing\nconnecting...");
+    }
+
+    ESP_LOGI(TAG,
+             "bt: connecting to %s (%s)",
+             s_bt.selected_bda,
+             reason ? reason : "request");
+
+    s_bt.connecting = true;
+    s_bt_connect_started_at = xTaskGetTickCount();
+
+    esp_err_t err = esp_a2d_source_connect(s_bt.bda);
+    if (err != ESP_OK) {
+        s_bt.connecting = false;
+        ESP_LOGW(TAG,
+                 "bt: connect call failed (%s): %s",
+                 reason ? reason : "request",
+                 esp_err_to_name(err));
+        bt_schedule_reconnect("connect call failed");
+        return false;
+    }
+    return true;
+}
+#endif
 
 #define BT_PCM_RING_BYTES (64 * 1024)
 #define BT_PCM_LOW_WATER_BYTES  (8 * 1024)
@@ -783,6 +848,7 @@ static void bt_a2dp_cb(esp_a2d_cb_event_t event, esp_a2d_cb_param_t *param)
         if (st == ESP_A2D_CONNECTION_STATE_CONNECTED) {
             s_bt.connected = true;
             s_bt.connecting = false;
+            s_bt_connect_started_at = 0;
             s_bt.media_started = false;
             s_bt_media_prime_pending = false;
             s_bt_media_prime_deadline = 0;
@@ -819,8 +885,10 @@ static void bt_a2dp_cb(esp_a2d_cb_event_t event, esp_a2d_cb_param_t *param)
             s_bt.connecting = true;
             s_bt.connected = false;
             s_bt.media_started = false;
+            s_bt_connect_started_at = xTaskGetTickCount();
         } else {
             s_bt.connecting = false;
+            s_bt_connect_started_at = 0;
             s_bt.connected = false;
             s_bt.media_started = false;
             s_bt_media_prime_pending = false;
@@ -830,26 +898,15 @@ static void bt_a2dp_cb(esp_a2d_cb_event_t event, esp_a2d_cb_param_t *param)
             s_bt_a2dp_sample_rate = BT_A2DP_TARGET_SAMPLE_RATE;
             bt_pcm_clear();
             ESP_LOGI(TAG, "bt: A2DP disconnected");
-            /* Schedule a retry on page-timeout / transient failure (up to 3 attempts) */
+            /* Schedule a retry on transient open/disconnect failures. */
             bool scheduled_retry = false;
             if (s_bt.has_bda && !s_bt.discovering &&
-                s_bt.connect_retries < 3 && !s_bt_pending_reconnect) {
-                s_bt.connect_retries++;
-                s_bt_reconnect_after = xTaskGetTickCount() +
-                                       pdMS_TO_TICKS(3000U * (uint32_t)s_bt.connect_retries);
-                s_bt_pending_reconnect = true;
+                s_bt.connect_retries < BT_CONNECT_RETRY_MAX && !s_bt_pending_reconnect) {
+                bt_schedule_reconnect("A2DP disconnected");
                 scheduled_retry = true;
-                ESP_LOGW(TAG, "bt: scheduling reconnect attempt %d in %lu ms",
-                         s_bt.connect_retries,
-                         (unsigned long)(3000U * (uint32_t)s_bt.connect_retries));
             }
             if (s_bt.pairing_ui_active) {
                 if (scheduled_retry) {
-                    char msg[96];
-                    snprintf(msg, sizeof(msg),
-                             "Bluetooth pairing\nretry %d/3...",
-                             s_bt.connect_retries);
-                    screen_draw_text(msg);
                 } else {
                     screen_draw_text("Bluetooth pairing\nfailed");
                     s_bt.pairing_ui_active = false;
@@ -919,21 +976,12 @@ static void bt_gap_cb(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t *param)
 #if CONFIG_BT_A2DP_ENABLE
             if (s_bt.connect_after_discovery && s_bt.has_bda) {
                 s_bt.connect_after_discovery = false;
-                if (s_bt.pairing_ui_active) {
-                    screen_draw_text("Bluetooth pairing\nconnecting...");
-                }
-                esp_err_t err = esp_a2d_source_connect(s_bt.bda);
-                if (err != ESP_OK) {
-                    ESP_LOGE(TAG, "bt: A2DP connect failed: %s", esp_err_to_name(err));
-                    s_bt.connecting = false;
-                    if (s_bt.pairing_ui_active) {
+                if (!bt_start_connect_now("scan complete")) {
+                    if (s_bt.pairing_ui_active && !s_bt_pending_reconnect) {
                         screen_draw_text("Bluetooth pairing\nconnect failed");
                         s_bt.pairing_ui_active = false;
                         s_bt_hold_local_speaker = false;
                     }
-                } else {
-                    s_bt.connecting = true;
-                    ESP_LOGI(TAG, "bt: connecting to %s", s_bt.selected_bda);
                 }
             } else if (s_bt.pairing_ui_active && !s_bt.has_bda) {
                 screen_draw_text("Bluetooth pairing\nno audio device\nfound");
@@ -1146,7 +1194,10 @@ static void bt_cmd_pair_start(void)
     s_bt.candidate_score = -1000;
 #if CONFIG_BT_A2DP_ENABLE
     s_bt.connect_after_discovery = true;
+    s_bt.connect_retries = 0;
     s_bt.pairing_ui_active = true;
+    s_bt_pending_reconnect = false;
+    s_bt_connect_started_at = 0;
 #endif
     s_bt.selected_name[0] = '\0';
     s_bt.selected_bda[0] = '\0';
@@ -1234,6 +1285,7 @@ static void bt_cmd_disconnect(void)
     s_bt.connect_retries = 0;    /* user-initiated: cancel retries */
     s_bt.pairing_ui_active = false;
     s_bt_pending_reconnect = false;
+    s_bt_connect_started_at = 0;
     s_bt_hold_local_speaker = false;
 #endif
     s_bt.has_device = false;
@@ -1319,6 +1371,7 @@ static void bt_try_reconnect_on_boot(void)
     }
 
     s_bt.connecting = true;
+    s_bt_connect_started_at = xTaskGetTickCount();
     ESP_LOGI(TAG, "bt: reconnecting to %s (%s)", s_bt.selected_name, s_bt.selected_bda);
 #endif
 }
@@ -3524,15 +3577,17 @@ void picture_frame_run(void)
                 xTaskGetTickCount() >= s_bt_reconnect_after) {
                 s_bt_pending_reconnect = false;
                 if (s_bt.has_bda && !s_bt.connected && !s_bt.connecting && !s_bt.discovering) {
-                    ESP_LOGI(TAG, "bt: reconnect attempt %d to %s",
-                             s_bt.connect_retries, s_bt.selected_bda);
-                    s_bt.connecting = true;
-                    esp_err_t rerr = esp_a2d_source_connect(s_bt.bda);
-                    if (rerr != ESP_OK) {
-                        s_bt.connecting = false;
-                        ESP_LOGW(TAG, "bt: reconnect failed: %s", esp_err_to_name(rerr));
-                    }
+                    (void)bt_start_connect_now("retry timer");
                 }
+            }
+
+            if (s_bt.connecting && !s_bt.connected && s_bt_connect_started_at != 0 &&
+                (xTaskGetTickCount() - s_bt_connect_started_at) >=
+                    pdMS_TO_TICKS(BT_CONNECT_TIMEOUT_MS)) {
+                s_bt.connecting = false;
+                s_bt_connect_started_at = 0;
+                ESP_LOGW(TAG, "bt: connect timeout after %u ms", (unsigned)BT_CONNECT_TIMEOUT_MS);
+                bt_schedule_reconnect("connect timeout");
             }
 #endif
 
