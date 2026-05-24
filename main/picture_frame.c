@@ -3434,6 +3434,134 @@ static void sync_command_if_missing(const pf_cmd_t *cmd,
     ESP_LOGI(TAG, "cmd/save '%s' -> HTTP %d", cmd->trigger, cs);
 }
 
+static bool mp3_folder_trigger_exists(const char *trigger)
+{
+    if (!trigger || !trigger[0]) return false;
+    for (size_t i = 0; i < s_mp3_folder_count; i++) {
+        if (strcmp(s_mp3_folders[i].trigger, trigger) == 0) return true;
+    }
+    return false;
+}
+
+static bool online_record_is_mp3_dynamic(const char *record_start,
+                                         const char *record_end)
+{
+    if (!record_start || !record_end || record_end <= record_start) return false;
+    static const char marker[] = "\"mcpToolDescription\":\"Play mp3 files in the ";
+    const char *m = strstr(record_start, marker);
+    return (m && m < record_end);
+}
+
+static void sync_remove_stale_mp3_commands(const char *del_url,
+                                           const char *list_body,
+                                           int list_len)
+{
+    if (!del_url || !list_body || list_len <= 0) return;
+
+    const char *p = list_body;
+    static const char name_key[] = "\"name\":\"";
+
+    while ((p = strstr(p, name_key)) != NULL) {
+        p += strlen(name_key);
+
+        char trigger[MP3_MAX_TRIGGER_LEN] = {0};
+        size_t ti = 0;
+        bool esc = false;
+        while (*p && (esc || *p != '"')) {
+            if (!esc && *p == '\\') {
+                esc = true;
+                p++;
+                continue;
+            }
+            if (ti < sizeof(trigger) - 1) trigger[ti++] = *p;
+            esc = false;
+            p++;
+        }
+        trigger[ti] = '\0';
+        if (*p == '"') p++;
+
+        if (!trigger[0]) continue;
+        if (trigger_reserved(trigger)) continue;
+        if (mp3_folder_trigger_exists(trigger)) continue;
+
+        const char *rec_start = p;
+        while (rec_start > list_body && *rec_start != '{') rec_start--;
+        if (rec_start < list_body) rec_start = list_body;
+        const char *rec_end = strchr(p, '}');
+        if (!rec_end) rec_end = p + strlen(p);
+
+        if (!online_record_is_mp3_dynamic(rec_start, rec_end)) continue;
+
+        char form[320];
+        char *fp = form;
+        char *fend = form + sizeof(form);
+
+#define APPEND_DEL_FIELD(k, v) \
+        fp = url_encode_append(fp, (size_t)(fend - fp), (k)); \
+        if (fp < fend) *fp++ = '='; \
+        fp = url_encode_append(fp, (size_t)(fend - fp), (v)); \
+        if (fp < fend) *fp++ = '&';
+
+        APPEND_DEL_FIELD("name", trigger)
+        APPEND_DEL_FIELD("computer", s_computer_id)
+
+#undef APPEND_DEL_FIELD
+
+        if (fp > form && *(fp - 1) == '&') fp--;
+        *fp = '\0';
+
+        int ds = https_post_form(del_url, s_hw_token, form, NULL);
+        ESP_LOGI(TAG, "cmd/delete2 '%s' -> HTTP %d", trigger, ds);
+    }
+}
+
+static void sync_all_commands(bool remove_stale_mp3)
+{
+    if (!s_computer_id[0] || !s_hw_token[0]) return;
+
+    char list_url[192];
+    snprintf(list_url, sizeof(list_url),
+             "%s/api/command/list?computer_id=%s",
+             TCMD_BASE_URL, s_computer_id);
+
+    char *list_body = NULL;
+    int list_len = https_get_auth(list_url, s_hw_token, &list_body);
+
+    char cmd_url[192];
+    snprintf(cmd_url, sizeof(cmd_url), "%s/api/command/save", TCMD_BASE_URL);
+
+    for (size_t i = 0; i < PF_CMD_COUNT; i++) {
+        sync_command_if_missing(&s_pf_cmds[i], cmd_url, list_body, list_len);
+    }
+
+    for (size_t i = 0; i < PF_MEDIA_CMD_COUNT; i++) {
+        sync_command_if_missing(&s_pf_media_cmds[i], cmd_url, list_body, list_len);
+    }
+
+    for (size_t i = 0; i < s_mp3_folder_count; i++) {
+        char desc[320];
+        snprintf(desc, sizeof(desc),
+                 "Play mp3 files in the %s folder. If the parameter is a number from 1 to 100 to specify one of the mp3 files, otherwise, this command will play the first mp3 file, or a random file in the folder if shuffle mode is on.",
+                 s_mp3_folders[i].trigger);
+        pf_cmd_t dyn_cmd = {
+            .trigger = s_mp3_folders[i].trigger,
+            .voice = s_mp3_folders[i].trigger,
+            .allow_params = "true",
+            .mcp_desc = desc,
+            .icon = "\xF0\x9F\x8E\xB6", /* 🎶 */
+        };
+        sync_command_if_missing(&dyn_cmd, cmd_url, list_body, list_len);
+    }
+
+    if (remove_stale_mp3 && list_body && list_len > 0) {
+        char del_url[192];
+        snprintf(del_url, sizeof(del_url), "%s/api/command/delete2", TCMD_BASE_URL);
+        sync_remove_stale_mp3_commands(del_url, list_body, list_len);
+    }
+
+    if (list_body) free(list_body);
+}
+
 /* ── Color parser ──────────────────────────────────────────────────────── */
 
 static bool parse_color(const char *s, uint8_t *r, uint8_t *g, uint8_t *b)
@@ -4080,49 +4208,13 @@ void picture_frame_run(void)
         if (resp) free(resp);
 
         vTaskDelay(pdMS_TO_TICKS(1500));
-
-        rebuild_mp3_folder_index();
-
-        /* ── Sync commands ────────────────────────────────────────────────── */
-        pf_status_draw("Syncing commands...");
-
-        char list_url[192];
-        snprintf(list_url, sizeof(list_url),
-                 "%s/api/command/list?computer_id=%s",
-                 TCMD_BASE_URL, s_computer_id);
-
-        char *list_body = NULL;
-        int list_len = https_get_auth(list_url, s_hw_token, &list_body);
-        /* list_body may be NULL if request fails — we'll still attempt adds */
-
-        char cmd_url[192];
-        snprintf(cmd_url, sizeof(cmd_url), "%s/api/command/save", TCMD_BASE_URL);
-
-        for (size_t i = 0; i < PF_CMD_COUNT; i++) {
-            sync_command_if_missing(&s_pf_cmds[i], cmd_url, list_body, list_len);
-        }
-
-        for (size_t i = 0; i < PF_MEDIA_CMD_COUNT; i++) {
-            sync_command_if_missing(&s_pf_media_cmds[i], cmd_url, list_body, list_len);
-        }
-
-        for (size_t i = 0; i < s_mp3_folder_count; i++) {
-            char desc[320];
-            snprintf(desc, sizeof(desc),
-                     "Play mp3 files in the %s folder. If the parameter is a number from 1 to 100 to specify one of the mp3 files, otherwise, this command will play the first mp3 file, or a random file in the folder if shuffle mode is on.",
-                     s_mp3_folders[i].trigger);
-            pf_cmd_t dyn_cmd = {
-                .trigger = s_mp3_folders[i].trigger,
-                .voice = s_mp3_folders[i].trigger,
-                .allow_params = "true",
-                .mcp_desc = desc,
-                .icon = "\xF0\x9F\x8E\xB6", /* 🎶 */
-            };
-            sync_command_if_missing(&dyn_cmd, cmd_url, list_body, list_len);
-        }
-
-        if (list_body) free(list_body);
     }
+
+    rebuild_mp3_folder_index();
+
+    /* Keep cloud commands aligned with built-in and dynamic MP3-folder triggers. */
+    pf_status_draw("Syncing commands...");
+    sync_all_commands(true);
 
     /* ── Connect + subscribe loop ────────────────────────────────────────── */
     bool restored_display_state = false;
@@ -4215,7 +4307,12 @@ void picture_frame_run(void)
             if (!s_sd_mounted && s_mp3_next_mount_retry != 0 &&
                 xTaskGetTickCount() >= s_mp3_next_mount_retry) {
                 ESP_LOGI(TAG, "sd: retrying deferred mount");
+                bool was_mounted = s_sd_mounted;
                 rebuild_mp3_folder_index();
+                if (!was_mounted && s_sd_mounted) {
+                    ESP_LOGI(TAG, "sd: mount restored; reconciling MP3 folder commands");
+                    sync_all_commands(true);
+                }
             }
 
 #if CONFIG_BT_ENABLED && CONFIG_BT_A2DP_ENABLE
