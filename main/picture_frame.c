@@ -3312,8 +3312,6 @@ void picture_frame_run(void)
         if (list_body) free(list_body);
     }
 
-    bt_try_reconnect_on_boot();
-
     /* ── Connect + subscribe loop ────────────────────────────────────────── */
     bool restored_display_state = false;
 
@@ -3331,6 +3329,11 @@ void picture_frame_run(void)
         if (!restored_display_state) {
             restore_display_state_from_nvs();
             restored_display_state = true;
+
+            /* Defer Classic BT reconnect until after the first Socket.IO/TLS
+             * session is established; BT startup can otherwise starve mbedTLS
+             * allocation during the reboot path. */
+            bt_try_reconnect_on_boot();
         }
 
         while (true) {

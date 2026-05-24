@@ -2,12 +2,12 @@
 
 // Service worker — keep this minimal and deterministic.
 //
-// Rewrite stale Core2 installer asset URLs to pinned 2.0.150 files.
+// Rewrite stale Core2 installer asset URLs to pinned 2.0.151 files.
 // This protects users with an older cached index.html that references:
 //   - manifest-core2.json
 //   - firmware/esp32_core2_picture_frame.bin
-//   - firmware/esp32_core2_picture_frame-2.0.107.bin
-//   - firmware/esp32_core2_picture_frame-2.0.107-rebuild1.bin
+//   - firmware/esp32_core2_picture_frame-2.0.150.bin
+//   - firmware/esp32_core2_picture_frame-2.0.151.bin
 
 self.addEventListener('install', () => self.skipWaiting());
 
@@ -23,17 +23,18 @@ self.addEventListener('fetch', event => {
   }
 
   if (reqUrl.pathname.endsWith('/manifest-core2.json')) {
-    const target = 'https://raw.githubusercontent.com/rvmey/esp32-s3-ssh-wled/master/docs/manifest-core2-2.0.150.json';
+    const target = 'https://raw.githubusercontent.com/rvmey/esp32-s3-ssh-wled/master/docs/manifest-core2-2.0.151.json';
     event.respondWith(fetch(target, { cache: 'no-store' }));
     return;
   }
 
   if (
     reqUrl.pathname.endsWith('/firmware/esp32_core2_picture_frame.bin') ||
+    reqUrl.pathname.endsWith('/firmware/esp32_core2_picture_frame-2.0.150.bin') ||
     reqUrl.pathname.endsWith('/firmware/esp32_core2_picture_frame-2.0.107.bin') ||
     reqUrl.pathname.endsWith('/firmware/esp32_core2_picture_frame-2.0.107-rebuild1.bin')
   ) {
-    const target = new URL('/esp32-s3-ssh-wled/firmware/esp32_core2_picture_frame-2.0.150.bin', self.location.origin);
+    const target = new URL('/esp32-s3-ssh-wled/firmware/esp32_core2_picture_frame-2.0.151.bin', self.location.origin);
     event.respondWith(fetch(target.toString(), { cache: 'no-store' }));
   }
 });
