@@ -55,6 +55,10 @@
 #endif
 #endif
 
+#if CONFIG_ESP_COEX_ENABLED
+#include "esp_coexist.h"
+#endif
+
 #if CONFIG_HARDWARE_CORE2
 /* SoftAP provisioning for Core2 (classic ESP32 — no USB-JTAG Improv) */
 #include "esp_wifi.h"
@@ -600,6 +604,33 @@ static size_t s_bt_tel_drop_write_bytes = 0;
 static size_t s_bt_tel_trim_write_bytes = 0;
 static size_t s_bt_tel_trim_read_bytes = 0;
 static size_t s_bt_tel_pad_silence_bytes = 0;
+static bool s_bt_coex_streaming_hint = false;
+
+static void bt_update_coex_streaming_hint(bool streaming)
+{
+#if CONFIG_ESP_COEX_ENABLED
+    if (s_bt_coex_streaming_hint == streaming) return;
+
+    esp_err_t err;
+    if (streaming) {
+        err = esp_coex_status_bit_set(ESP_COEX_ST_TYPE_BT, ESP_COEX_BT_ST_A2DP_STREAMING);
+        if (err == ESP_OK) {
+            s_bt_coex_streaming_hint = true;
+        } else {
+            ESP_LOGW(TAG, "bt: coex set streaming hint failed: %s", esp_err_to_name(err));
+        }
+    } else {
+        err = esp_coex_status_bit_clear(ESP_COEX_ST_TYPE_BT, ESP_COEX_BT_ST_A2DP_STREAMING);
+        if (err == ESP_OK) {
+            s_bt_coex_streaming_hint = false;
+        } else {
+            ESP_LOGW(TAG, "bt: coex clear streaming hint failed: %s", esp_err_to_name(err));
+        }
+    }
+#else
+    (void)streaming;
+#endif
+}
 
 static void bt_tel_snapshot_and_reset(size_t *drop_write,
                                       size_t *trim_write,
@@ -850,7 +881,7 @@ static void bt_build_sbc_pref_mcc(esp_a2d_mcc_t *mcc)
     mcc->cie.sbc_info.num_subbands = ESP_A2D_SBC_CIE_NUM_SUBBANDS_8;
     mcc->cie.sbc_info.block_len = ESP_A2D_SBC_CIE_BLOCK_LEN_16;
     mcc->cie.sbc_info.min_bitpool = 2;
-    mcc->cie.sbc_info.max_bitpool = 38;
+    mcc->cie.sbc_info.max_bitpool = 31;
 }
 
 static void bt_set_pref_codec(esp_a2d_conn_hdl_t conn_hdl)
@@ -859,7 +890,7 @@ static void bt_set_pref_codec(esp_a2d_conn_hdl_t conn_hdl)
     bt_build_sbc_pref_mcc(&pref_mcc);
     esp_err_t err = esp_a2d_source_set_pref_mcc(conn_hdl, &pref_mcc);
     if (err == ESP_OK) {
-        ESP_LOGI(TAG, "bt: preferred SBC codec set (44.1k, bitpool<=38)");
+        ESP_LOGI(TAG, "bt: preferred SBC codec set (44.1k, bitpool<=31)");
     } else {
         ESP_LOGW(TAG, "bt: preferred codec set failed: %s", esp_err_to_name(err));
     }
@@ -936,6 +967,7 @@ static void bt_a2dp_cb(esp_a2d_cb_event_t event, esp_a2d_cb_param_t *param)
             s_bt_hold_local_speaker = false;
             s_bt_resample_phase_q16 = 0;
             s_bt_a2dp_sample_rate = BT_A2DP_TARGET_SAMPLE_RATE;
+            bt_update_coex_streaming_hint(false);
             bt_set_pref_codec(param->conn_stat.conn_hdl);
             s_bt.connect_retries = 0;    /* reset — connection succeeded */
             s_bt_pending_reconnect = false;
@@ -971,6 +1003,7 @@ static void bt_a2dp_cb(esp_a2d_cb_event_t event, esp_a2d_cb_param_t *param)
             s_bt_media_prime_target_bytes = BT_PCM_START_PRIME_BYTES;
             s_bt_resample_phase_q16 = 0;
             s_bt_a2dp_sample_rate = BT_A2DP_TARGET_SAMPLE_RATE;
+            bt_update_coex_streaming_hint(false);
             bt_pcm_clear();
             ESP_LOGI(TAG, "bt: A2DP disconnected reason=%d", (int)param->conn_stat.disc_rsn);
             /* Schedule a retry on transient open/disconnect failures. */
@@ -1000,8 +1033,10 @@ static void bt_a2dp_cb(esp_a2d_cb_event_t event, esp_a2d_cb_param_t *param)
     if (event == ESP_A2D_AUDIO_STATE_EVT) {
         if (param->audio_stat.state == ESP_A2D_AUDIO_STATE_STARTED) {
             s_bt.media_started = true;
+            bt_update_coex_streaming_hint(true);
         } else {
             s_bt.media_started = false;
+            bt_update_coex_streaming_hint(false);
         }
         ESP_LOGI(TAG, "bt: A2DP audio state=%d", (int)param->audio_stat.state);
         return;
