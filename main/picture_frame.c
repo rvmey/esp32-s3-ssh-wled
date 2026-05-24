@@ -369,6 +369,7 @@ static bool nvs_read_str(const char *key, char *out, size_t out_sz);
 static esp_err_t nvs_write_str(const char *key, const char *val);
 static esp_err_t nvs_erase_key_local(const char *key);
 static inline void mp3_request_ui_refresh(void);
+static bool mp3_advance_track(int step, const char *reason);
 #if CONFIG_BT_ENABLED
 typedef struct {
     bool initialized;
@@ -2000,9 +2001,11 @@ static void mp3_player_task(void *arg)
         }
 
         if (bytes_left <= 4) {
-            s_mp3.paused = true;
-            s_mp3.position_ms = s_mp3.duration_ms;
-            mp3_request_ui_refresh();
+            if (!mp3_advance_track(1, "track ended")) {
+                s_mp3.paused = true;
+                s_mp3.position_ms = s_mp3.duration_ms;
+                mp3_request_ui_refresh();
+            }
             vTaskDelay(pdMS_TO_TICKS(100));
             continue;
         }
@@ -2192,9 +2195,11 @@ static void mp3_player_task(void *arg)
         }
 
         if (s_mp3.position_ms + frame_ms >= s_mp3.duration_ms) {
-            s_mp3.position_ms = s_mp3.duration_ms;
-            s_mp3.paused = true;
-            mp3_request_ui_refresh();
+            if (!mp3_advance_track(1, "track duration reached")) {
+                s_mp3.position_ms = s_mp3.duration_ms;
+                s_mp3.paused = true;
+                mp3_request_ui_refresh();
+            }
         } else {
             s_mp3.position_ms += frame_ms;
         }
@@ -2403,6 +2408,31 @@ static bool mp3_start_track(int folder_idx, int track_idx, bool keep_position)
              s_mp3.folder_name, s_mp3.file_name, resolved_idx + 1, folder->mp3_count);
 
     mp3_request_ui_refresh();
+    return true;
+}
+
+static bool mp3_advance_track(int step, const char *reason)
+{
+    if (!s_mp3.active || s_mp3.folder_idx < 0 || (size_t)s_mp3.folder_idx >= s_mp3_folder_count) {
+        return false;
+    }
+
+    const mp3_folder_t *folder = &s_mp3_folders[s_mp3.folder_idx];
+    if (folder->mp3_count <= 0) {
+        return false;
+    }
+
+    int next_idx = s_mp3.track_idx + step;
+    while (next_idx < 0) next_idx += folder->mp3_count;
+    while (next_idx >= folder->mp3_count) next_idx -= folder->mp3_count;
+
+    if (!mp3_start_track(s_mp3.folder_idx, next_idx, false)) {
+        return false;
+    }
+
+    if (reason && reason[0]) {
+        ESP_LOGI(TAG, "mp3: %s -> track %d/%d", reason, next_idx + 1, folder->mp3_count);
+    }
     return true;
 }
 
@@ -3300,18 +3330,10 @@ static void pf_event_handler(const char *event_name,
         }
 
     } else if (strcmp(s_trigger, "forward") == 0) {
-        if (s_mp3.active && s_mp3.folder_idx >= 0 && (size_t)s_mp3.folder_idx < s_mp3_folder_count) {
-            int next_idx = s_mp3.track_idx + 1;
-            if (next_idx >= s_mp3_folders[s_mp3.folder_idx].mp3_count) next_idx = 0;
-            mp3_start_track(s_mp3.folder_idx, next_idx, false);
-        }
+        (void)mp3_advance_track(1, "forward command");
 
     } else if (strcmp(s_trigger, "reverse") == 0) {
-        if (s_mp3.active && s_mp3.folder_idx >= 0 && (size_t)s_mp3.folder_idx < s_mp3_folder_count) {
-            int prev_idx = s_mp3.track_idx - 1;
-            if (prev_idx < 0) prev_idx = s_mp3_folders[s_mp3.folder_idx].mp3_count - 1;
-            mp3_start_track(s_mp3.folder_idx, prev_idx, false);
-        }
+        (void)mp3_advance_track(-1, "reverse command");
 
     } else if (strcmp(s_trigger, "volumeup") == 0) {
         s_mp3.volume += 5;
