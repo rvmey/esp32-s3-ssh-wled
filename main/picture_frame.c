@@ -469,11 +469,13 @@ static int bt_score_candidate(const char *name, int rssi, uint32_t cod)
 #define BT_PCM_RING_BYTES (64 * 1024)
 #define BT_PCM_LOW_WATER_BYTES  (8 * 1024)
 #define BT_PCM_HIGH_WATER_BYTES (32 * 1024)
-#define MP3_INPUT_BUF_BYTES (16 * 1024)
+#define BT_A2DP_TARGET_SAMPLE_RATE 44100
+#define MP3_INPUT_BUF_BYTES (24 * 1024)
 static uint8_t *s_bt_pcm_ring = NULL;
 static size_t s_bt_pcm_rpos = 0;
 static size_t s_bt_pcm_wpos = 0;
 static size_t s_bt_pcm_fill = 0;
+static uint32_t s_bt_resample_phase_q16 = 0;
 static portMUX_TYPE s_bt_pcm_mux = portMUX_INITIALIZER_UNLOCKED;
 
 static void bt_pcm_clear(void)
@@ -604,6 +606,74 @@ static size_t bt_pcm_write_from_decoder(const int16_t *samples,
     return written_total;
 }
 
+static size_t bt_pcm_write_resampled_44k(const int16_t *samples,
+                                         size_t sample_count,
+                                         int channels,
+                                         int sample_rate,
+                                         int volume_percent)
+{
+    if (!samples || sample_count == 0) return 0;
+    if (!s_bt.connected) return 0;
+    if (channels != 1 && channels != 2) return 0;
+    if (sample_rate <= 0) return 0;
+
+    if (sample_rate == BT_A2DP_TARGET_SAMPLE_RATE) {
+        s_bt_resample_phase_q16 = 0;
+        return bt_pcm_write_from_decoder(samples, sample_count, channels, volume_percent);
+    }
+
+    size_t src_frames = (channels == 2) ? (sample_count / 2U) : sample_count;
+    if (src_frames == 0) return 0;
+
+    uint32_t step_q16 = (uint32_t)((((uint64_t)sample_rate) << 16) /
+                                   (uint64_t)BT_A2DP_TARGET_SAMPLE_RATE);
+    if (step_q16 == 0) step_q16 = 1;
+
+    uint32_t src_pos_q16 = s_bt_resample_phase_q16;
+    uint8_t frame_bytes[512];
+    size_t out_frames = 0;
+    size_t written_total = 0;
+
+    while (src_pos_q16 < ((uint32_t)src_frames << 16)) {
+        uint32_t src_idx = src_pos_q16 >> 16;
+        if (src_idx >= src_frames) break;
+
+        int16_t l;
+        int16_t r;
+        if (channels == 2) {
+            l = bt_scale_sample(samples[src_idx * 2U], volume_percent);
+            r = bt_scale_sample(samples[src_idx * 2U + 1U], volume_percent);
+        } else {
+            l = bt_scale_sample(samples[src_idx], volume_percent);
+            r = l;
+        }
+
+        frame_bytes[(out_frames * 4U)] = (uint8_t)(l & 0xFF);
+        frame_bytes[(out_frames * 4U) + 1U] = (uint8_t)((l >> 8) & 0xFF);
+        frame_bytes[(out_frames * 4U) + 2U] = (uint8_t)(r & 0xFF);
+        frame_bytes[(out_frames * 4U) + 3U] = (uint8_t)((r >> 8) & 0xFF);
+        out_frames++;
+
+        if (out_frames >= (sizeof(frame_bytes) / 4U)) {
+            written_total += bt_pcm_write_bytes(frame_bytes, out_frames * 4U);
+            out_frames = 0;
+        }
+
+        src_pos_q16 += step_q16;
+    }
+
+    if (out_frames > 0) {
+        written_total += bt_pcm_write_bytes(frame_bytes, out_frames * 4U);
+    }
+
+    if (src_pos_q16 >= ((uint32_t)src_frames << 16)) {
+        src_pos_q16 -= ((uint32_t)src_frames << 16);
+    }
+    s_bt_resample_phase_q16 = src_pos_q16;
+
+    return written_total;
+}
+
 #if CONFIG_BT_A2DP_ENABLE
 static void bt_build_sbc_pref_mcc(esp_a2d_mcc_t *mcc)
 {
@@ -674,6 +744,7 @@ static void bt_a2dp_cb(esp_a2d_cb_event_t event, esp_a2d_cb_param_t *param)
             s_bt.connected = true;
             s_bt.connecting = false;
             s_bt.media_started = false;
+            s_bt_resample_phase_q16 = 0;
             bt_set_pref_codec(param->conn_stat.conn_hdl);
             s_bt.connect_retries = 0;    /* reset — connection succeeded */
             s_bt_pending_reconnect = false;
@@ -707,6 +778,7 @@ static void bt_a2dp_cb(esp_a2d_cb_event_t event, esp_a2d_cb_param_t *param)
             s_bt.connecting = false;
             s_bt.connected = false;
             s_bt.media_started = false;
+            s_bt_resample_phase_q16 = 0;
             bt_pcm_clear();
             ESP_LOGI(TAG, "bt: A2DP disconnected");
             /* Schedule a retry on page-timeout / transient failure (up to 3 attempts) */
@@ -1453,7 +1525,7 @@ static void mp3_player_task(void *arg)
             }
         }
 
-        if (bytes_left < (MP3_INPUT_BUF_BYTES / 4)) {
+        if (bytes_left < (MP3_INPUT_BUF_BYTES / 2)) {
             if (bytes_left > 0 && read_ptr != inbuf) {
                 memmove(inbuf, read_ptr, (size_t)bytes_left);
             }
@@ -1508,17 +1580,20 @@ static void mp3_player_task(void *arg)
 #if CONFIG_HARDWARE_CORE2
     #if CONFIG_BT_ENABLED && CONFIG_BT_A2DP_ENABLE
         if (s_bt.connected) {
-            size_t bt_written = bt_pcm_write_from_decoder(pcm,
-                                                          (size_t)fi.outputSamps,
-                                                          fi.nChans,
-                                                          s_mp3.volume);
+            size_t bt_written = bt_pcm_write_resampled_44k(pcm,
+                                                           (size_t)fi.outputSamps,
+                                                           fi.nChans,
+                                                           fi.samprate,
+                                                           s_mp3.volume);
             size_t frame_count = (fi.nChans == 2)
                                      ? ((size_t)fi.outputSamps / 2U)
                                      : (size_t)fi.outputSamps;
-            size_t bt_expected = frame_count * 4U;
+            size_t bt_expected = (frame_count * 4U * BT_A2DP_TARGET_SAMPLE_RATE) /
+                                 (size_t)fi.samprate;
+            if (bt_expected < 4U) bt_expected = 4U;
             if (bt_written < bt_expected) {
                 /* Back off when ring is full so BT stack can drain encoder output. */
-                vTaskDelay(pdMS_TO_TICKS(8));
+                vTaskDelay(pdMS_TO_TICKS(10));
             }
         } else {
             /* Re-enable speaker path if BT is not connected. */
@@ -1549,7 +1624,7 @@ static void mp3_player_task(void *arg)
         }
 
         TickType_t now = xTaskGetTickCount();
-        if ((now - s_mp3_last_ui_tick) >= pdMS_TO_TICKS(1500)) {
+        if ((now - s_mp3_last_ui_tick) >= pdMS_TO_TICKS(3000)) {
             s_mp3_last_ui_tick = now;
             mp3_render_now_playing();
         }
@@ -1659,6 +1734,9 @@ static bool mp3_start_track(int folder_idx, int track_idx, bool keep_position)
     s_mp3.position_ms = keep_position ? s_mp3.position_ms : 0;
     s_mp3.last_tick = xTaskGetTickCount();
     s_mp3.play_token++;
+#if CONFIG_BT_ENABLED && CONFIG_BT_A2DP_ENABLE
+    s_bt_resample_phase_q16 = 0;
+#endif
     strncpy(s_mp3.folder_name, folder->trigger, sizeof(s_mp3.folder_name) - 1);
     s_mp3.folder_name[sizeof(s_mp3.folder_name) - 1] = '\0';
     strncpy(s_mp3.file_name, file_name, sizeof(s_mp3.file_name) - 1);
