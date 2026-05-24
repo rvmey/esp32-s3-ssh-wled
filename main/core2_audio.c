@@ -119,9 +119,9 @@ static void core2_audio_start_writer_task(void)
     xTaskCreate(core2_audio_writer_task, "core2_i2s", 4096, NULL, 6, &s_writer_task);
 }
 
-void core2_audio_init(void)
+esp_err_t core2_audio_init(void)
 {
-    if (s_tx_chan) return;
+    if (s_tx_chan) return ESP_OK;
 
     if (!s_ring_mutex) {
         s_ring_mutex = xSemaphoreCreateMutexStatic(&s_ring_mutex_storage);
@@ -135,7 +135,7 @@ void core2_audio_init(void)
         }
         if (!s_ring_buf) {
             ESP_LOGE(TAG, "Failed to allocate speaker PCM ring buffer");
-            return;
+            return ESP_ERR_NO_MEM;
         }
     }
 
@@ -144,7 +144,11 @@ void core2_audio_init(void)
     chan_cfg.dma_desc_num = CORE2_I2S_DMA_DESC_NUM;
     chan_cfg.dma_frame_num = CORE2_I2S_CHUNK_FRAMES;
 
-    ESP_ERROR_CHECK(i2s_new_channel(&chan_cfg, &s_tx_chan, NULL));
+    esp_err_t err = i2s_new_channel(&chan_cfg, &s_tx_chan, NULL);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "i2s_new_channel failed: %s", esp_err_to_name(err));
+        return err;
+    }
 
     i2s_std_config_t std_cfg = {
         .clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(s_sample_rate_hz),
@@ -164,8 +168,20 @@ void core2_audio_init(void)
         },
     };
 
-    ESP_ERROR_CHECK(i2s_channel_init_std_mode(s_tx_chan, &std_cfg));
-    ESP_ERROR_CHECK(i2s_channel_enable(s_tx_chan));
+    err = i2s_channel_init_std_mode(s_tx_chan, &std_cfg);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "i2s_channel_init_std_mode failed: %s", esp_err_to_name(err));
+        i2s_del_channel(s_tx_chan);
+        s_tx_chan = NULL;
+        return err;
+    }
+    err = i2s_channel_enable(s_tx_chan);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "i2s_channel_enable failed: %s", esp_err_to_name(err));
+        i2s_del_channel(s_tx_chan);
+        s_tx_chan = NULL;
+        return err;
+    }
     core2_audio_start_writer_task();
 
     ESP_LOGI(TAG, "I2S TX ready on BCK=%d WS=%d DOUT=%d @ %lu Hz",
@@ -174,6 +190,7 @@ void core2_audio_init(void)
              CORE2_I2S_DOUT_GPIO,
              (unsigned long)s_sample_rate_hz);
     ESP_LOGI(TAG, "speaker pcm ring=%lu bytes", (unsigned long)s_ring_capacity);
+    return ESP_OK;
 }
 
 void core2_audio_deinit(void)

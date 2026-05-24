@@ -608,6 +608,7 @@ static bool s_bt_coex_streaming_hint = false;
 #if CONFIG_ESP_COEX_ENABLED
 static esp_coex_prefer_t s_bt_coex_preference = ESP_COEX_PREFER_BALANCE;
 #endif
+static TickType_t s_bt_speaker_resume_after = 0;
 
 static void bt_update_coex_preference(bool streaming)
 {
@@ -1031,6 +1032,7 @@ static void bt_a2dp_cb(esp_a2d_cb_event_t event, esp_a2d_cb_param_t *param)
             bt_update_coex_streaming_hint(false);
             bt_pcm_clear();
             ESP_LOGI(TAG, "bt: A2DP disconnected reason=%d", (int)param->conn_stat.disc_rsn);
+            s_bt_speaker_resume_after = xTaskGetTickCount() + pdMS_TO_TICKS(3000);
             /* Schedule a retry on transient open/disconnect failures. */
             bool scheduled_retry = false;
             bool allow_runtime_retry = s_bt.pairing_ui_active || s_mp3.active;
@@ -2070,8 +2072,22 @@ static void mp3_player_task(void *arg)
             speaker_path_ready = false;
             speaker_last_rate = 0;
             vTaskDelay(pdMS_TO_TICKS(8));
+        } else if (s_bt_speaker_resume_after != 0 &&
+                   (int32_t)(xTaskGetTickCount() - s_bt_speaker_resume_after) < 0) {
+            speaker_path_ready = false;
+            speaker_last_rate = 0;
+            vTaskDelay(pdMS_TO_TICKS(8));
         } else {
-            core2_audio_init();
+            esp_err_t speaker_err = core2_audio_init();
+            if (speaker_err != ESP_OK) {
+                ESP_LOGW(TAG, "bt: speaker init deferred: %s", esp_err_to_name(speaker_err));
+                speaker_path_ready = false;
+                speaker_last_rate = 0;
+                s_bt_speaker_resume_after = xTaskGetTickCount() + pdMS_TO_TICKS(3000);
+                vTaskDelay(pdMS_TO_TICKS(20));
+                continue;
+            }
+            s_bt_speaker_resume_after = 0;
             if (!speaker_path_ready) {
                 speaker_path_ready = true;
                 speaker_last_rate = 0;
@@ -2202,7 +2218,7 @@ static void mp3_ensure_task(void)
 {
     if (s_mp3_task) return;
 #if CONFIG_HARDWARE_CORE2
-    core2_audio_init();
+    (void)core2_audio_init();
 #endif
     xTaskCreate(mp3_player_task, "mp3_play", 6144, NULL, 5, &s_mp3_task);
 }
