@@ -1694,26 +1694,24 @@ static void mp3_player_task(void *arg)
 #if CONFIG_HARDWARE_CORE2
     #if CONFIG_BT_ENABLED && CONFIG_BT_A2DP_ENABLE
         if (s_bt.connected) {
-            size_t bt_written = bt_pcm_write_resampled_44k(pcm,
-                                                           (size_t)fi.outputSamps,
-                                                           fi.nChans,
-                                                           fi.samprate,
-                                                           s_mp3.volume);
+            /* Pace the decoder to real-time: stall before writing if the ring
+             * is at or above the high-water mark, giving the BT stack time to
+             * drain it.  This prevents the L2CAP congestion errors that arise
+             * when the ring fills to capacity and data is pushed faster than
+             * the remote device can consume it. */
+            while (bt_pcm_fill_bytes() >= BT_PCM_HIGH_WATER_BYTES &&
+                   s_mp3.active && !s_mp3.paused && s_bt.connected) {
+                vTaskDelay(pdMS_TO_TICKS(5));
+            }
+            bt_pcm_write_resampled_44k(pcm,
+                                       (size_t)fi.outputSamps,
+                                       fi.nChans,
+                                       fi.samprate,
+                                       s_mp3.volume);
             speaker_path_ready = false;
             speaker_last_rate = 0;
-            size_t frame_count = (fi.nChans == 2)
-                                     ? ((size_t)fi.outputSamps / 2U)
-                                     : (size_t)fi.outputSamps;
-            uint32_t out_rate = s_bt_a2dp_sample_rate ? s_bt_a2dp_sample_rate : BT_A2DP_TARGET_SAMPLE_RATE;
-            size_t bt_expected = (frame_count * 4U * (size_t)out_rate) /
-                                 (size_t)fi.samprate;
-            if (bt_expected < 4U) bt_expected = 4U;
             size_t bt_fill = bt_pcm_fill_bytes();
             if (bt_fill > tel_bt_fill_peak) tel_bt_fill_peak = bt_fill;
-            if (bt_written < bt_expected) {
-                /* Back off when ring is full so BT stack can drain encoder output. */
-                vTaskDelay(pdMS_TO_TICKS(10));
-            }
         } else if (s_bt_hold_local_speaker || s_bt.connecting || s_bt.discovering) {
             /* Keep local I2S path down while BT stack is starting/pairing. */
             speaker_path_ready = false;
