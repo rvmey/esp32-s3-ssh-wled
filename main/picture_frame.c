@@ -247,6 +247,7 @@ static void pf_softap_provision(void)
 
 
 static const char *TAG = "pf";
+extern const char g_firmware_version[];
 
 #define MP3_ROOT_PATH        "/sdcard"
 #define MP3_MAX_FOLDERS      32
@@ -399,9 +400,11 @@ static bool      s_bt_reconnect_attempted  = false;
 static volatile bool s_bt_pending_reconnect = false;
 static TickType_t    s_bt_reconnect_after   = 0;
 static TickType_t    s_bt_connect_started_at = 0;
+static bool          s_bt_recent_acl_drop = false;
 
 #define BT_CONNECT_RETRY_MAX          5
 #define BT_CONNECT_TIMEOUT_MS          8000U
+#define BT_RECONNECT_DELAY_HARD_DROP_MS 1500U
 
 static const uint16_t s_bt_retry_delay_ms[BT_CONNECT_RETRY_MAX] = {
     900, 1800, 3000, 4500, 6000
@@ -546,13 +549,16 @@ static int bt_score_candidate(const char *name, int rssi, uint32_t cod)
 }
 
 #if CONFIG_BT_A2DP_ENABLE
-static void bt_schedule_reconnect(const char *reason)
+static void bt_schedule_reconnect(const char *reason, uint32_t min_delay_ms)
 {
     if (!s_bt.has_bda || s_bt.discovering || s_bt_pending_reconnect) return;
     if (s_bt.connect_retries >= BT_CONNECT_RETRY_MAX) return;
 
     s_bt.connect_retries++;
     uint32_t delay_ms = s_bt_retry_delay_ms[s_bt.connect_retries - 1];
+    if (delay_ms < min_delay_ms) {
+        delay_ms = min_delay_ms;
+    }
     s_bt_reconnect_after = xTaskGetTickCount() + pdMS_TO_TICKS(delay_ms);
     s_bt_pending_reconnect = true;
 
@@ -598,7 +604,7 @@ static bool bt_start_connect_now(const char *reason)
                  "bt: connect call failed (%s): %s",
                  reason ? reason : "request",
                  esp_err_to_name(err));
-        bt_schedule_reconnect("connect call failed");
+        bt_schedule_reconnect("connect call failed", 0);
         return false;
     }
     return true;
@@ -1082,6 +1088,7 @@ static void bt_a2dp_cb(esp_a2d_cb_event_t event, esp_a2d_cb_param_t *param)
             bt_update_coex_streaming_hint(false);
             bt_pcm_clear();
             ESP_LOGI(TAG, "bt: A2DP disconnected reason=%d", (int)param->conn_stat.disc_rsn);
+            s_bt_recent_acl_drop = ((int)param->conn_stat.disc_rsn == 0x13);
             if (s_mp3.active && !s_mp3.paused) {
                 s_mp3.paused = true;
                 s_mp3_resume_on_bt_reconnect = true;
@@ -1095,7 +1102,8 @@ static void bt_a2dp_cb(esp_a2d_cb_event_t event, esp_a2d_cb_param_t *param)
             bool allow_runtime_retry = s_bt.pairing_ui_active || s_mp3.active;
             if (s_bt.has_bda && !s_bt.discovering && allow_runtime_retry &&
                 s_bt.connect_retries < BT_CONNECT_RETRY_MAX && !s_bt_pending_reconnect) {
-                bt_schedule_reconnect("A2DP disconnected");
+                uint32_t min_delay_ms = s_bt_recent_acl_drop ? BT_RECONNECT_DELAY_HARD_DROP_MS : 0;
+                bt_schedule_reconnect("A2DP disconnected", min_delay_ms);
                 scheduled_retry = true;
             } else {
                 s_bt.connect_retries = 0;
@@ -1117,6 +1125,7 @@ static void bt_a2dp_cb(esp_a2d_cb_event_t event, esp_a2d_cb_param_t *param)
     if (event == ESP_A2D_AUDIO_STATE_EVT) {
         if (param->audio_stat.state == ESP_A2D_AUDIO_STATE_STARTED) {
             s_bt.media_started = true;
+            s_bt_recent_acl_drop = false;
             bt_update_coex_streaming_hint(true);
         } else {
             s_bt.media_started = false;
@@ -1578,7 +1587,7 @@ static void bt_try_reconnect_on_boot(void)
     esp_err_t err = esp_a2d_source_connect(s_bt.bda);
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "bt: reconnect on boot failed: %s", esp_err_to_name(err));
-        bt_schedule_reconnect("boot reconnect");
+        bt_schedule_reconnect("boot reconnect", 0);
         s_bt_hold_local_speaker = false;
         return;
     }
@@ -3566,6 +3575,7 @@ void picture_frame_run(void)
     /* Initialise display first — screen_init() creates s_draw_mutex which all
      * screen_draw_*() helpers require.  Must happen before any screen call. */
     screen_init();
+    ESP_LOGI(TAG, "firmware version %s", g_firmware_version);
     mp3_ensure_task();
 
     /* ── WiFi ────────────────────────────────────────────────────────────── */
@@ -3889,7 +3899,7 @@ void picture_frame_run(void)
                 s_bt.connecting = false;
                 s_bt_connect_started_at = 0;
                 ESP_LOGW(TAG, "bt: connect timeout after %u ms", (unsigned)BT_CONNECT_TIMEOUT_MS);
-                bt_schedule_reconnect("connect timeout");
+                bt_schedule_reconnect("connect timeout", BT_RECONNECT_DELAY_HARD_DROP_MS);
             }
 #endif
 
