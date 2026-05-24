@@ -2892,7 +2892,15 @@ static void pf_event_handler(const char *event_name,
             s_mp3.paused = false;
             s_mp3.last_tick = xTaskGetTickCount();
 #if CONFIG_BT_ENABLED && CONFIG_BT_A2DP_ENABLE
-            bt_media_start_if_needed();
+            if (s_bt.connected) {
+                bt_pcm_clear();
+                s_bt_media_prime_pending = true;
+                s_bt_media_prime_deadline = xTaskGetTickCount() +
+                                            pdMS_TO_TICKS(BT_PCM_START_PRIME_TIMEOUT_MS);
+            } else {
+                s_bt_media_prime_pending = false;
+                s_bt_media_prime_deadline = 0;
+            }
 #endif
             mp3_request_ui_refresh();
         } else if (s_mp3_folder_count > 0) {
@@ -2905,6 +2913,8 @@ static void pf_event_handler(const char *event_name,
         if (s_mp3.active) {
             s_mp3.paused = true;
 #if CONFIG_BT_ENABLED && CONFIG_BT_A2DP_ENABLE
+            s_bt_media_prime_pending = false;
+            s_bt_media_prime_deadline = 0;
             bt_media_stop_if_needed();
 #endif
             mp3_request_ui_refresh();
