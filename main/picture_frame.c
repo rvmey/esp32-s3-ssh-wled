@@ -1080,6 +1080,10 @@ static bool bt_init_if_needed(void)
 
 static void bt_cmd_pair_start(void)
 {
+#if CONFIG_HARDWARE_CORE2
+    /* Free local speaker-task and I2S resources before Bluedroid startup. */
+    core2_audio_deinit();
+#endif
     if (!bt_init_if_needed()) {
         screen_draw_text("Bluetooth init\nfailed");
         return;
@@ -1700,8 +1704,8 @@ static void mp3_player_task(void *arg)
                 vTaskDelay(pdMS_TO_TICKS(10));
             }
         } else {
+            core2_audio_init();
             if (!speaker_path_ready) {
-                core2_audio_init();
                 speaker_path_ready = true;
                 speaker_last_rate = 0;
             }
