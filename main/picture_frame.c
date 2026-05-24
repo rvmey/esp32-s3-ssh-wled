@@ -357,6 +357,7 @@ static mp3_state_t   s_mp3 = {
     .position_ms = 0,
     .last_tick = 0,
 };
+static volatile bool s_mp3_resume_on_bt_reconnect = false;
 static TickType_t s_mp3_last_ui_tick __attribute__((unused)) = 0;
 static volatile bool s_mp3_ui_pending = false;
 static TaskHandle_t s_mp3_task = NULL;
@@ -366,6 +367,7 @@ static bool s_sd_mount_warned __attribute__((unused)) = false;
 static bool nvs_read_str(const char *key, char *out, size_t out_sz);
 static esp_err_t nvs_write_str(const char *key, const char *val);
 static esp_err_t nvs_erase_key_local(const char *key);
+static inline void mp3_request_ui_refresh(void);
 #if CONFIG_BT_ENABLED
 typedef struct {
     bool initialized;
@@ -1016,6 +1018,25 @@ static void bt_a2dp_cb(esp_a2d_cb_event_t event, esp_a2d_cb_param_t *param)
                 screen_draw_text(msg);
                 s_bt.pairing_ui_active = false;
             }
+            if (s_mp3_resume_on_bt_reconnect && s_mp3.active) {
+                s_mp3.paused = false;
+                s_mp3.last_tick = xTaskGetTickCount();
+                size_t bt_fill = bt_pcm_fill_bytes();
+                if (bt_fill >= BT_PCM_RESUME_PRIME_BYTES) {
+                    bt_media_start_if_needed();
+                    s_bt_media_prime_pending = false;
+                    s_bt_media_prime_deadline = 0;
+                    s_bt_media_prime_target_bytes = BT_PCM_START_PRIME_BYTES;
+                } else {
+                    s_bt_media_prime_pending = true;
+                    s_bt_media_prime_target_bytes = BT_PCM_RESUME_PRIME_BYTES;
+                    s_bt_media_prime_deadline = xTaskGetTickCount() +
+                                                pdMS_TO_TICKS(BT_PCM_RESUME_PRIME_TIMEOUT_MS);
+                }
+                s_mp3_resume_on_bt_reconnect = false;
+                ESP_LOGI(TAG, "bt: resumed MP3 playback after reconnect");
+                mp3_request_ui_refresh();
+            }
             bt_persist_current_peer();
         } else if (st == ESP_A2D_CONNECTION_STATE_CONNECTING) {
             s_bt.connecting = true;
@@ -1035,6 +1056,13 @@ static void bt_a2dp_cb(esp_a2d_cb_event_t event, esp_a2d_cb_param_t *param)
             bt_update_coex_streaming_hint(false);
             bt_pcm_clear();
             ESP_LOGI(TAG, "bt: A2DP disconnected reason=%d", (int)param->conn_stat.disc_rsn);
+            if (s_mp3.active && !s_mp3.paused) {
+                s_mp3.paused = true;
+                s_mp3_resume_on_bt_reconnect = true;
+                ESP_LOGI(TAG, "bt: pausing MP3 playback at %lu ms awaiting reconnect",
+                         (unsigned long)s_mp3.position_ms);
+                mp3_request_ui_refresh();
+            }
             s_bt_speaker_resume_after = xTaskGetTickCount() + pdMS_TO_TICKS(3000);
             /* Schedule a retry on transient open/disconnect failures. */
             bool scheduled_retry = false;
@@ -1444,6 +1472,7 @@ static void bt_cmd_disconnect(void)
     s_bt_pending_reconnect = false;
     s_bt_connect_started_at = 0;
     s_bt_hold_local_speaker = false;
+    s_mp3_resume_on_bt_reconnect = false;
 #endif
     s_bt.has_device = false;
     s_bt.has_bda = false;
@@ -2292,6 +2321,7 @@ static bool mp3_start_track(int folder_idx, int track_idx, bool keep_position)
 
     s_mp3.active = true;
     s_mp3.paused = false;
+    s_mp3_resume_on_bt_reconnect = false;
     s_mp3.folder_idx = folder_idx;
     s_mp3.track_idx = resolved_idx;
     int path_n = snprintf(s_mp3.file_path, sizeof(s_mp3.file_path), "%s/%s",
@@ -3182,6 +3212,7 @@ static void pf_event_handler(const char *event_name,
     } else if (strcmp(s_trigger, "play") == 0) {
         if (s_mp3.active) {
             s_mp3.paused = false;
+            s_mp3_resume_on_bt_reconnect = false;
             s_mp3.last_tick = xTaskGetTickCount();
 #if CONFIG_BT_ENABLED && CONFIG_BT_A2DP_ENABLE
             if (s_bt.connected) {
@@ -3213,6 +3244,7 @@ static void pf_event_handler(const char *event_name,
     } else if (strcmp(s_trigger, "stop") == 0) {
         if (s_mp3.active) {
             s_mp3.paused = true;
+            s_mp3_resume_on_bt_reconnect = false;
 #if CONFIG_BT_ENABLED && CONFIG_BT_A2DP_ENABLE
             s_bt_media_prime_pending = false;
             s_bt_media_prime_deadline = 0;
