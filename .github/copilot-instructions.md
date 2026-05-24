@@ -45,19 +45,36 @@ Whenever **any firmware source file is modified** (files under `main/`, `CMakeLi
    - `docs/firmware/esp32_picture_frame.bin` — Picture Frame variant
    - `docs/firmware/bootloader.bin` and `docs/firmware/partition-table.bin` — shared, taken from the last built variant
 
-3. **Stage and commit everything**, including only the binaries for the variant(s) that were built. For example, if only the DevKitC variant was built:
+3. **Stage, commit, and push everything**, including only the binaries for the variant(s) that were built. Include the version in the commit message. For example, if only the DevKitC variant was built:
    ```powershell
    git add main/main.c main/improv_wifi.c docs/manifest-devkitc.json docs/firmware/esp32_ssh_devkitc.bin docs/firmware/bootloader.bin docs/firmware/partition-table.bin
-   git commit -m "<short description of change>"
+   git commit -m "Bump DevKitC firmware version to x.y.z"
    git push
    ```
    If only the JC3248W535 variant was built:
    ```powershell
    git add main/main.c main/improv_wifi.c docs/manifest-jc3248w535.json docs/firmware/esp32_ssh_screen.bin docs/firmware/bootloader.bin docs/firmware/partition-table.bin
-   git commit -m "<short description of change>"
+   git commit -m "Bump JC3248W535 firmware version to x.y.z"
    git push
    ```
    Only include `docs/manifest-*.json` files for the variant(s) whose version was bumped.
+
+4. **Update flasher-page pinning to the new version to avoid cache issues.**
+   For any variant that uses a stable installer alias (for example `manifest-core2.json`), also update all pinning locations so browsers and stale service workers cannot serve an old release:
+
+   - `docs/manifest-<variant>.json`:
+     - Set `"version"` to the new `x.y.z`.
+     - Point firmware `parts[].path` to the new versioned binary (for example `firmware/esp32_core2_picture_frame-x.y.z.bin`).
+   - Create/update the pinned manifest file `docs/manifest-<variant>-x.y.z.json` with the same version and binary path.
+   - `docs/index.html`:
+     - Update `fixedManifestMap` to point `manifest-<variant>.json` to `manifest-<variant>-x.y.z.json`.
+     - Update `fixedVersionMap` for `manifest-<variant>.json` to `x.y.z`.
+     - Keep manifest fetches using `{ cache: 'no-store' }`.
+   - `docs/sw.js`:
+     - Update rewrite targets/comments to the new pinned manifest and versioned firmware binary.
+     - Keep rewritten fetches using `{ cache: 'no-store' }`.
+
+   This step is required whenever installer-facing firmware for that variant changes.
 
 ## Project structure notes
 
