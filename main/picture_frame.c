@@ -605,6 +605,27 @@ static size_t s_bt_tel_trim_write_bytes = 0;
 static size_t s_bt_tel_trim_read_bytes = 0;
 static size_t s_bt_tel_pad_silence_bytes = 0;
 static bool s_bt_coex_streaming_hint = false;
+#if CONFIG_ESP_COEX_ENABLED
+static esp_coex_prefer_t s_bt_coex_preference = ESP_COEX_PREFER_BALANCE;
+#endif
+
+static void bt_update_coex_preference(bool streaming)
+{
+#if CONFIG_ESP_COEX_ENABLED
+    esp_coex_prefer_t target = streaming ? ESP_COEX_PREFER_BT : ESP_COEX_PREFER_BALANCE;
+    if (s_bt_coex_preference == target) return;
+
+    esp_err_t err = esp_coex_preference_set(target);
+    if (err == ESP_OK) {
+        s_bt_coex_preference = target;
+        ESP_LOGI(TAG, "bt: coex prefer=%s", streaming ? "bt" : "balance");
+    } else {
+        ESP_LOGW(TAG, "bt: coex preference set failed: %s", esp_err_to_name(err));
+    }
+#else
+    (void)streaming;
+#endif
+}
 
 static void bt_update_coex_streaming_hint(bool streaming)
 {
@@ -617,6 +638,7 @@ static void bt_update_coex_streaming_hint(bool streaming)
         if (err == ESP_OK) {
             s_bt_coex_streaming_hint = true;
             ESP_LOGI(TAG, "bt: coex hint set: A2DP streaming");
+            bt_update_coex_preference(true);
         } else {
             ESP_LOGW(TAG, "bt: coex set streaming hint failed: %s", esp_err_to_name(err));
         }
@@ -625,6 +647,7 @@ static void bt_update_coex_streaming_hint(bool streaming)
         if (err == ESP_OK) {
             s_bt_coex_streaming_hint = false;
             ESP_LOGI(TAG, "bt: coex hint cleared: A2DP streaming");
+            bt_update_coex_preference(false);
         } else {
             ESP_LOGW(TAG, "bt: coex clear streaming hint failed: %s", esp_err_to_name(err));
         }
