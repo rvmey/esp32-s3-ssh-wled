@@ -570,12 +570,10 @@ static void bt_schedule_reconnect(const char *reason, uint32_t min_delay_ms)
              reason ? reason : "retry");
 
     if (s_bt.pairing_ui_active) {
-        char msg[96];
-        snprintf(msg, sizeof(msg),
-                 "Bluetooth pairing\nretry %d/%d...",
+        ESP_LOGI(TAG,
+                 "bt: pairing retry status %d/%d",
                  s_bt.connect_retries,
                  BT_CONNECT_RETRY_MAX);
-        screen_draw_text(msg);
     }
 }
 
@@ -586,7 +584,7 @@ static bool bt_start_connect_now(const char *reason)
     }
 
     if (s_bt.pairing_ui_active) {
-        screen_draw_text("Bluetooth pairing\nconnecting...");
+        ESP_LOGI(TAG, "bt: pairing connecting...");
     }
 
     ESP_LOGI(TAG,
@@ -1042,12 +1040,10 @@ static void bt_a2dp_cb(esp_a2d_cb_event_t event, esp_a2d_cb_param_t *param)
             ESP_LOGI(TAG, "bt: A2DP connected to %s", s_bt.selected_bda[0] ? s_bt.selected_bda : connected_bda);
 
             if (s_bt.pairing_ui_active) {
-                char msg[192];
-                snprintf(msg, sizeof(msg),
-                         "Bluetooth paired:\n%s\n%s",
+                ESP_LOGI(TAG,
+                         "bt: pairing complete name=%s bda=%s",
                          s_bt.selected_name[0] ? s_bt.selected_name : "(unknown)",
                          s_bt.selected_bda[0] ? s_bt.selected_bda : "");
-                screen_draw_text(msg);
                 s_bt.pairing_ui_active = false;
             }
             if (s_mp3_resume_on_bt_reconnect && s_mp3.active) {
@@ -1111,7 +1107,7 @@ static void bt_a2dp_cb(esp_a2d_cb_event_t event, esp_a2d_cb_param_t *param)
             if (s_bt.pairing_ui_active) {
                 if (scheduled_retry) {
                 } else {
-                    screen_draw_text("Bluetooth pairing\nfailed");
+                    ESP_LOGW(TAG, "bt: pairing failed");
                     s_bt.pairing_ui_active = false;
                     s_bt_hold_local_speaker = false;
                 }
@@ -1198,13 +1194,13 @@ static void bt_gap_cb(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t *param)
                 s_bt.connect_after_discovery = false;
                 if (!bt_start_connect_now("scan complete")) {
                     if (s_bt.pairing_ui_active && !s_bt_pending_reconnect) {
-                        screen_draw_text("Bluetooth pairing\nconnect failed");
+                        ESP_LOGW(TAG, "bt: pairing connect failed");
                         s_bt.pairing_ui_active = false;
                         s_bt_hold_local_speaker = false;
                     }
                 }
             } else if (s_bt.pairing_ui_active && !s_bt.has_bda) {
-                screen_draw_text("Bluetooth pairing\nno audio device\nfound");
+                ESP_LOGW(TAG, "bt: pairing no audio device found");
                 s_bt.pairing_ui_active = false;
                 s_bt_hold_local_speaker = false;
             }
