@@ -498,6 +498,8 @@ static int bt_score_candidate(const char *name, int rssi, uint32_t cod)
 #define BT_PCM_TARGET_FILL_BYTES (16 * 1024)
 #define BT_PCM_START_PRIME_BYTES (24 * 1024)
 #define BT_PCM_START_PRIME_TIMEOUT_MS 1500
+#define BT_PCM_RESUME_PRIME_BYTES (8 * 1024)
+#define BT_PCM_RESUME_PRIME_TIMEOUT_MS 400
 #define BT_A2DP_TARGET_SAMPLE_RATE 44100
 #define MP3_INPUT_BUF_BYTES (32 * 1024)
 static uint8_t *s_bt_pcm_ring = NULL;
@@ -508,6 +510,7 @@ static uint32_t s_bt_resample_phase_q16 = 0;
 static uint32_t s_bt_a2dp_sample_rate = BT_A2DP_TARGET_SAMPLE_RATE;
 static volatile bool s_bt_media_prime_pending = false;
 static TickType_t s_bt_media_prime_deadline = 0;
+static size_t s_bt_media_prime_target_bytes = BT_PCM_START_PRIME_BYTES;
 static portMUX_TYPE s_bt_pcm_mux = portMUX_INITIALIZER_UNLOCKED;
 
 static void bt_pcm_clear(void)
@@ -783,6 +786,7 @@ static void bt_a2dp_cb(esp_a2d_cb_event_t event, esp_a2d_cb_param_t *param)
             s_bt.media_started = false;
             s_bt_media_prime_pending = false;
             s_bt_media_prime_deadline = 0;
+            s_bt_media_prime_target_bytes = BT_PCM_START_PRIME_BYTES;
             s_bt_hold_local_speaker = false;
             s_bt_resample_phase_q16 = 0;
             s_bt_a2dp_sample_rate = BT_A2DP_TARGET_SAMPLE_RATE;
@@ -821,6 +825,7 @@ static void bt_a2dp_cb(esp_a2d_cb_event_t event, esp_a2d_cb_param_t *param)
             s_bt.media_started = false;
             s_bt_media_prime_pending = false;
             s_bt_media_prime_deadline = 0;
+            s_bt_media_prime_target_bytes = BT_PCM_START_PRIME_BYTES;
             s_bt_resample_phase_q16 = 0;
             s_bt_a2dp_sample_rate = BT_A2DP_TARGET_SAMPLE_RATE;
             bt_pcm_clear();
@@ -1653,6 +1658,7 @@ static void mp3_player_task(void *arg)
 #if CONFIG_BT_ENABLED && CONFIG_BT_A2DP_ENABLE
             s_bt_media_prime_pending = false;
             s_bt_media_prime_deadline = 0;
+            s_bt_media_prime_target_bytes = BT_PCM_START_PRIME_BYTES;
 #endif
 
             tel_window_start_us = esp_timer_get_time();
@@ -1770,7 +1776,7 @@ static void mp3_player_task(void *arg)
     #if CONFIG_BT_ENABLED && CONFIG_BT_A2DP_ENABLE
         if (s_bt.connected) {
             bool prime_pending = (s_bt_media_prime_pending && !s_bt.media_started);
-            size_t stall_limit = prime_pending ? BT_PCM_HIGH_WATER_BYTES : BT_PCM_TARGET_FILL_BYTES;
+            size_t stall_limit = prime_pending ? s_bt_media_prime_target_bytes : BT_PCM_TARGET_FILL_BYTES;
             /* Pace the decoder to real-time: stall before writing if the ring
              * is at or above the target fill level, giving the BT stack time
              * to drain ahead of the next frame.  Keeping a larger safety
@@ -1791,11 +1797,12 @@ static void mp3_player_task(void *arg)
             if (bt_fill > tel_bt_fill_peak) tel_bt_fill_peak = bt_fill;
             if (prime_pending) {
                 TickType_t now = xTaskGetTickCount();
-                if (bt_fill >= BT_PCM_START_PRIME_BYTES ||
+                if (bt_fill >= s_bt_media_prime_target_bytes ||
                     (s_bt_media_prime_deadline != 0 && now >= s_bt_media_prime_deadline)) {
                     bt_media_start_if_needed();
                     s_bt_media_prime_pending = false;
                     s_bt_media_prime_deadline = 0;
+                    s_bt_media_prime_target_bytes = BT_PCM_START_PRIME_BYTES;
                     ESP_LOGI(TAG, "bt: media start after prime fill=%u",
                              (unsigned int)bt_fill);
                 }
@@ -2020,11 +2027,13 @@ static bool mp3_start_track(int folder_idx, int track_idx, bool keep_position)
     if (s_bt.connected) {
         bt_pcm_clear();
         s_bt_media_prime_pending = true;
+        s_bt_media_prime_target_bytes = BT_PCM_START_PRIME_BYTES;
         s_bt_media_prime_deadline = xTaskGetTickCount() +
                                     pdMS_TO_TICKS(BT_PCM_START_PRIME_TIMEOUT_MS);
     } else {
         s_bt_media_prime_pending = false;
         s_bt_media_prime_deadline = 0;
+        s_bt_media_prime_target_bytes = BT_PCM_START_PRIME_BYTES;
     }
 #endif
     strncpy(s_mp3.folder_name, folder->trigger, sizeof(s_mp3.folder_name) - 1);
@@ -2893,13 +2902,22 @@ static void pf_event_handler(const char *event_name,
             s_mp3.last_tick = xTaskGetTickCount();
 #if CONFIG_BT_ENABLED && CONFIG_BT_A2DP_ENABLE
             if (s_bt.connected) {
-                bt_pcm_clear();
-                s_bt_media_prime_pending = true;
-                s_bt_media_prime_deadline = xTaskGetTickCount() +
-                                            pdMS_TO_TICKS(BT_PCM_START_PRIME_TIMEOUT_MS);
+                size_t bt_fill = bt_pcm_fill_bytes();
+                if (bt_fill >= BT_PCM_RESUME_PRIME_BYTES) {
+                    bt_media_start_if_needed();
+                    s_bt_media_prime_pending = false;
+                    s_bt_media_prime_deadline = 0;
+                    s_bt_media_prime_target_bytes = BT_PCM_START_PRIME_BYTES;
+                } else {
+                    s_bt_media_prime_pending = true;
+                    s_bt_media_prime_target_bytes = BT_PCM_RESUME_PRIME_BYTES;
+                    s_bt_media_prime_deadline = xTaskGetTickCount() +
+                                                pdMS_TO_TICKS(BT_PCM_RESUME_PRIME_TIMEOUT_MS);
+                }
             } else {
                 s_bt_media_prime_pending = false;
                 s_bt_media_prime_deadline = 0;
+                s_bt_media_prime_target_bytes = BT_PCM_START_PRIME_BYTES;
             }
 #endif
             mp3_request_ui_refresh();
@@ -2915,6 +2933,7 @@ static void pf_event_handler(const char *event_name,
 #if CONFIG_BT_ENABLED && CONFIG_BT_A2DP_ENABLE
             s_bt_media_prime_pending = false;
             s_bt_media_prime_deadline = 0;
+            s_bt_media_prime_target_bytes = BT_PCM_START_PRIME_BYTES;
             bt_media_stop_if_needed();
 #endif
             mp3_request_ui_refresh();
