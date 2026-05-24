@@ -585,12 +585,12 @@ static bool bt_start_connect_now(const char *reason)
 #endif
 
 #define BT_PCM_RING_BYTES (64 * 1024)
-#define BT_PCM_LOW_WATER_BYTES  (12 * 1024)
-#define BT_PCM_HIGH_WATER_BYTES (48 * 1024)
-#define BT_PCM_TARGET_FILL_BYTES (28 * 1024)
-#define BT_PCM_START_PRIME_BYTES (32 * 1024)
+#define BT_PCM_LOW_WATER_BYTES  (10 * 1024)
+#define BT_PCM_HIGH_WATER_BYTES (40 * 1024)
+#define BT_PCM_TARGET_FILL_BYTES (20 * 1024)
+#define BT_PCM_START_PRIME_BYTES (24 * 1024)
 #define BT_PCM_START_PRIME_TIMEOUT_MS 1500
-#define BT_PCM_RESUME_PRIME_BYTES (16 * 1024)
+#define BT_PCM_RESUME_PRIME_BYTES (12 * 1024)
 #define BT_PCM_RESUME_PRIME_TIMEOUT_MS 400
 #define BT_A2DP_TARGET_SAMPLE_RATE 44100
 #define BT_PCM_FRAME_BYTES 4
@@ -912,7 +912,7 @@ static void bt_build_sbc_pref_mcc(esp_a2d_mcc_t *mcc)
     mcc->cie.sbc_info.num_subbands = ESP_A2D_SBC_CIE_NUM_SUBBANDS_8;
     mcc->cie.sbc_info.block_len = ESP_A2D_SBC_CIE_BLOCK_LEN_16;
     mcc->cie.sbc_info.min_bitpool = 2;
-    mcc->cie.sbc_info.max_bitpool = 31;
+    mcc->cie.sbc_info.max_bitpool = 24;
 }
 
 static void bt_set_pref_codec(esp_a2d_conn_hdl_t conn_hdl)
@@ -2032,7 +2032,7 @@ static void mp3_player_task(void *arg)
              * for the buffer to nearly fill. */
             while (bt_pcm_fill_bytes() >= stall_limit &&
                    s_mp3.active && !s_mp3.paused && s_bt.connected) {
-                vTaskDelay(pdMS_TO_TICKS(5));
+                vTaskDelay(pdMS_TO_TICKS(8));
             }
             bt_pcm_write_resampled_44k(pcm,
                                        (size_t)fi.outputSamps,
@@ -2095,7 +2095,7 @@ static void mp3_player_task(void *arg)
             } else {
                 while (bt_fill > BT_PCM_TARGET_FILL_BYTES &&
                        s_mp3.active && !s_mp3.paused && s_bt.connected) {
-                    vTaskDelay(pdMS_TO_TICKS(5));
+                    vTaskDelay(pdMS_TO_TICKS(8));
                     bt_fill = bt_pcm_fill_bytes();
                 }
             }
