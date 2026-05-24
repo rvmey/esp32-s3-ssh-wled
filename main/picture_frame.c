@@ -167,6 +167,7 @@ static esp_err_t c2_save_handler(httpd_req_t *req)
 }
 
 /* Starts SoftAP + HTTP server; blocks until the form is submitted, then restarts */
+static void pf_softap_provision(void) __attribute__((unused));
 static void pf_softap_provision(void)
 {
     wifi_stack_init_public();
@@ -281,6 +282,7 @@ typedef struct {
 static const char *TCMD_BASE_URL = "https://www.triggercmd.com";
 
 /* Strip scheme prefix for use in display text */
+static const char *tcmd_display_host(void) __attribute__((unused));
 static const char *tcmd_display_host(void)
 {
     if (strncmp(TCMD_BASE_URL, "https://", 8) == 0) return TCMD_BASE_URL + 8;
@@ -313,33 +315,33 @@ static const char *tcmd_display_host(void)
 #define COMPUTER_NAME_LEN    32   /* "TCMDSCREEN-AABBCCDDEEFF" + NUL */
 
 /* ── Module-level statics shared with event handler ────────────────────── */
-static char s_hw_token[HW_TOKEN_MAX_LEN]      = {0};
-static char s_computer_id[COMPUTER_ID_MAX_LEN] = {0};
+static char s_hw_token[HW_TOKEN_MAX_LEN]      __attribute__((unused)) = {0};
+static char s_computer_id[COMPUTER_ID_MAX_LEN] __attribute__((unused)) = {0};
 
 /* Pending run/save — set by the WS event task, consumed by the main loop */
-static char          s_pending_run_id[33] = {0};
+static char          s_pending_run_id[33] __attribute__((unused)) = {0};
 static volatile bool s_pending_run        = false;
-static int           s_pending_run_tries  = 0;
-static TickType_t    s_pending_run_retry_after = 0;
+static int           s_pending_run_tries  __attribute__((unused)) = 0;
+static TickType_t    s_pending_run_retry_after __attribute__((unused)) = 0;
 
 /* Pending JPEG URL — set by the WS event task, consumed by the main loop */
-static char          s_pending_jpeg_url[512] = {0};
+static char          s_pending_jpeg_url[512] __attribute__((unused)) = {0};
 static volatile bool s_pending_jpeg          = false;
 
 /* Cached compressed JPEG — kept in PSRAM so orientation changes can redraw
  * without re-downloading.  Freed when a non-jpeg command replaces the display. */
-static uint8_t      *s_jpeg_cache     = NULL;
-static int           s_jpeg_cache_len = 0;
+static uint8_t      *s_jpeg_cache     __attribute__((unused)) = NULL;
+static int           s_jpeg_cache_len __attribute__((unused)) = 0;
 static volatile bool s_pending_jpeg_redraw = false;
 
 /* Persistable display state (set by commands, committed by 'save'). */
-static char s_last_text[512]         = {0};
-static char s_current_jpeg_url[512]  = {0};
+static char s_last_text[512]         __attribute__((unused)) = {0};
+static char s_current_jpeg_url[512]  __attribute__((unused)) = {0};
 
-static sdmmc_card_t *s_sd_card = NULL;
-static bool          s_sd_mounted = false;
-static mp3_folder_t  s_mp3_folders[MP3_MAX_FOLDERS];
-static size_t        s_mp3_folder_count = 0;
+static sdmmc_card_t *s_sd_card __attribute__((unused)) = NULL;
+static bool          s_sd_mounted __attribute__((unused)) = false;
+static mp3_folder_t  s_mp3_folders[MP3_MAX_FOLDERS] __attribute__((unused));
+static size_t        s_mp3_folder_count __attribute__((unused)) = 0;
 static mp3_state_t   s_mp3 = {
     .active = false,
     .paused = false,
@@ -351,16 +353,15 @@ static mp3_state_t   s_mp3 = {
     .position_ms = 0,
     .last_tick = 0,
 };
-static TickType_t s_mp3_last_ui_tick = 0;
+static TickType_t s_mp3_last_ui_tick __attribute__((unused)) = 0;
 static volatile bool s_mp3_ui_pending = false;
 static TaskHandle_t s_mp3_task = NULL;
-static TickType_t s_mp3_next_mount_retry = 0;
-static bool s_sd_mount_warned = false;
+static TickType_t s_mp3_next_mount_retry __attribute__((unused)) = 0;
+static bool s_sd_mount_warned __attribute__((unused)) = false;
 
 static bool nvs_read_str(const char *key, char *out, size_t out_sz);
 static esp_err_t nvs_write_str(const char *key, const char *val);
 static esp_err_t nvs_erase_key_local(const char *key);
-
 #if CONFIG_BT_ENABLED
 typedef struct {
     bool initialized;
@@ -494,6 +495,7 @@ static int bt_score_candidate(const char *name, int rssi, uint32_t cod)
 #define BT_PCM_RING_BYTES (64 * 1024)
 #define BT_PCM_LOW_WATER_BYTES  (8 * 1024)
 #define BT_PCM_HIGH_WATER_BYTES (32 * 1024)
+#define BT_PCM_TARGET_FILL_BYTES (16 * 1024)
 #define BT_A2DP_TARGET_SAMPLE_RATE 44100
 #define MP3_INPUT_BUF_BYTES (32 * 1024)
 static uint8_t *s_bt_pcm_ring = NULL;
@@ -731,6 +733,7 @@ static void bt_set_pref_codec(esp_a2d_conn_hdl_t conn_hdl)
     }
 }
 
+static void bt_media_start_if_needed(void) __attribute__((unused));
 static void bt_media_start_if_needed(void)
 {
     if (!s_bt.connected || s_bt.media_started) return;
@@ -742,6 +745,7 @@ static void bt_media_start_if_needed(void)
     }
 }
 
+static void bt_media_stop_if_needed(void) __attribute__((unused));
 static void bt_media_stop_if_needed(void)
 {
     if (!s_bt.connected || !s_bt.media_started) return;
@@ -1105,6 +1109,7 @@ static bool bt_init_if_needed(void)
     return true;
 }
 
+static void bt_cmd_pair_start(void) __attribute__((unused));
 static void bt_cmd_pair_start(void)
 {
     s_bt_hold_local_speaker = true;
@@ -1144,6 +1149,7 @@ static void bt_cmd_pair_start(void)
     screen_draw_text("Bluetooth pairing\nstarted...\nScanning for\naudio devices");
 }
 
+static void bt_cmd_status(void) __attribute__((unused));
 static void bt_cmd_status(void)
 {
     char saved_bda[18] = {0};
@@ -1194,6 +1200,7 @@ static void bt_cmd_status(void)
                          : "Bluetooth status:\nno device selected\nauto target: none");
 }
 
+static void bt_cmd_disconnect(void) __attribute__((unused));
 static void bt_cmd_disconnect(void)
 {
     if (!s_bt.initialized) {
@@ -1229,6 +1236,7 @@ static void bt_cmd_disconnect(void)
     screen_draw_text("Bluetooth device\ncleared");
 }
 
+static void bt_cmd_forget(void) __attribute__((unused));
 static void bt_cmd_forget(void)
 {
     bt_cmd_disconnect();
@@ -1245,6 +1253,7 @@ static void bt_cmd_forget(void)
     }
 }
 
+static void bt_try_reconnect_on_boot(void) __attribute__((unused));
 static void bt_try_reconnect_on_boot(void)
 {
 #if CONFIG_BT_A2DP_ENABLE
@@ -1326,13 +1335,12 @@ static void bt_try_reconnect_on_boot(void)
 }
 #endif
 
-static void mp3_render_now_playing(void);
-
 static inline void mp3_request_ui_refresh(void)
 {
     s_mp3_ui_pending = true;
 }
 
+static void pf_status_draw(const char *msg) __attribute__((unused));
 static void pf_status_draw(const char *msg)
 {
     /* Keep status screens legible even if saved colors are invalid/invisible. */
@@ -1361,6 +1369,7 @@ static esp_err_t nvs_write_str(const char *key, const char *val)
     return err;
 }
 
+static bool nvs_read_u8(const char *key, uint8_t *out) __attribute__((unused));
 static bool nvs_read_u8(const char *key, uint8_t *out)
 {
     nvs_handle_t h;
@@ -1370,12 +1379,25 @@ static bool nvs_read_u8(const char *key, uint8_t *out)
     return err == ESP_OK;
 }
 
+static esp_err_t nvs_write_u8(const char *key, uint8_t val) __attribute__((unused));
 static esp_err_t nvs_write_u8(const char *key, uint8_t val)
 {
     nvs_handle_t h;
     esp_err_t err = nvs_open(NVS_NS, NVS_READWRITE, &h);
     if (err != ESP_OK) return err;
     err = nvs_set_u8(h, key, val);
+    if (err == ESP_OK) err = nvs_commit(h);
+    nvs_close(h);
+    return err;
+}
+
+static esp_err_t nvs_erase_key_local(const char *key)
+{
+    nvs_handle_t h;
+    esp_err_t err = nvs_open(NVS_NS, NVS_READWRITE, &h);
+    if (err != ESP_OK) return err;
+    err = nvs_erase_key(h, key);
+    if (err == ESP_ERR_NVS_NOT_FOUND) err = ESP_OK;
     if (err == ESP_OK) err = nvs_commit(h);
     nvs_close(h);
     return err;
@@ -1400,6 +1422,7 @@ static bool is_mp3_file_name(const char *name)
     return str_ends_with_ci(name, ".mp3");
 }
 
+static bool trigger_reserved(const char *trigger) __attribute__((unused));
 static bool trigger_reserved(const char *trigger)
 {
     static const char *reserved[] = {
@@ -1412,7 +1435,7 @@ static bool trigger_reserved(const char *trigger)
     }
     return false;
 }
-
+static int mp3_count_in_folder(const char *folder_path) __attribute__((unused));
 static int mp3_count_in_folder(const char *folder_path)
 {
     DIR *d = opendir(folder_path);
@@ -1428,6 +1451,11 @@ static int mp3_count_in_folder(const char *folder_path)
     return count;
 }
 
+static bool mp3_get_nth_file(const char *folder_path,
+                             int target_idx,
+                             char *out_name,
+                             size_t out_sz,
+                             int *total_out) __attribute__((unused));
 static bool mp3_get_nth_file(const char *folder_path,
                              int target_idx,
                              char *out_name,
@@ -1525,6 +1553,7 @@ static bool mp3_stream_next_frame(FILE *fp, mp3_frame_info_t *info)
     }
 }
 
+static uint32_t mp3_probe_duration_ms(const char *file_path) __attribute__((unused));
 static uint32_t mp3_probe_duration_ms(const char *file_path)
 {
     FILE *fp = fopen(file_path, "rb");
@@ -1551,6 +1580,7 @@ static uint32_t mp3_probe_duration_ms(const char *file_path)
     return (uint32_t)ms;
 }
 
+static void mp3_player_task(void *arg) __attribute__((unused));
 static void mp3_player_task(void *arg)
 {
     (void)arg;
@@ -1584,23 +1614,23 @@ static void mp3_player_task(void *arg)
     bool speaker_path_ready = false;
     uint32_t speaker_last_rate = 0;
 
-    int64_t tel_window_start_us = esp_timer_get_time();
-    uint32_t tel_decoded_frames = 0;
-    uint32_t tel_underflows = 0;
-    uint32_t tel_decode_errors = 0;
-    uint32_t tel_refills = 0;
-    size_t tel_refill_bytes = 0;
-    uint64_t tel_refill_us_total = 0;
-    uint64_t tel_refill_us_max = 0;
-    uint64_t tel_decode_us_total = 0;
-    uint64_t tel_decode_us_max = 0;
-    uint64_t tel_output_us_total = 0;
-    uint64_t tel_output_us_max = 0;
-    uint32_t tel_output_calls = 0;
-    uint32_t tel_audio_ms = 0;
-    size_t tel_bt_fill_peak = 0;
-    int tel_last_rate = 0;
-    int tel_last_channels = 0;
+    int64_t tel_window_start_us __attribute__((unused)) = esp_timer_get_time();
+    uint32_t tel_decoded_frames __attribute__((unused)) = 0;
+    uint32_t tel_underflows __attribute__((unused)) = 0;
+    uint32_t tel_decode_errors __attribute__((unused)) = 0;
+    uint32_t tel_refills __attribute__((unused)) = 0;
+    size_t tel_refill_bytes __attribute__((unused)) = 0;
+    uint64_t tel_refill_us_total __attribute__((unused)) = 0;
+    uint64_t tel_refill_us_max __attribute__((unused)) = 0;
+    uint64_t tel_decode_us_total __attribute__((unused)) = 0;
+    uint64_t tel_decode_us_max __attribute__((unused)) = 0;
+    uint64_t tel_output_us_total __attribute__((unused)) = 0;
+    uint64_t tel_output_us_max __attribute__((unused)) = 0;
+    uint32_t tel_output_calls __attribute__((unused)) = 0;
+    uint32_t tel_audio_ms __attribute__((unused)) = 0;
+    size_t tel_bt_fill_peak __attribute__((unused)) = 0;
+    int tel_last_rate __attribute__((unused)) = 0;
+    int tel_last_channels __attribute__((unused)) = 0;
 
     while (true) {
         if (!s_mp3.active) {
@@ -1722,17 +1752,17 @@ static void mp3_player_task(void *arg)
         tel_last_rate = fi.samprate;
         tel_last_channels = fi.nChans;
 
-        int64_t output_t0 = esp_timer_get_time();
+        int64_t output_t0 __attribute__((unused)) = esp_timer_get_time();
 
 #if CONFIG_HARDWARE_CORE2
     #if CONFIG_BT_ENABLED && CONFIG_BT_A2DP_ENABLE
         if (s_bt.connected) {
             /* Pace the decoder to real-time: stall before writing if the ring
-             * is at or above the high-water mark, giving the BT stack time to
-             * drain it.  This prevents the L2CAP congestion errors that arise
-             * when the ring fills to capacity and data is pushed faster than
-             * the remote device can consume it. */
-            while (bt_pcm_fill_bytes() >= BT_PCM_HIGH_WATER_BYTES &&
+             * is at or above the target fill level, giving the BT stack time
+             * to drain ahead of the next frame.  Keeping a larger safety
+             * margin below the congestion point is less bursty than waiting
+             * for the buffer to nearly fill. */
+            while (bt_pcm_fill_bytes() >= BT_PCM_TARGET_FILL_BYTES &&
                    s_mp3.active && !s_mp3.paused && s_bt.connected) {
                 vTaskDelay(pdMS_TO_TICKS(5));
             }
@@ -1745,6 +1775,11 @@ static void mp3_player_task(void *arg)
             speaker_last_rate = 0;
             size_t bt_fill = bt_pcm_fill_bytes();
             if (bt_fill > tel_bt_fill_peak) tel_bt_fill_peak = bt_fill;
+            while (bt_fill > BT_PCM_TARGET_FILL_BYTES &&
+                   s_mp3.active && !s_mp3.paused && s_bt.connected) {
+                vTaskDelay(pdMS_TO_TICKS(5));
+                bt_fill = bt_pcm_fill_bytes();
+            }
         } else if (s_bt_hold_local_speaker || s_bt.connecting || s_bt.discovering) {
             /* Keep local I2S path down while BT stack is starting/pairing. */
             speaker_path_ready = false;
@@ -1762,15 +1797,7 @@ static void mp3_player_task(void *arg)
             }
             core2_audio_write_pcm(pcm, (size_t)fi.outputSamps, fi.nChans, s_mp3.volume);
         }
-    #else
-        if (speaker_last_rate != (uint32_t)fi.samprate) {
-            core2_audio_set_sample_rate((uint32_t)fi.samprate);
-            speaker_last_rate = (uint32_t)fi.samprate;
-        }
-        core2_audio_write_pcm(pcm, (size_t)fi.outputSamps, fi.nChans, s_mp3.volume);
-    #endif
-#endif
-
+#else
         uint64_t output_us = (uint64_t)(esp_timer_get_time() - output_t0);
         tel_output_calls++;
         tel_output_us_total += output_us;
@@ -1864,6 +1891,8 @@ static void mp3_player_task(void *arg)
                 taskYIELD();
             }
         }
+#endif
+#endif
 #endif
     }
 
@@ -2205,18 +2234,6 @@ static void rebuild_mp3_folder_index(void)
     closedir(d);
 
     ESP_LOGI(TAG, "mp3: discovered %u folders with mp3 content", (unsigned)s_mp3_folder_count);
-}
-
-static esp_err_t nvs_erase_key_local(const char *key)
-{
-    nvs_handle_t h;
-    esp_err_t err = nvs_open(NVS_NS, NVS_READWRITE, &h);
-    if (err != ESP_OK) return err;
-    err = nvs_erase_key(h, key);
-    if (err == ESP_ERR_NVS_NOT_FOUND) err = ESP_OK;
-    if (err == ESP_OK) err = nvs_commit(h);
-    nvs_close(h);
-    return err;
 }
 
 static esp_err_t save_display_state_to_nvs(void)
