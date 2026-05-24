@@ -392,6 +392,26 @@ static bool      s_bt_reconnect_attempted  = false;
 static volatile bool s_bt_pending_reconnect = false;
 static TickType_t    s_bt_reconnect_after   = 0;
 
+#define BT_STARTUP_MIN_INTERNAL_FREE    (56 * 1024)
+#define BT_STARTUP_MIN_INTERNAL_LARGEST (24 * 1024)
+
+static bool bt_has_startup_headroom(const char *reason)
+{
+    size_t free_internal = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+    size_t largest_block = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
+
+    if (free_internal < BT_STARTUP_MIN_INTERNAL_FREE ||
+        largest_block < BT_STARTUP_MIN_INTERNAL_LARGEST) {
+        ESP_LOGW(TAG,
+                 "bt: skip %s, low internal heap free=%u largest=%u",
+                 reason ? reason : "startup",
+                 (unsigned int)free_internal,
+                 (unsigned int)largest_block);
+        return false;
+    }
+    return true;
+}
+
 static bool bt_parse_bda(const char *s, esp_bd_addr_t out)
 {
     if (!s || !out) return false;
@@ -1092,6 +1112,11 @@ static void bt_cmd_pair_start(void)
     /* Free local speaker-task and I2S resources before Bluedroid startup. */
     core2_audio_deinit();
 #endif
+    if (!bt_has_startup_headroom("pair")) {
+        s_bt_hold_local_speaker = false;
+        screen_draw_text("Bluetooth busy\ntry again");
+        return;
+    }
     if (!bt_init_if_needed()) {
         s_bt_hold_local_speaker = false;
         screen_draw_text("Bluetooth init\nfailed");
@@ -1243,7 +1268,19 @@ static void bt_try_reconnect_on_boot(void)
         return;
     }
 
+    s_bt_hold_local_speaker = true;
+#if CONFIG_HARDWARE_CORE2
+    /* Free local speaker resources before boot-time BT auto reconnect. */
+    core2_audio_deinit();
+#endif
+
+    if (!bt_has_startup_headroom("boot reconnect")) {
+        s_bt_hold_local_speaker = false;
+        return;
+    }
+
     if (!bt_init_if_needed()) {
+        s_bt_hold_local_speaker = false;
         return;
     }
 
@@ -1260,6 +1297,7 @@ static void bt_try_reconnect_on_boot(void)
     esp_err_t err = esp_a2d_source_connect(s_bt.bda);
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "bt: reconnect on boot failed: %s", esp_err_to_name(err));
+        s_bt_hold_local_speaker = false;
         return;
     }
 
