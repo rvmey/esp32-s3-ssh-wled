@@ -566,6 +566,7 @@ static bool bt_start_connect_now(const char *reason)
 #define BT_PCM_RESUME_PRIME_BYTES (8 * 1024)
 #define BT_PCM_RESUME_PRIME_TIMEOUT_MS 400
 #define BT_A2DP_TARGET_SAMPLE_RATE 44100
+#define BT_PCM_FRAME_BYTES 4
 #define MP3_INPUT_BUF_BYTES (32 * 1024)
 static uint8_t *s_bt_pcm_ring = NULL;
 static size_t s_bt_pcm_rpos = 0;
@@ -594,6 +595,11 @@ static size_t bt_pcm_write_bytes(const uint8_t *src, size_t len)
     taskENTER_CRITICAL(&s_bt_pcm_mux);
     size_t free_space = BT_PCM_RING_BYTES - s_bt_pcm_fill;
     if (len > free_space) len = free_space;
+    len -= (len % BT_PCM_FRAME_BYTES);
+    if (len == 0) {
+        taskEXIT_CRITICAL(&s_bt_pcm_mux);
+        return 0;
+    }
 
     size_t first = BT_PCM_RING_BYTES - s_bt_pcm_wpos;
     if (first > len) first = len;
@@ -617,6 +623,11 @@ static size_t bt_pcm_read_bytes(uint8_t *dst, size_t len)
 
     taskENTER_CRITICAL(&s_bt_pcm_mux);
     size_t take = (len < s_bt_pcm_fill) ? len : s_bt_pcm_fill;
+    take -= (take % BT_PCM_FRAME_BYTES);
+    if (take == 0) {
+        taskEXIT_CRITICAL(&s_bt_pcm_mux);
+        return 0;
+    }
 
     size_t first = BT_PCM_RING_BYTES - s_bt_pcm_rpos;
     if (first > take) first = take;
@@ -832,9 +843,13 @@ static void bt_media_stop_if_needed(void)
 static int32_t bt_a2dp_data_cb(uint8_t *data, int32_t len)
 {
     if (!data || len <= 0) return 0;
-    size_t taken = bt_pcm_read_bytes(data, (size_t)len);
-    if (taken < (size_t)len) {
-        memset(data + taken, 0, (size_t)len - taken);
+    size_t req = ((size_t)len / BT_PCM_FRAME_BYTES) * BT_PCM_FRAME_BYTES;
+    size_t taken = bt_pcm_read_bytes(data, req);
+    if (taken < req) {
+        memset(data + taken, 0, req - taken);
+    }
+    if (req < (size_t)len) {
+        memset(data + req, 0, (size_t)len - req);
     }
     return len;
 }
