@@ -352,6 +352,8 @@ static mp3_state_t   s_mp3 = {
 };
 static TickType_t s_mp3_last_ui_tick = 0;
 static TaskHandle_t s_mp3_task = NULL;
+static TickType_t s_mp3_next_mount_retry = 0;
+static bool s_sd_mount_warned = false;
 
 static bool nvs_read_str(const char *key, char *out, size_t out_sz);
 static esp_err_t nvs_write_str(const char *key, const char *val);
@@ -1252,6 +1254,14 @@ static void bt_try_reconnect_on_boot(void)
 
 static void mp3_render_now_playing(void);
 
+static void pf_status_draw(const char *msg)
+{
+    /* Keep status screens legible even if saved colors are invalid/invisible. */
+    screen_set_color(0, 0, 0);
+    screen_set_text_color(255, 255, 255);
+    screen_draw_text(msg);
+}
+
 static bool nvs_read_str(const char *key, char *out, size_t out_sz)
 {
     nvs_handle_t h;
@@ -1917,6 +1927,11 @@ static bool mount_sd_card_if_needed(void)
 
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "sd: mount failed at %s: %s", MP3_ROOT_PATH, esp_err_to_name(err));
+        s_mp3_next_mount_retry = xTaskGetTickCount() + pdMS_TO_TICKS(30000);
+        if (!s_sd_mount_warned) {
+            pf_status_draw("SD card timeout\nDevice online\nMP3 unavailable");
+            s_sd_mount_warned = true;
+        }
         if (spi_locked) {
             screen_spi_unlock();
         }
@@ -1924,6 +1939,8 @@ static bool mount_sd_card_if_needed(void)
     }
 
     s_sd_mounted = true;
+    s_sd_mount_warned = false;
+    s_mp3_next_mount_retry = 0;
     if (spi_locked) {
         screen_spi_unlock();
     }
@@ -2861,7 +2878,7 @@ static bool download_and_show_jpeg(const char *url)
 
 static esp_err_t connect_and_subscribe(void)
 {
-    screen_draw_text("Connecting to server...");
+    pf_status_draw("Connecting to server...");
 
     /* __sails_io_sdk_version=0.11.0 in the handshake URL is how Sails 0.12.x
      * identifies a valid sails.io SDK client (checked in parseVirtualRequest). */
@@ -2890,7 +2907,7 @@ static esp_err_t connect_and_subscribe(void)
              s_computer_id);
     socketio_send_vget(sub_path, s_hw_token);
 
-    screen_draw_text("Connected!\nWaiting for\ncommands...");
+    pf_status_draw("Connected!\nWaiting for\ncommands...");
     return ESP_OK;
 }
 
@@ -2904,7 +2921,7 @@ void picture_frame_run(void)
     mp3_ensure_task();
 
     /* ── WiFi ────────────────────────────────────────────────────────────── */
-    screen_draw_text("Waiting for WiFi...");
+    pf_status_draw("Waiting for WiFi...");
 
     if (!wifi_has_stored_credentials()) {
 #if CONFIG_HARDWARE_CORE2
@@ -3024,7 +3041,7 @@ void picture_frame_run(void)
                  mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
 
         ESP_LOGI(TAG, "Creating computer: %s", computer_name);
-        screen_draw_text("Creating computer...");
+        pf_status_draw("Creating computer...");
 
         char save_url[192];
         snprintf(save_url, sizeof(save_url), "%s/api/computer/save", TCMD_BASE_URL);
@@ -3072,7 +3089,7 @@ void picture_frame_run(void)
         rebuild_mp3_folder_index();
 
         /* ── Sync commands ────────────────────────────────────────────────── */
-        screen_draw_text("Syncing commands...");
+        pf_status_draw("Syncing commands...");
 
         char list_url[192];
         snprintf(list_url, sizeof(list_url),
@@ -3120,7 +3137,7 @@ void picture_frame_run(void)
     while (true) {
         esp_err_t ret = connect_and_subscribe();
         if (ret != ESP_OK) {
-            screen_draw_text("Server connect\nfailed\nRetrying in 10s");
+            pf_status_draw("Server connect\nfailed\nRetrying in 10s");
             vTaskDelay(pdMS_TO_TICKS(10000));
             socketio_disconnect();
             continue;
@@ -3190,6 +3207,12 @@ void picture_frame_run(void)
 
             vTaskDelay(pdMS_TO_TICKS(200));   /* poll every 200 ms */
 
+            if (!s_sd_mounted && s_mp3_next_mount_retry != 0 &&
+                xTaskGetTickCount() >= s_mp3_next_mount_retry) {
+                ESP_LOGI(TAG, "sd: retrying deferred mount");
+                rebuild_mp3_folder_index();
+            }
+
 #if CONFIG_BT_ENABLED && CONFIG_BT_A2DP_ENABLE
             if (s_bt_pending_reconnect &&
                 xTaskGetTickCount() >= s_bt_reconnect_after) {
@@ -3216,7 +3239,7 @@ void picture_frame_run(void)
 
             if (!socketio_connected()) {
                 ESP_LOGW(TAG, "Socket.IO disconnected — reconnecting");
-                screen_draw_text("Reconnecting...");
+                pf_status_draw("Reconnecting...");
                 vTaskDelay(pdMS_TO_TICKS(5000));
                 socketio_disconnect();
                 break;
