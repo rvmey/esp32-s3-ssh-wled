@@ -587,7 +587,7 @@ static bool bt_start_connect_now(const char *reason)
 #define BT_PCM_START_PRIME_TIMEOUT_MS 1500
 #define BT_PCM_RESUME_PRIME_BYTES (8 * 1024)
 #define BT_PCM_RESUME_PRIME_TIMEOUT_MS 400
-#define BT_A2DP_TARGET_SAMPLE_RATE 44100
+#define BT_A2DP_TARGET_SAMPLE_RATE 32000
 #define BT_PCM_FRAME_BYTES 4
 #define MP3_INPUT_BUF_BYTES (32 * 1024)
 static uint8_t *s_bt_pcm_ring = NULL;
@@ -901,7 +901,7 @@ static void bt_build_sbc_pref_mcc(esp_a2d_mcc_t *mcc)
     mcc->type = ESP_A2D_MCT_SBC;
     /* Conservative SBC profile to reduce ACL/L2CAP congestion on weaker links. */
     mcc->cie.sbc_info.ch_mode = ESP_A2D_SBC_CIE_CH_MODE_JOINT_STEREO;
-    mcc->cie.sbc_info.samp_freq = ESP_A2D_SBC_CIE_SF_44K;
+    mcc->cie.sbc_info.samp_freq = ESP_A2D_SBC_CIE_SF_32K;
     mcc->cie.sbc_info.alloc_mthd = ESP_A2D_SBC_CIE_ALLOC_MTHD_LOUDNESS;
     mcc->cie.sbc_info.num_subbands = ESP_A2D_SBC_CIE_NUM_SUBBANDS_8;
     mcc->cie.sbc_info.block_len = ESP_A2D_SBC_CIE_BLOCK_LEN_16;
@@ -915,7 +915,7 @@ static void bt_set_pref_codec(esp_a2d_conn_hdl_t conn_hdl)
     bt_build_sbc_pref_mcc(&pref_mcc);
     esp_err_t err = esp_a2d_source_set_pref_mcc(conn_hdl, &pref_mcc);
     if (err == ESP_OK) {
-        ESP_LOGI(TAG, "bt: preferred SBC codec set (44.1k, bitpool<=31)");
+        ESP_LOGI(TAG, "bt: preferred SBC codec set (32k, bitpool<=31)");
     } else {
         ESP_LOGW(TAG, "bt: preferred codec set failed: %s", esp_err_to_name(err));
     }
