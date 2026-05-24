@@ -3243,6 +3243,14 @@ void picture_frame_run(void)
     bool have_token   = nvs_read_str(NVS_KEY_TOKEN,  s_hw_token,   sizeof(s_hw_token));
     bool have_comp_id = nvs_read_str(NVS_KEY_COMPID, s_computer_id, sizeof(s_computer_id));
 
+    {
+        uint8_t shuffle = 0;
+        if (nvs_read_u8(NVS_KEY_SHUFFLE, &shuffle)) {
+            s_mp3.shuffle = (shuffle != 0);
+        }
+    }
+    rebuild_mp3_folder_index();
+
     /* ── Pair code flow — runs until a user JWT is obtained ─────────────── */
     if (!have_token) {
         while (true) {  /* pair_loop — retries on network failure or 10-min timeout */
@@ -3372,14 +3380,6 @@ void picture_frame_run(void)
         if (resp) free(resp);
 
         vTaskDelay(pdMS_TO_TICKS(1500));
-
-        {
-            uint8_t shuffle = 0;
-            if (nvs_read_u8(NVS_KEY_SHUFFLE, &shuffle)) {
-                s_mp3.shuffle = (shuffle != 0);
-            }
-        }
-        rebuild_mp3_folder_index();
 
         /* ── Sync commands ────────────────────────────────────────────────── */
         pf_status_draw("Syncing commands...");
