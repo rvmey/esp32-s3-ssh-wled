@@ -266,6 +266,8 @@ typedef struct {
     bool       active;
     bool       paused;
     bool       shuffle;
+    bool       repeat_track;
+    bool       repeat_playlist;
     int        volume;            /* 0..100 */
     int        folder_idx;        /* index into s_mp3_folders */
     int        track_idx;         /* 0-based index in folder */
@@ -313,6 +315,8 @@ static const char *tcmd_display_host(void)
 #define NVS_KEY_ORIENT  "land"
 #define NVS_KEY_JPEGURL "jpeg_url"
 #define NVS_KEY_SHUFFLE "mp3_shuffle"
+#define NVS_KEY_REPEAT_TRACK "mp3_repeat_track"
+#define NVS_KEY_REPEAT_PLAYLIST "mp3_repeat_playlist"
 #define NVS_KEY_BT_BDA  "bt_bda"
 #define NVS_KEY_BT_NAME "bt_name"
 
@@ -352,6 +356,8 @@ static mp3_state_t   s_mp3 = {
     .active = false,
     .paused = false,
     .shuffle = false,
+    .repeat_track = false,
+    .repeat_playlist = false,
     .volume = 50,
     .folder_idx = -1,
     .track_idx = -1,
@@ -371,6 +377,7 @@ static esp_err_t nvs_write_str(const char *key, const char *val);
 static esp_err_t nvs_erase_key_local(const char *key);
 static inline void mp3_request_ui_refresh(void);
 static bool mp3_advance_track(int step, const char *reason);
+static bool mp3_handle_track_end(void);
 #if CONFIG_BT_ENABLED
 typedef struct {
     bool initialized;
@@ -1714,7 +1721,8 @@ static bool trigger_reserved(const char *trigger)
     static const char *reserved[] = {
         "text", "color", "textcolor", "fontsize", "landscape", "portrait",
         "jpeg", "save", "play", "stop", "forward", "reverse", "volumeup",
-        "volumedown", "shuffle", "pair", "btstatus", "btdisconnect", "btforget"
+        "volumedown", "shuffle", "repeattrack", "repeatplaylist",
+        "pair", "btstatus", "btdisconnect", "btforget"
     };
     for (size_t i = 0; i < sizeof(reserved) / sizeof(reserved[0]); i++) {
         if (strcasecmp(trigger, reserved[i]) == 0) return true;
@@ -2002,7 +2010,7 @@ static void mp3_player_task(void *arg)
         }
 
         if (bytes_left <= 4) {
-            if (!mp3_advance_track(1, "track ended")) {
+            if (!mp3_handle_track_end()) {
                 s_mp3.paused = true;
                 s_mp3.position_ms = s_mp3.duration_ms;
                 mp3_request_ui_refresh();
@@ -2196,7 +2204,7 @@ static void mp3_player_task(void *arg)
         }
 
         if (s_mp3.position_ms + frame_ms >= s_mp3.duration_ms) {
-            if (!mp3_advance_track(1, "track duration reached")) {
+            if (!mp3_handle_track_end()) {
                 s_mp3.position_ms = s_mp3.duration_ms;
                 s_mp3.paused = true;
                 mp3_request_ui_refresh();
@@ -2341,7 +2349,8 @@ static void mp3_render_now_playing(void)
              "File: %s\n"
              "[%s]\n"
              "%s / %s\n"
-             "Vol:%d Shuffle:%s",
+             "Vol:%d Shuffle:%s\n"
+             "Repeat Track:%s Repeat Playlist:%s",
              s_mp3.paused ? "Paused" : "Playing",
              s_mp3.folder_name[0] ? s_mp3.folder_name : "(none)",
              s_mp3.file_name[0] ? s_mp3.file_name : "(none)",
@@ -2349,7 +2358,9 @@ static void mp3_render_now_playing(void)
              cur,
              total,
              s_mp3.volume,
-             s_mp3.shuffle ? "on" : "off");
+             s_mp3.shuffle ? "on" : "off",
+             s_mp3.repeat_track ? "on" : "off",
+             s_mp3.repeat_playlist ? "on" : "off");
     screen_draw_text(msg);
 }
 
@@ -2435,6 +2446,35 @@ static bool mp3_advance_track(int step, const char *reason)
         ESP_LOGI(TAG, "mp3: %s -> track %d/%d", reason, next_idx + 1, folder->mp3_count);
     }
     return true;
+}
+
+static bool mp3_handle_track_end(void)
+{
+    if (!s_mp3.active || s_mp3.folder_idx < 0 || (size_t)s_mp3.folder_idx >= s_mp3_folder_count) {
+        return false;
+    }
+
+    const mp3_folder_t *folder = &s_mp3_folders[s_mp3.folder_idx];
+    if (folder->mp3_count <= 0) {
+        return false;
+    }
+
+    if (s_mp3.repeat_track) {
+        if (mp3_start_track(s_mp3.folder_idx, s_mp3.track_idx, false)) {
+            ESP_LOGI(TAG, "mp3: track ended -> replaying current track %d/%d",
+                     s_mp3.track_idx + 1, folder->mp3_count);
+            return true;
+        }
+        return false;
+    }
+
+    bool at_last_linear_track = (!s_mp3.shuffle && s_mp3.track_idx >= (folder->mp3_count - 1));
+    if (at_last_linear_track && !s_mp3.repeat_playlist) {
+        ESP_LOGI(TAG, "mp3: track ended -> end of playlist reached (repeatplaylist=off)");
+        return false;
+    }
+
+    return mp3_advance_track(1, "track ended");
 }
 
 #if CONFIG_HARDWARE_CORE2
@@ -3111,6 +3151,8 @@ static const pf_cmd_t s_pf_media_cmds[] = {
     { "volumeup",    "volumeup",    "false", "Increase playback volume.", "\xF0\x9F\x94\x8A" /* 🔊 */ },
     { "volumedown",  "volumedown",  "false", "Decrease playback volume.", "\xF0\x9F\x94\x89" /* 🔉 */ },
     { "shuffle",     "shuffle",     "true",  "Enable or disable shuffle mode. Example: 'shuffle on' or 'shuffle off'", "\xF0\x9F\x94\x80" /* 🔀 */ },
+    { "repeattrack", "repeattrack", "true",  "Enable or disable repeat-track mode. Example: 'repeattrack on' or 'repeattrack off'", "\xF0\x9F\x94\x82" /* 🔂 */ },
+    { "repeatplaylist", "repeatplaylist", "true",  "Enable or disable repeat-playlist mode. Example: 'repeatplaylist on' or 'repeatplaylist off'", "\xF0\x9F\x94\x81" /* 🔁 */ },
     { "pair",        "pair",        "true",  "Pair with a Bluetooth headset or speaker. Example: 'pair'", "\xF0\x9F\x8E\xA7" /* 🎧 */ },
     { "btstatus",    "btstatus",    "false", "Show Bluetooth audio connection status.", "\xF0\x9F\x93\xB6" /* 📶 */ },
     { "btdisconnect", "btdisconnect", "false", "Disconnect the current Bluetooth audio device.", "\xF0\x9F\x94\x8C" /* 🔌 */ },
@@ -3358,6 +3400,34 @@ static void pf_event_handler(const char *event_name,
             s_mp3.shuffle = !s_mp3.shuffle;
         }
         nvs_write_u8(NVS_KEY_SHUFFLE, s_mp3.shuffle ? 1 : 0);
+        if (s_mp3.active) mp3_request_ui_refresh();
+
+    } else if (strcmp(s_trigger, "repeattrack") == 0) {
+        char mode[16] = {0};
+        strncpy(mode, s_params, sizeof(mode) - 1);
+        for (size_t i = 0; mode[i]; i++) mode[i] = (char)tolower((unsigned char)mode[i]);
+        if (strcmp(mode, "on") == 0) {
+            s_mp3.repeat_track = true;
+        } else if (strcmp(mode, "off") == 0) {
+            s_mp3.repeat_track = false;
+        } else {
+            s_mp3.repeat_track = !s_mp3.repeat_track;
+        }
+        nvs_write_u8(NVS_KEY_REPEAT_TRACK, s_mp3.repeat_track ? 1 : 0);
+        if (s_mp3.active) mp3_request_ui_refresh();
+
+    } else if (strcmp(s_trigger, "repeatplaylist") == 0) {
+        char mode[16] = {0};
+        strncpy(mode, s_params, sizeof(mode) - 1);
+        for (size_t i = 0; mode[i]; i++) mode[i] = (char)tolower((unsigned char)mode[i]);
+        if (strcmp(mode, "on") == 0) {
+            s_mp3.repeat_playlist = true;
+        } else if (strcmp(mode, "off") == 0) {
+            s_mp3.repeat_playlist = false;
+        } else {
+            s_mp3.repeat_playlist = !s_mp3.repeat_playlist;
+        }
+        nvs_write_u8(NVS_KEY_REPEAT_PLAYLIST, s_mp3.repeat_playlist ? 1 : 0);
         if (s_mp3.active) mp3_request_ui_refresh();
 
     } else if (strcmp(s_trigger, "pair") == 0) {
@@ -3631,6 +3701,14 @@ void picture_frame_run(void)
         uint8_t shuffle = 0;
         if (nvs_read_u8(NVS_KEY_SHUFFLE, &shuffle)) {
             s_mp3.shuffle = (shuffle != 0);
+        }
+        uint8_t repeat_track = 0;
+        if (nvs_read_u8(NVS_KEY_REPEAT_TRACK, &repeat_track)) {
+            s_mp3.repeat_track = (repeat_track != 0);
+        }
+        uint8_t repeat_playlist = 0;
+        if (nvs_read_u8(NVS_KEY_REPEAT_PLAYLIST, &repeat_playlist)) {
+            s_mp3.repeat_playlist = (repeat_playlist != 0);
         }
     }
     /* Defer SD mount/index work until the main loop so boot UI is responsive. */
