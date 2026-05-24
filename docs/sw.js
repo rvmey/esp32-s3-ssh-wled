@@ -40,20 +40,3 @@ self.addEventListener('fetch', event => {
     event.respondWith(fetch(target.toString(), { cache: 'no-store' }));
   }
 });
-*** Add File: c:\appdev\esp\esp32-s3-ssh-wled\docs\manifest-core2-2.0.183.json
-{
-  "name": "TRIGGERcmd Core2 Display (M5Stack Core2 for AWS)",
-  "version": "2.0.183",
-  "new_install_improv_wifi": false,
-  "builds": [
-    {
-      "chipFamily": "ESP32",
-      "parts": [
-        { "path": "firmware/bootloader-esp32.bin",             "offset": 4096  },
-        { "path": "firmware/partition-table-esp32.bin",        "offset": 32768 },
-        { "path": "firmware/nvs_blank.bin",                    "offset": 36864 },
-        { "path": "firmware/esp32_core2_picture_frame-2.0.183.bin", "offset": 65536 }
-      ]
-    }
-  ]
-}
