@@ -427,6 +427,27 @@ static bool bt_has_startup_headroom(const char *reason)
     return true;
 }
 
+static void bt_log_heap_snapshot(const char *reason, esp_err_t err)
+{
+    size_t free_internal = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+    size_t largest_internal = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
+    size_t free_dma = heap_caps_get_free_size(MALLOC_CAP_DMA);
+    size_t largest_dma = heap_caps_get_largest_free_block(MALLOC_CAP_DMA);
+    size_t free_spiram = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+    size_t largest_spiram = heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM);
+
+    ESP_LOGW(TAG,
+             "bt: heap snapshot (%s err=%s) internal=%u/%u dma=%u/%u spiram=%u/%u",
+             reason ? reason : "n/a",
+             esp_err_to_name(err),
+             (unsigned int)free_internal,
+             (unsigned int)largest_internal,
+             (unsigned int)free_dma,
+             (unsigned int)largest_dma,
+             (unsigned int)free_spiram,
+             (unsigned int)largest_spiram);
+}
+
 static bool bt_parse_bda(const char *s, esp_bd_addr_t out)
 {
     if (!s || !out) return false;
@@ -2113,6 +2134,7 @@ static void mp3_player_task(void *arg)
             esp_err_t speaker_err = core2_audio_init();
             if (speaker_err != ESP_OK) {
                 ESP_LOGW(TAG, "bt: speaker init deferred: %s", esp_err_to_name(speaker_err));
+                bt_log_heap_snapshot("speaker_init_deferred", speaker_err);
                 speaker_path_ready = false;
                 speaker_last_rate = 0;
                 s_bt_speaker_resume_after = xTaskGetTickCount() + pdMS_TO_TICKS(3000);
