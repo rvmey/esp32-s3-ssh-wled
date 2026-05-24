@@ -469,6 +469,7 @@ static int bt_score_candidate(const char *name, int rssi, uint32_t cod)
 #define BT_PCM_RING_BYTES (64 * 1024)
 #define BT_PCM_LOW_WATER_BYTES  (8 * 1024)
 #define BT_PCM_HIGH_WATER_BYTES (32 * 1024)
+#define MP3_INPUT_BUF_BYTES (16 * 1024)
 static uint8_t *s_bt_pcm_ring = NULL;
 static size_t s_bt_pcm_rpos = 0;
 static size_t s_bt_pcm_wpos = 0;
@@ -616,7 +617,7 @@ static void bt_build_sbc_pref_mcc(esp_a2d_mcc_t *mcc)
     mcc->cie.sbc_info.num_subbands = ESP_A2D_SBC_CIE_NUM_SUBBANDS_8;
     mcc->cie.sbc_info.block_len = ESP_A2D_SBC_CIE_BLOCK_LEN_16;
     mcc->cie.sbc_info.min_bitpool = 2;
-    mcc->cie.sbc_info.max_bitpool = 32;
+    mcc->cie.sbc_info.max_bitpool = 38;
 }
 
 static void bt_set_pref_codec(esp_a2d_conn_hdl_t conn_hdl)
@@ -625,7 +626,7 @@ static void bt_set_pref_codec(esp_a2d_conn_hdl_t conn_hdl)
     bt_build_sbc_pref_mcc(&pref_mcc);
     esp_err_t err = esp_a2d_source_set_pref_mcc(conn_hdl, &pref_mcc);
     if (err == ESP_OK) {
-        ESP_LOGI(TAG, "bt: preferred SBC codec set (44.1k, bitpool<=32)");
+        ESP_LOGI(TAG, "bt: preferred SBC codec set (44.1k, bitpool<=38)");
     } else {
         ESP_LOGW(TAG, "bt: preferred codec set failed: %s", esp_err_to_name(err));
     }
@@ -1402,8 +1403,8 @@ static void mp3_player_task(void *arg)
         return;
     }
 
-    unsigned char *inbuf = heap_caps_malloc(4096, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (!inbuf) inbuf = heap_caps_malloc(4096, MALLOC_CAP_8BIT);
+    unsigned char *inbuf = heap_caps_malloc(MP3_INPUT_BUF_BYTES, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!inbuf) inbuf = heap_caps_malloc(MP3_INPUT_BUF_BYTES, MALLOC_CAP_8BIT);
     short *pcm = heap_caps_malloc((size_t)(1152 * 2 * (int)sizeof(short)),
                                   MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!pcm) pcm = heap_caps_malloc((size_t)(1152 * 2 * (int)sizeof(short)), MALLOC_CAP_8BIT);
@@ -1452,14 +1453,14 @@ static void mp3_player_task(void *arg)
             }
         }
 
-        if (bytes_left < 1024) {
+        if (bytes_left < (MP3_INPUT_BUF_BYTES / 4)) {
             if (bytes_left > 0 && read_ptr != inbuf) {
                 memmove(inbuf, read_ptr, (size_t)bytes_left);
             }
             read_ptr = inbuf;
             size_t n = fread(inbuf + bytes_left,
                              1,
-                             4096U - (size_t)bytes_left,
+                             (size_t)MP3_INPUT_BUF_BYTES - (size_t)bytes_left,
                              fp);
             bytes_left += (int)n;
         }
@@ -1548,7 +1549,7 @@ static void mp3_player_task(void *arg)
         }
 
         TickType_t now = xTaskGetTickCount();
-        if ((now - s_mp3_last_ui_tick) >= pdMS_TO_TICKS(500)) {
+        if ((now - s_mp3_last_ui_tick) >= pdMS_TO_TICKS(1500)) {
             s_mp3_last_ui_tick = now;
             mp3_render_now_playing();
         }
