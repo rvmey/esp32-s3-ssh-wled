@@ -392,8 +392,8 @@ static bool      s_bt_reconnect_attempted  = false;
 static volatile bool s_bt_pending_reconnect = false;
 static TickType_t    s_bt_reconnect_after   = 0;
 
-#define BT_STARTUP_MIN_INTERNAL_FREE    (56 * 1024)
-#define BT_STARTUP_MIN_INTERNAL_LARGEST (24 * 1024)
+#define BT_STARTUP_MIN_INTERNAL_FREE    (44 * 1024)
+#define BT_STARTUP_MIN_INTERNAL_LARGEST (12 * 1024)
 
 static bool bt_has_startup_headroom(const char *reason)
 {
@@ -1112,11 +1112,6 @@ static void bt_cmd_pair_start(void)
     /* Free local speaker-task and I2S resources before Bluedroid startup. */
     core2_audio_deinit();
 #endif
-    if (!bt_has_startup_headroom("pair")) {
-        s_bt_hold_local_speaker = false;
-        screen_draw_text("Bluetooth busy\ntry again");
-        return;
-    }
     if (!bt_init_if_needed()) {
         s_bt_hold_local_speaker = false;
         screen_draw_text("Bluetooth init\nfailed");
