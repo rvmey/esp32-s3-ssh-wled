@@ -578,6 +578,27 @@ static volatile bool s_bt_media_prime_pending = false;
 static TickType_t s_bt_media_prime_deadline = 0;
 static size_t s_bt_media_prime_target_bytes = BT_PCM_START_PRIME_BYTES;
 static portMUX_TYPE s_bt_pcm_mux = portMUX_INITIALIZER_UNLOCKED;
+static size_t s_bt_tel_drop_write_bytes = 0;
+static size_t s_bt_tel_trim_write_bytes = 0;
+static size_t s_bt_tel_trim_read_bytes = 0;
+static size_t s_bt_tel_pad_silence_bytes = 0;
+
+static void bt_tel_snapshot_and_reset(size_t *drop_write,
+                                      size_t *trim_write,
+                                      size_t *trim_read,
+                                      size_t *pad_silence)
+{
+    taskENTER_CRITICAL(&s_bt_pcm_mux);
+    if (drop_write) *drop_write = s_bt_tel_drop_write_bytes;
+    if (trim_write) *trim_write = s_bt_tel_trim_write_bytes;
+    if (trim_read) *trim_read = s_bt_tel_trim_read_bytes;
+    if (pad_silence) *pad_silence = s_bt_tel_pad_silence_bytes;
+    s_bt_tel_drop_write_bytes = 0;
+    s_bt_tel_trim_write_bytes = 0;
+    s_bt_tel_trim_read_bytes = 0;
+    s_bt_tel_pad_silence_bytes = 0;
+    taskEXIT_CRITICAL(&s_bt_pcm_mux);
+}
 
 static void bt_pcm_clear(void)
 {
@@ -585,6 +606,10 @@ static void bt_pcm_clear(void)
     s_bt_pcm_rpos = 0;
     s_bt_pcm_wpos = 0;
     s_bt_pcm_fill = 0;
+    s_bt_tel_drop_write_bytes = 0;
+    s_bt_tel_trim_write_bytes = 0;
+    s_bt_tel_trim_read_bytes = 0;
+    s_bt_tel_pad_silence_bytes = 0;
     taskEXIT_CRITICAL(&s_bt_pcm_mux);
 }
 
@@ -592,10 +617,14 @@ static size_t bt_pcm_write_bytes(const uint8_t *src, size_t len)
 {
     if (!s_bt_pcm_ring || !src || len == 0) return 0;
 
+    size_t req_len = len;
     taskENTER_CRITICAL(&s_bt_pcm_mux);
     size_t free_space = BT_PCM_RING_BYTES - s_bt_pcm_fill;
     if (len > free_space) len = free_space;
-    len -= (len % BT_PCM_FRAME_BYTES);
+    if (req_len > len) s_bt_tel_drop_write_bytes += (req_len - len);
+    size_t aligned = len - (len % BT_PCM_FRAME_BYTES);
+    if (aligned < len) s_bt_tel_trim_write_bytes += (len - aligned);
+    len = aligned;
     if (len == 0) {
         taskEXIT_CRITICAL(&s_bt_pcm_mux);
         return 0;
@@ -623,7 +652,9 @@ static size_t bt_pcm_read_bytes(uint8_t *dst, size_t len)
 
     taskENTER_CRITICAL(&s_bt_pcm_mux);
     size_t take = (len < s_bt_pcm_fill) ? len : s_bt_pcm_fill;
-    take -= (take % BT_PCM_FRAME_BYTES);
+    size_t aligned = take - (take % BT_PCM_FRAME_BYTES);
+    if (aligned < take) s_bt_tel_trim_read_bytes += (take - aligned);
+    take = aligned;
     if (take == 0) {
         taskEXIT_CRITICAL(&s_bt_pcm_mux);
         return 0;
@@ -847,9 +878,15 @@ static int32_t bt_a2dp_data_cb(uint8_t *data, int32_t len)
     size_t taken = bt_pcm_read_bytes(data, req);
     if (taken < req) {
         memset(data + taken, 0, req - taken);
+        taskENTER_CRITICAL(&s_bt_pcm_mux);
+        s_bt_tel_pad_silence_bytes += (req - taken);
+        taskEXIT_CRITICAL(&s_bt_pcm_mux);
     }
     if (req < (size_t)len) {
         memset(data + req, 0, (size_t)len - req);
+        taskENTER_CRITICAL(&s_bt_pcm_mux);
+        s_bt_tel_pad_silence_bytes += ((size_t)len - req);
+        taskEXIT_CRITICAL(&s_bt_pcm_mux);
     }
     return len;
 }
@@ -1710,6 +1747,10 @@ static void mp3_player_task(void *arg)
     uint32_t tel_output_calls __attribute__((unused)) = 0;
     uint32_t tel_audio_ms __attribute__((unused)) = 0;
     size_t tel_bt_fill_peak __attribute__((unused)) = 0;
+    size_t tel_bt_drop_write_bytes __attribute__((unused)) = 0;
+    size_t tel_bt_trim_write_bytes __attribute__((unused)) = 0;
+    size_t tel_bt_trim_read_bytes __attribute__((unused)) = 0;
+    size_t tel_bt_pad_silence_bytes __attribute__((unused)) = 0;
     int tel_last_rate __attribute__((unused)) = 0;
     int tel_last_channels __attribute__((unused)) = 0;
 
@@ -1744,6 +1785,10 @@ static void mp3_player_task(void *arg)
             tel_output_calls = 0;
             tel_audio_ms = 0;
             tel_bt_fill_peak = 0;
+            tel_bt_drop_write_bytes = 0;
+            tel_bt_trim_write_bytes = 0;
+            tel_bt_trim_read_bytes = 0;
+            tel_bt_pad_silence_bytes = 0;
             tel_last_rate = 0;
             tel_last_channels = 0;
             vTaskDelay(pdMS_TO_TICKS(100));
@@ -1863,6 +1908,44 @@ static void mp3_player_task(void *arg)
             speaker_last_rate = 0;
             size_t bt_fill = bt_pcm_fill_bytes();
             if (bt_fill > tel_bt_fill_peak) tel_bt_fill_peak = bt_fill;
+            int64_t tel_now_us = esp_timer_get_time();
+            if ((tel_now_us - tel_window_start_us) >= 5000000LL) {
+                bt_tel_snapshot_and_reset(&tel_bt_drop_write_bytes,
+                                          &tel_bt_trim_write_bytes,
+                                          &tel_bt_trim_read_bytes,
+                                          &tel_bt_pad_silence_bytes);
+                ESP_LOGI(TAG,
+                         "mp3 tel(core2 bt): sr=%d ch=%d dec=%u uf=%u err=%u refill=%u/%uB bt_fill(cur/peak)=%u/%u bt_bytes(drop/trim_w/trim_r/pad)=%u/%u/%u/%u",
+                         tel_last_rate,
+                         tel_last_channels,
+                         tel_decoded_frames,
+                         tel_underflows,
+                         tel_decode_errors,
+                         tel_refills,
+                         (unsigned int)tel_refill_bytes,
+                         (unsigned int)bt_fill,
+                         (unsigned int)tel_bt_fill_peak,
+                         (unsigned int)tel_bt_drop_write_bytes,
+                         (unsigned int)tel_bt_trim_write_bytes,
+                         (unsigned int)tel_bt_trim_read_bytes,
+                         (unsigned int)tel_bt_pad_silence_bytes);
+
+                tel_window_start_us = tel_now_us;
+                tel_decoded_frames = 0;
+                tel_underflows = 0;
+                tel_decode_errors = 0;
+                tel_refills = 0;
+                tel_refill_bytes = 0;
+                tel_refill_us_total = 0;
+                tel_refill_us_max = 0;
+                tel_decode_us_total = 0;
+                tel_decode_us_max = 0;
+                tel_output_us_total = 0;
+                tel_output_us_max = 0;
+                tel_output_calls = 0;
+                tel_audio_ms = 0;
+                tel_bt_fill_peak = bt_fill;
+            }
             if (prime_pending) {
                 TickType_t now = xTaskGetTickCount();
                 if (bt_fill >= s_bt_media_prime_target_bytes ||
@@ -1936,11 +2019,15 @@ static void mp3_player_task(void *arg)
             uint64_t refill_avg_us = tel_refills ? (tel_refill_us_total / tel_refills) : 0;
 #if CONFIG_BT_ENABLED && CONFIG_BT_A2DP_ENABLE
             size_t bt_fill = s_bt.connected ? bt_pcm_fill_bytes() : 0;
+            bt_tel_snapshot_and_reset(&tel_bt_drop_write_bytes,
+                                      &tel_bt_trim_write_bytes,
+                                      &tel_bt_trim_read_bytes,
+                                      &tel_bt_pad_silence_bytes);
 #else
             size_t bt_fill = 0;
 #endif
             ESP_LOGI(TAG,
-                     "mp3 tel: mode=%s sr=%d ch=%d win=%ums audio=%ums dec=%u uf=%u err=%u in=%d refill=%u/%uB refill_us(avg/max)=%llu/%llu dec_us(avg/max)=%llu/%llu out_us(avg/max)=%llu/%llu bt_fill(cur/peak)=%u/%u",
+                     "mp3 tel: mode=%s sr=%d ch=%d win=%ums audio=%ums dec=%u uf=%u err=%u in=%d refill=%u/%uB refill_us(avg/max)=%llu/%llu dec_us(avg/max)=%llu/%llu out_us(avg/max)=%llu/%llu bt_fill(cur/peak)=%u/%u bt_bytes(drop/trim_w/trim_r/pad)=%u/%u/%u/%u",
 #if CONFIG_BT_ENABLED && CONFIG_BT_A2DP_ENABLE
                      s_bt.connected ? "bt" : ((s_bt_hold_local_speaker || s_bt.connecting || s_bt.discovering) ? "bt-handoff" : "speaker"),
 #else
@@ -1963,7 +2050,11 @@ static void mp3_player_task(void *arg)
                      (unsigned long long)output_avg_us,
                      (unsigned long long)tel_output_us_max,
                      (unsigned int)bt_fill,
-                     (unsigned int)tel_bt_fill_peak);
+                     (unsigned int)tel_bt_fill_peak,
+                     (unsigned int)tel_bt_drop_write_bytes,
+                     (unsigned int)tel_bt_trim_write_bytes,
+                     (unsigned int)tel_bt_trim_read_bytes,
+                     (unsigned int)tel_bt_pad_silence_bytes);
 
             tel_window_start_us = tel_now_us;
             tel_decoded_frames = 0;
@@ -1980,6 +2071,10 @@ static void mp3_player_task(void *arg)
             tel_output_calls = 0;
             tel_audio_ms = 0;
             tel_bt_fill_peak = bt_fill;
+            tel_bt_drop_write_bytes = 0;
+            tel_bt_trim_write_bytes = 0;
+            tel_bt_trim_read_bytes = 0;
+            tel_bt_pad_silence_bytes = 0;
         }
 
 #if CONFIG_BT_ENABLED && CONFIG_BT_A2DP_ENABLE
