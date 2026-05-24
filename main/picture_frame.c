@@ -386,6 +386,7 @@ typedef struct {
 } bt_state_t;
 
 static bt_state_t s_bt = {0};
+static volatile bool s_bt_hold_local_speaker = false;
 
 static bool      s_bt_reconnect_attempted  = false;
 static volatile bool s_bt_pending_reconnect = false;
@@ -752,6 +753,7 @@ static void bt_a2dp_cb(esp_a2d_cb_event_t event, esp_a2d_cb_param_t *param)
             s_bt.connected = true;
             s_bt.connecting = false;
             s_bt.media_started = false;
+            s_bt_hold_local_speaker = false;
             s_bt_resample_phase_q16 = 0;
             s_bt_a2dp_sample_rate = BT_A2DP_TARGET_SAMPLE_RATE;
             bt_set_pref_codec(param->conn_stat.conn_hdl);
@@ -814,7 +816,10 @@ static void bt_a2dp_cb(esp_a2d_cb_event_t event, esp_a2d_cb_param_t *param)
                 } else {
                     screen_draw_text("Bluetooth pairing\nfailed");
                     s_bt.pairing_ui_active = false;
+                    s_bt_hold_local_speaker = false;
                 }
+            } else if (!scheduled_retry) {
+                s_bt_hold_local_speaker = false;
             }
         }
         return;
@@ -887,6 +892,7 @@ static void bt_gap_cb(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t *param)
                     if (s_bt.pairing_ui_active) {
                         screen_draw_text("Bluetooth pairing\nconnect failed");
                         s_bt.pairing_ui_active = false;
+                        s_bt_hold_local_speaker = false;
                     }
                 } else {
                     s_bt.connecting = true;
@@ -895,6 +901,7 @@ static void bt_gap_cb(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t *param)
             } else if (s_bt.pairing_ui_active && !s_bt.has_bda) {
                 screen_draw_text("Bluetooth pairing\nno audio device\nfound");
                 s_bt.pairing_ui_active = false;
+                s_bt_hold_local_speaker = false;
             }
 #endif
         }
@@ -1080,11 +1087,13 @@ static bool bt_init_if_needed(void)
 
 static void bt_cmd_pair_start(void)
 {
+    s_bt_hold_local_speaker = true;
 #if CONFIG_HARDWARE_CORE2
     /* Free local speaker-task and I2S resources before Bluedroid startup. */
     core2_audio_deinit();
 #endif
     if (!bt_init_if_needed()) {
+        s_bt_hold_local_speaker = false;
         screen_draw_text("Bluetooth init\nfailed");
         return;
     }
@@ -1107,6 +1116,7 @@ static void bt_cmd_pair_start(void)
     esp_err_t err = esp_bt_gap_start_discovery(ESP_BT_INQ_MODE_GENERAL_INQUIRY, 10, 0);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "bt: start discovery failed: %s", esp_err_to_name(err));
+        s_bt_hold_local_speaker = false;
         screen_draw_text("Bluetooth pairing\nfailed to start");
         return;
     }
@@ -1184,6 +1194,7 @@ static void bt_cmd_disconnect(void)
     s_bt.connect_retries = 0;    /* user-initiated: cancel retries */
     s_bt.pairing_ui_active = false;
     s_bt_pending_reconnect = false;
+    s_bt_hold_local_speaker = false;
 #endif
     s_bt.has_device = false;
     s_bt.has_bda = false;
@@ -1703,6 +1714,11 @@ static void mp3_player_task(void *arg)
                 /* Back off when ring is full so BT stack can drain encoder output. */
                 vTaskDelay(pdMS_TO_TICKS(10));
             }
+        } else if (s_bt_hold_local_speaker || s_bt.connecting || s_bt.discovering) {
+            /* Keep local I2S path down while BT stack is starting/pairing. */
+            speaker_path_ready = false;
+            speaker_last_rate = 0;
+            vTaskDelay(pdMS_TO_TICKS(8));
         } else {
             core2_audio_init();
             if (!speaker_path_ready) {
@@ -1767,7 +1783,7 @@ static void mp3_player_task(void *arg)
             ESP_LOGI(TAG,
                      "mp3 tel: mode=%s sr=%d ch=%d win=%ums audio=%ums dec=%u uf=%u err=%u in=%d refill=%u/%uB refill_us(avg/max)=%llu/%llu dec_us(avg/max)=%llu/%llu out_us(avg/max)=%llu/%llu bt_fill(cur/peak)=%u/%u",
 #if CONFIG_BT_ENABLED && CONFIG_BT_A2DP_ENABLE
-                     s_bt.connected ? "bt" : "speaker",
+                     s_bt.connected ? "bt" : ((s_bt_hold_local_speaker || s_bt.connecting || s_bt.discovering) ? "bt-handoff" : "speaker"),
 #else
                      "speaker",
 #endif
