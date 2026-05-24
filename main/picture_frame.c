@@ -255,6 +255,7 @@ extern const char g_firmware_version[];
 #define MP3_MAX_TRIGGER_LEN  64
 #define MP3_MAX_PATH_LEN     256
 #define MP3_MAX_FILE_LEN     128
+#define MP3_SEEK_STEP_MS     10000U
 
 typedef struct {
     char trigger[MP3_MAX_TRIGGER_LEN];
@@ -371,6 +372,7 @@ static volatile bool s_mp3_ui_pending = false;
 static TaskHandle_t s_mp3_task = NULL;
 static TickType_t s_mp3_next_mount_retry __attribute__((unused)) = 0;
 static bool s_sd_mount_warned __attribute__((unused)) = false;
+static volatile int32_t s_mp3_seek_target_ms = -1;
 
 static bool nvs_read_str(const char *key, char *out, size_t out_sz);
 static esp_err_t nvs_write_str(const char *key, const char *val);
@@ -378,6 +380,8 @@ static esp_err_t nvs_erase_key_local(const char *key);
 static inline void mp3_request_ui_refresh(void);
 static bool mp3_advance_track(int step, const char *reason);
 static bool mp3_handle_track_end(void);
+static bool mp3_queue_seek_relative(int32_t delta_ms, const char *reason);
+static void mp3_log_mode_status(const char *reason);
 #if CONFIG_BT_ENABLED
 typedef struct {
     bool initialized;
@@ -1720,7 +1724,7 @@ static bool trigger_reserved(const char *trigger)
 {
     static const char *reserved[] = {
         "text", "color", "textcolor", "fontsize", "landscape", "portrait",
-        "jpeg", "save", "play", "stop", "forward", "reverse", "volumeup",
+        "jpeg", "save", "play", "stop", "next", "previous", "forward", "reverse", "volumeup",
         "volumedown", "shuffle", "repeattrack", "repeatplaylist",
         "pair", "btstatus", "btdisconnect", "btforget"
     };
@@ -1874,6 +1878,36 @@ static uint32_t mp3_probe_duration_ms(const char *file_path)
     return (uint32_t)ms;
 }
 
+static bool mp3_queue_seek_relative(int32_t delta_ms, const char *reason)
+{
+    if (!s_mp3.active) {
+        ESP_LOGW(TAG, "mp3: %s ignored because no track is active", reason ? reason : "seek");
+        return false;
+    }
+
+    int64_t target_ms = (int64_t)s_mp3.position_ms + (int64_t)delta_ms;
+    if (target_ms < 0) target_ms = 0;
+    if (s_mp3.duration_ms > 0 && target_ms >= s_mp3.duration_ms) {
+        target_ms = (int64_t)s_mp3.duration_ms - 1;
+        if (target_ms < 0) target_ms = 0;
+    }
+
+    s_mp3_seek_target_ms = (int32_t)target_ms;
+    ESP_LOGI(TAG, "mp3: %s queued -> %lu ms", reason ? reason : "seek",
+             (unsigned long)target_ms);
+    return true;
+}
+
+static void mp3_log_mode_status(const char *reason)
+{
+    ESP_LOGI(TAG,
+             "mp3: %s -> shuffle=%s repeattrack=%s repeatplaylist=%s",
+             reason ? reason : "mode update",
+             s_mp3.shuffle ? "on" : "off",
+             s_mp3.repeat_track ? "on" : "off",
+             s_mp3.repeat_playlist ? "on" : "off");
+}
+
 static void mp3_player_task(void *arg) __attribute__((unused));
 static void mp3_player_task(void *arg)
 {
@@ -1972,6 +2006,100 @@ static void mp3_player_task(void *arg)
         }
 
         if (s_mp3.paused) {
+            int32_t paused_seek_target = s_mp3_seek_target_ms;
+            if (paused_seek_target >= 0) {
+                s_mp3_seek_target_ms = -1;
+                if (fp) {
+                    fclose(fp);
+                    fp = NULL;
+                }
+                MP3FreeDecoder(dec);
+                dec = MP3InitDecoder();
+                if (!dec) {
+                    ESP_LOGE(TAG, "mp3: decoder reset failed while paused seek");
+                    s_mp3.paused = true;
+                    s_mp3.position_ms = 0;
+                    mp3_request_ui_refresh();
+                    vTaskDelay(pdMS_TO_TICKS(100));
+                    continue;
+                }
+                fp = fopen(s_mp3.file_path, "rb");
+                opened_token = s_mp3.play_token;
+                bytes_left = 0;
+                read_ptr = inbuf;
+                if (!fp) {
+                    ESP_LOGW(TAG, "mp3: failed to reopen %s for seek", s_mp3.file_path);
+                    s_mp3.paused = true;
+                    mp3_request_ui_refresh();
+                    vTaskDelay(pdMS_TO_TICKS(100));
+                    continue;
+                }
+#if CONFIG_BT_ENABLED && CONFIG_BT_A2DP_ENABLE
+                bt_pcm_clear();
+                s_bt_media_prime_pending = false;
+                s_bt_media_prime_deadline = 0;
+                s_bt_media_prime_target_bytes = BT_PCM_START_PRIME_BYTES;
+#endif
+                uint32_t seeked_ms = 0;
+                while (seeked_ms < (uint32_t)paused_seek_target) {
+                    if (bytes_left < (MP3_INPUT_BUF_BYTES / 2)) {
+                        if (bytes_left > 0 && read_ptr != inbuf) {
+                            memmove(inbuf, read_ptr, (size_t)bytes_left);
+                        }
+                        read_ptr = inbuf;
+                        size_t n = fread(inbuf + bytes_left,
+                                         1,
+                                         (size_t)MP3_INPUT_BUF_BYTES - (size_t)bytes_left,
+                                         fp);
+                        bytes_left += (int)n;
+                    }
+
+                    if (bytes_left <= 4) break;
+
+                    int sync = MP3FindSyncWord(read_ptr, bytes_left);
+                    if (sync < 0) {
+                        bytes_left = 0;
+                        read_ptr = inbuf;
+                        continue;
+                    }
+                    read_ptr += sync;
+                    bytes_left -= sync;
+
+                    int seek_err = MP3Decode(dec, &read_ptr, &bytes_left, pcm, 0);
+                    if (seek_err == ERR_MP3_INDATA_UNDERFLOW || seek_err == ERR_MP3_MAINDATA_UNDERFLOW) {
+                        continue;
+                    }
+                    if (seek_err != ERR_MP3_NONE) {
+                        if (bytes_left > 0) {
+                            read_ptr++;
+                            bytes_left--;
+                        } else {
+                            bytes_left = 0;
+                            read_ptr = inbuf;
+                        }
+                        continue;
+                    }
+
+                    MP3FrameInfo seek_fi = {0};
+                    MP3GetLastFrameInfo(dec, &seek_fi);
+                    if (seek_fi.outputSamps <= 0 || seek_fi.samprate <= 0 || seek_fi.nChans <= 0) {
+                        continue;
+                    }
+
+                    uint32_t mono_samples = (uint32_t)(seek_fi.outputSamps / seek_fi.nChans);
+                    uint32_t frame_ms = (uint32_t)(((uint64_t)mono_samples * 1000ULL) /
+                                                   (uint64_t)seek_fi.samprate);
+                    if (frame_ms == 0) frame_ms = 1;
+                    seeked_ms += frame_ms;
+                }
+
+                s_mp3.position_ms = seeked_ms;
+                s_mp3.last_tick = xTaskGetTickCount();
+                ESP_LOGI(TAG, "mp3: seek applied while paused -> %lu/%lu ms",
+                         (unsigned long)s_mp3.position_ms,
+                         (unsigned long)s_mp3.duration_ms);
+                mp3_request_ui_refresh();
+            }
             vTaskDelay(pdMS_TO_TICKS(50));
             continue;
         }
@@ -1989,6 +2117,104 @@ static void mp3_player_task(void *arg)
                 vTaskDelay(pdMS_TO_TICKS(200));
                 continue;
             }
+        }
+
+        int32_t seek_target_ms = s_mp3_seek_target_ms;
+        if (seek_target_ms >= 0) {
+            s_mp3_seek_target_ms = -1;
+            if (fp) {
+                fclose(fp);
+                fp = NULL;
+            }
+            MP3FreeDecoder(dec);
+            dec = MP3InitDecoder();
+            if (!dec) {
+                ESP_LOGE(TAG, "mp3: decoder reset failed while seeking");
+                s_mp3.paused = true;
+                s_mp3.position_ms = 0;
+                mp3_request_ui_refresh();
+                vTaskDelay(pdMS_TO_TICKS(100));
+                continue;
+            }
+            fp = fopen(s_mp3.file_path, "rb");
+            opened_token = s_mp3.play_token;
+            bytes_left = 0;
+            read_ptr = inbuf;
+            if (!fp) {
+                ESP_LOGW(TAG, "mp3: failed to reopen %s for seek", s_mp3.file_path);
+                s_mp3.paused = true;
+                mp3_request_ui_refresh();
+                vTaskDelay(pdMS_TO_TICKS(100));
+                continue;
+            }
+#if CONFIG_BT_ENABLED && CONFIG_BT_A2DP_ENABLE
+            bt_pcm_clear();
+            s_bt_media_prime_pending = false;
+            s_bt_media_prime_deadline = 0;
+            s_bt_media_prime_target_bytes = BT_PCM_START_PRIME_BYTES;
+#endif
+            speaker_path_ready = false;
+            speaker_last_rate = 0;
+            uint32_t seeked_ms = 0;
+            while (seeked_ms < (uint32_t)seek_target_ms) {
+                if (bytes_left < (MP3_INPUT_BUF_BYTES / 2)) {
+                    if (bytes_left > 0 && read_ptr != inbuf) {
+                        memmove(inbuf, read_ptr, (size_t)bytes_left);
+                    }
+                    read_ptr = inbuf;
+                    size_t n = fread(inbuf + bytes_left,
+                                     1,
+                                     (size_t)MP3_INPUT_BUF_BYTES - (size_t)bytes_left,
+                                     fp);
+                    bytes_left += (int)n;
+                }
+
+                if (bytes_left <= 4) break;
+
+                int sync = MP3FindSyncWord(read_ptr, bytes_left);
+                if (sync < 0) {
+                    bytes_left = 0;
+                    read_ptr = inbuf;
+                    continue;
+                }
+                read_ptr += sync;
+                bytes_left -= sync;
+
+                int seek_err = MP3Decode(dec, &read_ptr, &bytes_left, pcm, 0);
+                if (seek_err == ERR_MP3_INDATA_UNDERFLOW || seek_err == ERR_MP3_MAINDATA_UNDERFLOW) {
+                    continue;
+                }
+                if (seek_err != ERR_MP3_NONE) {
+                    if (bytes_left > 0) {
+                        read_ptr++;
+                        bytes_left--;
+                    } else {
+                        bytes_left = 0;
+                        read_ptr = inbuf;
+                    }
+                    continue;
+                }
+
+                MP3FrameInfo seek_fi = {0};
+                MP3GetLastFrameInfo(dec, &seek_fi);
+                if (seek_fi.outputSamps <= 0 || seek_fi.samprate <= 0 || seek_fi.nChans <= 0) {
+                    continue;
+                }
+
+                uint32_t mono_samples = (uint32_t)(seek_fi.outputSamps / seek_fi.nChans);
+                uint32_t frame_ms = (uint32_t)(((uint64_t)mono_samples * 1000ULL) /
+                                               (uint64_t)seek_fi.samprate);
+                if (frame_ms == 0) frame_ms = 1;
+                seeked_ms += frame_ms;
+            }
+
+            s_mp3.position_ms = seeked_ms;
+            s_mp3.last_tick = xTaskGetTickCount();
+            ESP_LOGI(TAG, "mp3: seek applied -> %lu/%lu ms",
+                     (unsigned long)s_mp3.position_ms,
+                     (unsigned long)s_mp3.duration_ms);
+            mp3_request_ui_refresh();
+            continue;
         }
 
         if (bytes_left < (MP3_INPUT_BUF_BYTES / 2)) {
@@ -3146,8 +3372,10 @@ static const pf_cmd_t s_pf_cmds[] = {
 static const pf_cmd_t s_pf_media_cmds[] = {
     { "play",        "play",        "false", "Resume paused MP3 playback.", "\xE2\x96\xB6\xEF\xB8\x8F" /* ▶️ */ },
     { "stop",        "stop",        "false", "Pause MP3 playback at the current position.", "\xE2\x8F\xB8\xEF\xB8\x8F" /* ⏸️ */ },
-    { "forward",     "forward",     "false", "Skip to the next MP3 file in the current folder.", "\xE2\x8F\xA9" /* ⏩ */ },
-    { "reverse",     "reverse",     "false", "Go to the previous MP3 file in the current folder.", "\xE2\x8F\xAA" /* ⏪ */ },
+    { "next",        "next",        "false", "Skip to the next MP3 file in the current folder.", "\xE2\x8F\xA9" /* ⏩ */ },
+    { "previous",    "previous",    "false", "Go to the previous MP3 file in the current folder.", "\xE2\x8F\xAA" /* ⏪ */ },
+    { "forward",     "forward",     "false", "Skip forward 10 seconds within the current MP3.", "\xE2\x8F\xA9" /* ⏩ */ },
+    { "reverse",     "reverse",     "false", "Skip backward 10 seconds within the current MP3.", "\xE2\x8F\xAA" /* ⏪ */ },
     { "volumeup",    "volumeup",    "false", "Increase playback volume.", "\xF0\x9F\x94\x8A" /* 🔊 */ },
     { "volumedown",  "volumedown",  "false", "Decrease playback volume.", "\xF0\x9F\x94\x89" /* 🔉 */ },
     { "shuffle",     "shuffle",     "true",  "Enable or disable shuffle mode. Example: 'shuffle on' or 'shuffle off'", "\xF0\x9F\x94\x80" /* 🔀 */ },
@@ -3372,11 +3600,17 @@ static void pf_event_handler(const char *event_name,
             mp3_request_ui_refresh();
         }
 
+    } else if (strcmp(s_trigger, "next") == 0) {
+        (void)mp3_advance_track(1, "next command");
+
+    } else if (strcmp(s_trigger, "previous") == 0) {
+        (void)mp3_advance_track(-1, "previous command");
+
     } else if (strcmp(s_trigger, "forward") == 0) {
-        (void)mp3_advance_track(1, "forward command");
+        (void)mp3_queue_seek_relative((int32_t)MP3_SEEK_STEP_MS, "forward command");
 
     } else if (strcmp(s_trigger, "reverse") == 0) {
-        (void)mp3_advance_track(-1, "reverse command");
+        (void)mp3_queue_seek_relative(-(int32_t)MP3_SEEK_STEP_MS, "reverse command");
 
     } else if (strcmp(s_trigger, "volumeup") == 0) {
         s_mp3.volume += 5;
@@ -3400,6 +3634,7 @@ static void pf_event_handler(const char *event_name,
             s_mp3.shuffle = !s_mp3.shuffle;
         }
         nvs_write_u8(NVS_KEY_SHUFFLE, s_mp3.shuffle ? 1 : 0);
+        mp3_log_mode_status("shuffle command");
         if (s_mp3.active) mp3_request_ui_refresh();
 
     } else if (strcmp(s_trigger, "repeattrack") == 0) {
@@ -3414,6 +3649,7 @@ static void pf_event_handler(const char *event_name,
             s_mp3.repeat_track = !s_mp3.repeat_track;
         }
         nvs_write_u8(NVS_KEY_REPEAT_TRACK, s_mp3.repeat_track ? 1 : 0);
+        mp3_log_mode_status("repeattrack command");
         if (s_mp3.active) mp3_request_ui_refresh();
 
     } else if (strcmp(s_trigger, "repeatplaylist") == 0) {
@@ -3428,6 +3664,7 @@ static void pf_event_handler(const char *event_name,
             s_mp3.repeat_playlist = !s_mp3.repeat_playlist;
         }
         nvs_write_u8(NVS_KEY_REPEAT_PLAYLIST, s_mp3.repeat_playlist ? 1 : 0);
+        mp3_log_mode_status("repeatplaylist command");
         if (s_mp3.active) mp3_request_ui_refresh();
 
     } else if (strcmp(s_trigger, "pair") == 0) {
