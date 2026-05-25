@@ -204,24 +204,35 @@ esp_err_t socketio_connect(const char          *uri,
     snprintf(auth_hdr, sizeof(auth_hdr),
              "Authorization: Bearer %s\r\n", auth_token);
 
-    for (int attempt = 0; attempt < 2; ++attempt) {
-        bool use_bundle = (attempt == 1);
+    for (int attempt = 0; attempt < 3; ++attempt) {
+        bool use_bundle = (attempt == 2);
+        bool skip_cn_check = (attempt == 1);
 
         esp_websocket_client_config_t cfg = {
             .uri                 = uri,
             .headers             = auth_hdr,
             .network_timeout_ms  = 20000,
             .reconnect_timeout_ms = 5000,
+            .disable_auto_reconnect = true,
             .ping_interval_sec   = 25,   /* keep-alive through NAT idle timeouts */
             .buffer_size         = 4096,
+            .cert_common_name    = "www.triggercmd.com",
+            .skip_cert_common_name_check = skip_cn_check,
         };
 
         if (use_bundle) {
             cfg.crt_bundle_attach = esp_crt_bundle_attach;
-            ESP_LOGW(TAG, "WS TLS attempt %d/2 using ESP cert bundle", attempt + 1);
+            cfg.cert_common_name = NULL;
+            cfg.skip_cert_common_name_check = false;
+            ESP_LOGW(TAG, "WS TLS attempt %d/3 using ESP cert bundle", attempt + 1);
         } else {
             cfg.cert_pem = TRIGGERCMD_CA_PEM;
-            ESP_LOGI(TAG, "WS TLS attempt %d/2 using embedded TriggerCMD CA", attempt + 1);
+            cfg.cert_len = strlen(TRIGGERCMD_CA_PEM) + 1;
+            if (skip_cn_check) {
+                ESP_LOGW(TAG, "WS TLS attempt %d/3 using embedded TriggerCMD CA (CN check skipped)", attempt + 1);
+            } else {
+                ESP_LOGI(TAG, "WS TLS attempt %d/3 using embedded TriggerCMD CA", attempt + 1);
+            }
         }
 
         s_client = esp_websocket_client_init(&cfg);
@@ -238,7 +249,7 @@ esp_err_t socketio_connect(const char          *uri,
             ESP_LOGE(TAG, "esp_websocket_client_start: %s", esp_err_to_name(ret));
             esp_websocket_client_destroy(s_client);
             s_client = NULL;
-            if (use_bundle) return ret;
+            if (attempt == 2) return ret;
             continue;
         }
 
@@ -251,7 +262,8 @@ esp_err_t socketio_connect(const char          *uri,
             return ESP_OK;
         }
 
-        ESP_LOGE(TAG, "SIO connect timeout (%d ms)", SIO_CONNECT_TIMEOUT_MS);
+        ESP_LOGE(TAG, "SIO connect timeout (%d ms) on attempt %d/3",
+             SIO_CONNECT_TIMEOUT_MS, attempt + 1);
         esp_websocket_client_stop(s_client);
         esp_websocket_client_destroy(s_client);
         s_client = NULL;
