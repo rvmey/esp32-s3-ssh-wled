@@ -3779,6 +3779,8 @@ static void pf_event_handler(const char *event_name,
         /* Discard any cached JPEG so orientation changes redraw text, not image */
         if (s_jpeg_cache) { free(s_jpeg_cache); s_jpeg_cache = NULL; s_jpeg_cache_len = 0; }
         s_mp3_ui_override_allowed = false;
+        s_pending_jpeg = false;
+        s_pending_jpeg_redraw = false;
         strncpy(s_last_text, s_params[0] ? s_params : " ", sizeof(s_last_text) - 1);
         s_last_text[sizeof(s_last_text) - 1] = '\0';
         s_current_jpeg_url[0] = '\0';
@@ -3822,6 +3824,7 @@ static void pf_event_handler(const char *event_name,
             /* Trim leading whitespace from URL */
             const char *url = s_params;
             while (*url == ' ') url++;
+            s_pending_jpeg_redraw = false;
             strncpy(s_pending_jpeg_url, url, sizeof(s_pending_jpeg_url) - 1);
             s_pending_jpeg_url[sizeof(s_pending_jpeg_url) - 1] = '\0';
             s_pending_jpeg = true;
@@ -4078,7 +4081,9 @@ static bool download_and_show_jpeg(const char *url)
         .timeout_ms = 15000,
     };
     if (strncmp(url, "https://", 8) == 0) {
-        cfg.crt_bundle_attach = esp_crt_bundle_attach;
+        cfg.cert_pem = NULL;
+        cfg.common_name = NULL;
+        cfg.skip_cert_common_name_check = true;
     }
 
     esp_http_client_handle_t client = esp_http_client_init(&cfg);
