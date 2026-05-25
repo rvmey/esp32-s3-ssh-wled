@@ -24,6 +24,7 @@
 #include "esp_websocket_client.h"
 #include "triggercmd_ca.h"   /* embedded Go Daddy Root G2 cert for triggercmd.com */
 #include "mbedtls/error.h"
+#include "mbedtls/x509.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
 #include "esp_heap_caps.h"
@@ -178,11 +179,23 @@ static void ws_event_handler(void *arg, esp_event_base_t base,
         ESP_LOGE(TAG, "WS error");
         /* TEMP DIAG: dump full TLS error details */
         if (d) {
-            ESP_LOGE(TAG, "WS error detail: error_type=%d tls_last_err=0x%x tls_stack_err=0x%x sock_errno=%d",
+            ESP_LOGE(TAG, "WS error detail: error_type=%d tls_last_err=0x%x tls_stack_err=0x%x verify_flags=0x%x sock_errno=%d",
                      (int)d->error_handle.error_type,
                      (unsigned)d->error_handle.esp_tls_last_esp_err,
                      (unsigned)d->error_handle.esp_tls_stack_err,
+                     (unsigned)d->error_handle.esp_tls_cert_verify_flags,
                      d->error_handle.esp_transport_sock_errno);
+
+            if (d->error_handle.esp_tls_cert_verify_flags) {
+                int flags = d->error_handle.esp_tls_cert_verify_flags;
+                if (flags & MBEDTLS_X509_BADCERT_EXPIRED) ESP_LOGE(TAG, "verify flag: MBEDTLS_X509_BADCERT_EXPIRED");
+                if (flags & MBEDTLS_X509_BADCERT_REVOKED) ESP_LOGE(TAG, "verify flag: MBEDTLS_X509_BADCERT_REVOKED");
+                if (flags & MBEDTLS_X509_BADCERT_CN_MISMATCH) ESP_LOGE(TAG, "verify flag: MBEDTLS_X509_BADCERT_CN_MISMATCH");
+                if (flags & MBEDTLS_X509_BADCERT_NOT_TRUSTED) ESP_LOGE(TAG, "verify flag: MBEDTLS_X509_BADCERT_NOT_TRUSTED");
+                if (flags & MBEDTLS_X509_BADCERT_FUTURE) ESP_LOGE(TAG, "verify flag: MBEDTLS_X509_BADCERT_FUTURE");
+                if (flags & MBEDTLS_X509_BADCRL_NOT_TRUSTED) ESP_LOGE(TAG, "verify flag: MBEDTLS_X509_BADCRL_NOT_TRUSTED");
+            }
+
             if (d->error_handle.error_type == WEBSOCKET_ERROR_TYPE_TCP_TRANSPORT &&
                 d->error_handle.esp_tls_stack_err != 0) {
                 char mbedtls_err_buf[128];
@@ -271,7 +284,7 @@ esp_err_t socketio_connect(const char          *uri,
 
     for (int attempt = 0; attempt < 3; ++attempt) {
         bool use_bundle = (attempt == 2);
-        bool skip_cn_check = (attempt == 1);
+        bool use_root_only = (attempt == 1);
 
         esp_websocket_client_config_t cfg = {
             .host                = ws_host,
@@ -284,8 +297,8 @@ esp_err_t socketio_connect(const char          *uri,
             .disable_auto_reconnect = true,
             .ping_interval_sec   = 25,   /* keep-alive through NAT idle timeouts */
             .buffer_size         = 4096,
-            .cert_common_name    = skip_cn_check ? NULL : "www.triggercmd.com",
-            .skip_cert_common_name_check = skip_cn_check,
+            .cert_common_name    = "www.triggercmd.com",
+            .skip_cert_common_name_check = false,
         };
 
         if (use_bundle) {
@@ -293,14 +306,13 @@ esp_err_t socketio_connect(const char          *uri,
             cfg.cert_common_name = "www.triggercmd.com";
             cfg.skip_cert_common_name_check = false;
             ESP_LOGW(TAG, "WS TLS attempt %d/3 using ESP cert bundle", attempt + 1);
+        } else if (use_root_only) {
+            cfg.cert_pem = TRIGGERCMD_ROOT_G2_PEM;
+            ESP_LOGW(TAG, "WS TLS attempt %d/3 using TriggerCMD root-only cert", attempt + 1);
         } else {
             cfg.cert_pem = TRIGGERCMD_CA_PEM;
             /* Leave cert_len at 0 for PEM so esp_websocket_client does not treat it as DER. */
-            if (skip_cn_check) {
-                ESP_LOGW(TAG, "WS TLS attempt %d/3 using TriggerCMD embedded cert (CN check skipped)", attempt + 1);
-            } else {
-                ESP_LOGI(TAG, "WS TLS attempt %d/3 using TriggerCMD embedded cert", attempt + 1);
-            }
+            ESP_LOGI(TAG, "WS TLS attempt %d/3 using TriggerCMD embedded cert", attempt + 1);
         }
 
         ESP_LOGI(TAG, "WS TLS attempt %d/3 heap: free=%u min=%u",
