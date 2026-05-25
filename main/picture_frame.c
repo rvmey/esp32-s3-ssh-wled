@@ -3014,6 +3014,7 @@ static bool mount_sd_card_if_needed(void)
         screen_spi_unlock();
     }
     ESP_LOGI(TAG, "sd: mounted at %s", MP3_ROOT_PATH);
+    screen_reinit_display();
     return true;
 }
 

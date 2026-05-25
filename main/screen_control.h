@@ -122,6 +122,16 @@ bool screen_spi_lock(uint32_t timeout_ms);
 void screen_spi_unlock(void);
 
 /**
+ * @brief Re-assert the display controller's output-enable state after the
+ *        shared SPI bus has been used by another peripheral (e.g. SD card).
+ *        On Core2 this resends SLEEP_OUT + key ILI9342C display-control
+ *        registers to recover from any spurious DISPOFF or SLPIN the panel
+ *        may have received during SD initialisation.  On other hardware
+ *        (JC3248W535) this is a no-op.
+ */
+void screen_reinit_display(void);
+
+/**
  * @brief Register a logical-coordinate touch callback.
  *
  * The callback receives x/y in current logical orientation coordinates

@@ -28,7 +28,7 @@
 #include "screen_control.h"
 #endif
 
-#define APP_VERSION "2.0.220"
+#define APP_VERSION "2.0.221"
 const char g_firmware_version[] = APP_VERSION;
 
 static const char *TAG = "main";

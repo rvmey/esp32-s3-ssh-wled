@@ -855,6 +855,28 @@ void screen_draw_text(const char *text)
     xSemaphoreGive(s_draw_mutex);
 }
 
+void screen_reinit_display(void)
+{
+    /* Re-assert ILI9342C display state after the SPI bus has been used by
+     * another peripheral (SD card).  The ILI9342C can receive a spurious
+     * DISPOFF or SLPIN if its CS line glitches LOW during SD initialisation.
+     * Resend the minimum set of display-control registers so the panel is
+     * visible and correctly oriented. */
+    xSemaphoreTake(s_draw_mutex, portMAX_DELAY);
+    ESP_LOGI(TAG, "screen_reinit_display: re-asserting ILI9342C after SPI bus share");
+    ili_cmd(0x11);                              /* SLEEP_OUT         */
+    xSemaphoreGive(s_draw_mutex);
+    vTaskDelay(pdMS_TO_TICKS(120));             /* oscillator stabilise */
+    xSemaphoreTake(s_draw_mutex, portMAX_DELAY);
+    ili_cmd(0x38);                              /* IDMOFF            */
+    ili_cmd(0x3A); ili_data_byte(0x55);         /* COLMOD: RGB565    */
+    ili_cmd(0x36); ili_data_byte(MADCTL_LANDSCAPE); /* MADCTL        */
+    ili_cmd(0x21);                              /* INVERT_ON         */
+    ili_cmd(0x29);                              /* DISPLAY_ON        */
+    xSemaphoreGive(s_draw_mutex);
+    ESP_LOGI(TAG, "screen_reinit_display: done");
+}
+
 void screen_draw_rgb565(const uint8_t *rgb565, int src_w, int src_h)
 {
     xSemaphoreTake(s_draw_mutex, portMAX_DELAY);
