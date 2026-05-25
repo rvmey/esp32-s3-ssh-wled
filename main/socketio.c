@@ -26,6 +26,7 @@
 #include "mbedtls/error.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
+#include "esp_heap_caps.h"
 
 static const char *TAG = "socketio";
 
@@ -239,7 +240,6 @@ esp_err_t socketio_connect(const char          *uri,
             .uri                 = uri,
             .transport           = WEBSOCKET_TRANSPORT_OVER_SSL,
             .headers             = auth_hdr,
-            .task_stack          = 12288,
             .network_timeout_ms  = 20000,
             .reconnect_timeout_ms = 5000,
             .disable_auto_reconnect = true,
@@ -268,6 +268,10 @@ esp_err_t socketio_connect(const char          *uri,
                  attempt + 1,
                  (unsigned)esp_get_free_heap_size(),
                  (unsigned)esp_get_minimum_free_heap_size());
+        ESP_LOGI(TAG, "WS TLS attempt %d/3 internal heap: free=%u largest=%u",
+             attempt + 1,
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
 
         s_client = esp_websocket_client_init(&cfg);
         if (!s_client) {
