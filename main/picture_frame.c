@@ -28,6 +28,7 @@
 #include <stdlib.h>
 #include <ctype.h>
 #include <stdio.h>
+#include <time.h>
 #include <dirent.h>
 #include <sys/stat.h>
 #include "esp_log.h"
@@ -40,6 +41,7 @@
 #include "esp_http_client.h"
 #include "esp_crt_bundle.h"
 #include "esp_timer.h"
+#include "esp_sntp.h"
 
 #include "wifi_manager.h"
 #include "improv_wifi.h"
@@ -4149,6 +4151,30 @@ static bool download_and_show_jpeg(const char *url)
     return false;
 }
 
+static void sync_time_before_tls(void)
+{
+    const int max_retries = 20;
+    const time_t min_valid_epoch = 1000000000; /* ~2001-09-09 */
+
+    ESP_LOGI(TAG, "SNTP: initializing time sync");
+    esp_sntp_stop();
+    esp_sntp_setoperatingmode(SNTP_OPMODE_POLL);
+    esp_sntp_setservername(0, "pool.ntp.org");
+    esp_sntp_init();
+
+    for (int i = 0; i < max_retries; i++) {
+        time_t now = time(NULL);
+        if (now >= min_valid_epoch) {
+            ESP_LOGI(TAG, "SNTP: time synced (%lld)", (long long)now);
+            return;
+        }
+        ESP_LOGI(TAG, "SNTP: waiting for time sync... (%d/%d)", i + 1, max_retries);
+        vTaskDelay(pdMS_TO_TICKS(500));
+    }
+
+    ESP_LOGW(TAG, "SNTP: time not synced before timeout; current=%lld", (long long)time(NULL));
+}
+
 /* ── Connection step: Socket.IO + subscribeToFunRoom ────────────────────── */
 
 static esp_err_t connect_and_subscribe(void)
@@ -4218,6 +4244,8 @@ void picture_frame_run(void)
         ESP_LOGE(TAG, "WiFi connect failed");
         vTaskSuspend(NULL);
     }
+
+    sync_time_before_tls();
 
     screen_set_color(0, 32, 0);   /* green = connected */
     vTaskDelay(pdMS_TO_TICKS(500));

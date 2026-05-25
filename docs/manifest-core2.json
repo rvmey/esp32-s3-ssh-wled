@@ -1,6 +1,6 @@
 {
   "name": "TRIGGERcmd Core2 Display (M5Stack Core2 for AWS)",
-  "version": "2.0.194",
+  "version": "2.0.195",
   "new_install_improv_wifi": false,
   "builds": [
     {
@@ -9,7 +9,7 @@
         { "path": "firmware/bootloader-esp32.bin",             "offset": 4096  },
         { "path": "firmware/partition-table-esp32.bin",        "offset": 32768 },
         { "path": "firmware/nvs_blank.bin",                    "offset": 36864 },
-        { "path": "firmware/esp32_core2_picture_frame-2.0.194.bin", "offset": 65536 }
+        { "path": "firmware/esp32_core2_picture_frame-2.0.195.bin", "offset": 65536 }
       ]
     }
   ]
