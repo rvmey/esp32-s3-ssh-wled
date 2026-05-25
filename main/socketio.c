@@ -36,6 +36,29 @@ static const char *TAG = "socketio";
 #define SIO_CONNECT_TIMEOUT_MS  10000
 #define WS_TLS_ATTEMPTS         4
 
+typedef enum {
+    WS_TLS_EMBEDDED_CERT = 0,
+    WS_TLS_ROOT_ONLY_CERT,
+    WS_TLS_CERT_BUNDLE,
+    WS_TLS_INSECURE_NO_VERIFY,
+} ws_tls_mode_t;
+
+#if CONFIG_ESP_TLS_INSECURE && CONFIG_ESP_TLS_SKIP_SERVER_CERT_VERIFY
+static const ws_tls_mode_t s_tls_attempt_order[WS_TLS_ATTEMPTS] = {
+    WS_TLS_INSECURE_NO_VERIFY,
+    WS_TLS_EMBEDDED_CERT,
+    WS_TLS_ROOT_ONLY_CERT,
+    WS_TLS_CERT_BUNDLE,
+};
+#else
+static const ws_tls_mode_t s_tls_attempt_order[WS_TLS_ATTEMPTS] = {
+    WS_TLS_EMBEDDED_CERT,
+    WS_TLS_ROOT_ONLY_CERT,
+    WS_TLS_CERT_BUNDLE,
+    WS_TLS_INSECURE_NO_VERIFY,
+};
+#endif
+
 /* ── State ──────────────────────────────────────────────────────────────── */
 
 static esp_websocket_client_handle_t s_client    = NULL;
@@ -288,9 +311,10 @@ esp_err_t socketio_connect(const char          *uri,
              ws_host, ws_port, secure_transport ? 1 : 0, ws_path);
 
     for (int attempt = 0; attempt < WS_TLS_ATTEMPTS; ++attempt) {
-        bool use_bundle = (attempt == 2);
-        bool use_root_only = (attempt == 1);
-        bool insecure_no_verify = (attempt == 3);
+        ws_tls_mode_t mode = s_tls_attempt_order[attempt];
+        bool use_bundle = (mode == WS_TLS_CERT_BUNDLE);
+        bool use_root_only = (mode == WS_TLS_ROOT_ONLY_CERT);
+        bool insecure_no_verify = (mode == WS_TLS_INSECURE_NO_VERIFY);
 
         esp_websocket_client_config_t cfg = {
             .uri                 = uri,
