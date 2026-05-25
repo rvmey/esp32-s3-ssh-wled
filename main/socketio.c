@@ -216,7 +216,7 @@ esp_err_t socketio_connect(const char          *uri,
             .disable_auto_reconnect = true,
             .ping_interval_sec   = 25,   /* keep-alive through NAT idle timeouts */
             .buffer_size         = 4096,
-            .cert_common_name    = "www.triggercmd.com",
+            .cert_common_name    = skip_cn_check ? NULL : "www.triggercmd.com",
             .skip_cert_common_name_check = skip_cn_check,
         };
 
