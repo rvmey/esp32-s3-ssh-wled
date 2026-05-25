@@ -21,6 +21,8 @@
 #include "esp_crt_bundle.h"
 #include "esp_websocket_client.h"
 #include "triggercmd_ca.h"   /* embedded Go Daddy Root G2 cert for triggercmd.com */
+#include "esp_tls.h"
+#include "mbedtls/error.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
 
@@ -172,6 +174,21 @@ static void ws_event_handler(void *arg, esp_event_base_t base,
 
     case WEBSOCKET_EVENT_ERROR:
         ESP_LOGE(TAG, "WS error");
+        /* TEMP DIAG: dump full TLS error details */
+        if (d) {
+            ESP_LOGE(TAG, "WS error detail: error_type=%d tls_last_err=0x%x tls_stack_err=0x%x sock_errno=%d",
+                     (int)d->error_handle.error_type,
+                     (unsigned)d->error_handle.esp_tls_last_esp_err,
+                     (unsigned)d->error_handle.esp_tls_stack_err,
+                     d->error_handle.esp_transport_sock_errno);
+            if (d->error_handle.error_type == WEBSOCKET_ERROR_TYPE_TCP_TRANSPORT &&
+                d->error_handle.esp_tls_stack_err != 0) {
+                char mbedtls_err_buf[128];
+                mbedtls_strerror(d->error_handle.esp_tls_stack_err,
+                                 mbedtls_err_buf, sizeof(mbedtls_err_buf));
+                ESP_LOGE(TAG, "mbedtls error string: %s", mbedtls_err_buf);
+            }
+        }
         s_connected = false;
         break;
 
@@ -228,6 +245,18 @@ esp_err_t socketio_connect(const char          *uri,
         } else {
             cfg.cert_pem = TRIGGERCMD_CA_PEM;
             /* esp_websocket_client treats non-zero cert_len as DER input. */
+            /* TEMP DIAG: verify cert_pem pointer and content */
+            if (cfg.cert_pem) {
+                size_t pem_len = strlen(cfg.cert_pem);
+                ESP_LOGI(TAG, "DIAG cert_pem=%p len=%u cert_len=%u cn='%s' skip_cn=%d",
+                         (void *)cfg.cert_pem, (unsigned)pem_len, (unsigned)cfg.cert_len,
+                         cfg.cert_common_name ? cfg.cert_common_name : "(null)",
+                         (int)cfg.skip_cert_common_name_check);
+                ESP_LOGI(TAG, "DIAG cert_pem start: %.40s", cfg.cert_pem);
+                ESP_LOGI(TAG, "DIAG cert_pem end  : %.40s", cfg.cert_pem + (pem_len > 40 ? pem_len - 40 : 0));
+            } else {
+                ESP_LOGE(TAG, "DIAG cert_pem is NULL!");
+            }
             if (skip_cn_check) {
                 ESP_LOGW(TAG, "WS TLS attempt %d/3 using embedded TriggerCMD CA (CN check skipped)", attempt + 1);
             } else {

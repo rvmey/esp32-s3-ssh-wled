@@ -24,7 +24,7 @@ self.addEventListener('fetch', event => {
   }
 
   if (reqUrl.pathname.endsWith('/manifest-core2.json')) {
-    const target = 'https://raw.githubusercontent.com/rvmey/esp32-s3-ssh-wled/master/docs/manifest-core2-2.0.192.json';
+    const target = 'https://raw.githubusercontent.com/rvmey/esp32-s3-ssh-wled/master/docs/manifest-core2-2.0.193.json';
     event.respondWith(fetch(target, { cache: 'no-store' }));
     return;
   }
