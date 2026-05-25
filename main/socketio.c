@@ -43,21 +43,12 @@ typedef enum {
     WS_TLS_INSECURE_NO_VERIFY,
 } ws_tls_mode_t;
 
-#if CONFIG_ESP_TLS_INSECURE && CONFIG_ESP_TLS_SKIP_SERVER_CERT_VERIFY
-static const ws_tls_mode_t s_tls_attempt_order[WS_TLS_ATTEMPTS] = {
-    WS_TLS_INSECURE_NO_VERIFY,
-    WS_TLS_EMBEDDED_CERT,
-    WS_TLS_ROOT_ONLY_CERT,
-    WS_TLS_CERT_BUNDLE,
-};
-#else
 static const ws_tls_mode_t s_tls_attempt_order[WS_TLS_ATTEMPTS] = {
     WS_TLS_EMBEDDED_CERT,
     WS_TLS_ROOT_ONLY_CERT,
     WS_TLS_CERT_BUNDLE,
     WS_TLS_INSECURE_NO_VERIFY,
 };
-#endif
 
 /* ── State ──────────────────────────────────────────────────────────────── */
 
@@ -345,7 +336,7 @@ esp_err_t socketio_connect(const char          *uri,
             cfg.cert_pem = NULL; /* Diagnostic fallback: verify whether transport works without cert validation. */
             cfg.cert_common_name = NULL;
             cfg.skip_cert_common_name_check = true;
-            ESP_LOGW(TAG, "WS TLS attempt %d/%d using INSECURE no-verify mode (diagnostic only)", attempt + 1, WS_TLS_ATTEMPTS);
+            ESP_LOGW(TAG, "WS TLS attempt %d/%d using INSECURE no-verify mode as final fallback (diagnostic only)", attempt + 1, WS_TLS_ATTEMPTS);
 #else
             ESP_LOGE(TAG, "WS TLS attempt %d/%d insecure mode requested but disabled in Kconfig (set CONFIG_ESP_TLS_INSECURE=y and CONFIG_ESP_TLS_SKIP_SERVER_CERT_VERIFY=y)",
                      attempt + 1, WS_TLS_ATTEMPTS);

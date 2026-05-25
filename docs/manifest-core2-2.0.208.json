@@ -1,0 +1,15 @@
+{
+  "name": "TRIGGERcmd Picture Frame (Core2)",
+  "version": "2.0.208",
+  "new_install_prompt_erase": true,
+  "builds": [
+    {
+      "chipFamily": "ESP32",
+      "parts": [
+        { "path": "firmware/bootloader-esp32.bin", "offset": 4096 },
+        { "path": "firmware/partition-table-esp32.bin", "offset": 32768 },
+        { "path": "firmware/esp32_core2_picture_frame-2.0.208.bin", "offset": 65536 }
+      ]
+    }
+  ]
+}
