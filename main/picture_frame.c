@@ -3215,7 +3215,7 @@ static int https_get_auth(const char *url, const char *token, char **body)
     }
 
     int64_t cl = esp_http_client_fetch_headers(client);
-    int max_body = 2048;
+    int max_body = 32768;   /* command list can exceed 2 KB with many commands */
     if (cl > 0 && cl < max_body) max_body = (int)cl;
 
     char *buf = malloc(max_body + 1);

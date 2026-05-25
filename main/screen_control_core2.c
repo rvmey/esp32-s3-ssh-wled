@@ -779,6 +779,7 @@ void screen_draw_text(const char *text)
     }
 
     if (total_lines == 0) {
+        ESP_LOGW(TAG, "screen_draw_text: total_lines=0 for text='%.40s' — skip", s_text);
         xSemaphoreGive(s_draw_mutex);
         return;
     }
@@ -814,6 +815,9 @@ void screen_draw_text(const char *text)
     uint8_t fg_h = (uint8_t)(fg >> 8);
     uint8_t fg_l = (uint8_t)(fg & 0xFF);
 
+    ESP_LOGI(TAG, "screen_draw_text: lines=%d text='%.40s' bg=(%u,%u,%u)=0x%04X fg=(%u,%u,%u)=0x%04X scale=%d",
+             total_lines, s_text, s_r, s_g, s_b, bg, s_fr, s_fg, s_fb, fg, s_font_scale);
+
     int logical_w = lcd_w();
 
     for (int y = 0; y < LCD_PHYS_H; y++) {
@@ -847,6 +851,7 @@ void screen_draw_text(const char *text)
         screen_full_redraw_yield(y);
     }
 
+    ESP_LOGI(TAG, "screen_draw_text: done");
     xSemaphoreGive(s_draw_mutex);
 }
 
