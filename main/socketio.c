@@ -17,6 +17,7 @@
 
 #include <string.h>
 #include <stdlib.h>
+#include <time.h>
 #include "esp_log.h"
 #include "esp_crt_bundle.h"
 #include "esp_websocket_client.h"
@@ -221,9 +222,15 @@ esp_err_t socketio_connect(const char          *uri,
     snprintf(auth_hdr, sizeof(auth_hdr),
              "Authorization: Bearer %s\r\n", auth_token);
 
-    for (int attempt = 0; attempt < 3; ++attempt) {
-        bool use_bundle = (attempt == 2);
-        bool skip_cn_check = (attempt == 1);
+    /* DIAG: log device time to detect epoch/1970 clock causing cert-date failure */
+    time_t now = time(NULL);
+    ESP_LOGW(TAG, "DIAG device time: %lld (0 or small = not synced, cert may fail date check)",
+             (long long)now);
+
+    for (int attempt = 0; attempt < 4; ++attempt) {
+        bool use_bundle   = (attempt == 2);
+        bool no_cert      = (attempt == 3); /* VERIFY_NONE – no cert, no bundle */
+        bool skip_cn_check = (attempt == 1) || (attempt == 3);
 
         esp_websocket_client_config_t cfg = {
             .uri                 = uri,
@@ -237,30 +244,33 @@ esp_err_t socketio_connect(const char          *uri,
             .skip_cert_common_name_check = skip_cn_check,
         };
 
-        if (use_bundle) {
+        if (no_cert) {
+            /* VERIFY_NONE: no cert_pem, no bundle → esp-tls uses MBEDTLS_SSL_VERIFY_NONE */
+            ESP_LOGW(TAG, "WS TLS attempt 4/4 NO cert verification (DIAG ONLY - INSECURE)");
+        } else if (use_bundle) {
             cfg.crt_bundle_attach = esp_crt_bundle_attach;
             cfg.cert_common_name = NULL;
             cfg.skip_cert_common_name_check = false;
-            ESP_LOGW(TAG, "WS TLS attempt %d/3 using ESP cert bundle", attempt + 1);
+            ESP_LOGW(TAG, "WS TLS attempt %d/4 using ESP cert bundle", attempt + 1);
         } else {
             cfg.cert_pem = TRIGGERCMD_CA_PEM;
             /* esp_websocket_client treats non-zero cert_len as DER input. */
             /* TEMP DIAG: verify cert_pem pointer and content */
             if (cfg.cert_pem) {
                 size_t pem_len = strlen(cfg.cert_pem);
-                ESP_LOGI(TAG, "DIAG cert_pem=%p len=%u cert_len=%u cn='%s' skip_cn=%d",
+                ESP_LOGI(TAG, "DIAG cert_pem=%p len=%u cert_len=%u cn='%s' skip_cn=%d (attempt %d/4)",
                          (void *)cfg.cert_pem, (unsigned)pem_len, (unsigned)cfg.cert_len,
                          cfg.cert_common_name ? cfg.cert_common_name : "(null)",
-                         (int)cfg.skip_cert_common_name_check);
+                         (int)cfg.skip_cert_common_name_check, attempt + 1);
                 ESP_LOGI(TAG, "DIAG cert_pem start: %.40s", cfg.cert_pem);
                 ESP_LOGI(TAG, "DIAG cert_pem end  : %.40s", cfg.cert_pem + (pem_len > 40 ? pem_len - 40 : 0));
             } else {
                 ESP_LOGE(TAG, "DIAG cert_pem is NULL!");
             }
             if (skip_cn_check) {
-                ESP_LOGW(TAG, "WS TLS attempt %d/3 using embedded TriggerCMD CA (CN check skipped)", attempt + 1);
+                ESP_LOGW(TAG, "WS TLS attempt %d/4 using embedded TriggerCMD CA (CN check skipped)", attempt + 1);
             } else {
-                ESP_LOGI(TAG, "WS TLS attempt %d/3 using embedded TriggerCMD CA", attempt + 1);
+                ESP_LOGI(TAG, "WS TLS attempt %d/4 using embedded TriggerCMD CA", attempt + 1);
             }
         }
 
@@ -278,7 +288,7 @@ esp_err_t socketio_connect(const char          *uri,
             ESP_LOGE(TAG, "esp_websocket_client_start: %s", esp_err_to_name(ret));
             esp_websocket_client_destroy(s_client);
             s_client = NULL;
-            if (attempt == 2) return ret;
+            if (attempt == 3) return ret;
             continue;
         }
 
@@ -291,7 +301,7 @@ esp_err_t socketio_connect(const char          *uri,
             return ESP_OK;
         }
 
-        ESP_LOGE(TAG, "SIO connect timeout (%d ms) on attempt %d/3",
+        ESP_LOGE(TAG, "SIO connect timeout (%d ms) on attempt %d/4",
              SIO_CONNECT_TIMEOUT_MS, attempt + 1);
         esp_websocket_client_stop(s_client);
         esp_websocket_client_destroy(s_client);
