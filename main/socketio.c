@@ -227,7 +227,7 @@ esp_err_t socketio_connect(const char          *uri,
             ESP_LOGW(TAG, "WS TLS attempt %d/3 using ESP cert bundle", attempt + 1);
         } else {
             cfg.cert_pem = TRIGGERCMD_CA_PEM;
-            cfg.cert_len = strlen(TRIGGERCMD_CA_PEM) + 1;
+            /* esp_websocket_client treats non-zero cert_len as DER input. */
             if (skip_cn_check) {
                 ESP_LOGW(TAG, "WS TLS attempt %d/3 using embedded TriggerCMD CA (CN check skipped)", attempt + 1);
             } else {
