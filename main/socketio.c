@@ -19,10 +19,10 @@
 #include <stdlib.h>
 #include <time.h>
 #include "esp_log.h"
+#include "esp_system.h"
 #include "esp_crt_bundle.h"
 #include "esp_websocket_client.h"
 #include "triggercmd_ca.h"   /* embedded Go Daddy Root G2 cert for triggercmd.com */
-#include "esp_tls.h"
 #include "mbedtls/error.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
@@ -39,30 +39,6 @@ static socketio_event_cb_t           s_cb        = NULL;
 static void                         *s_user_ctx  = NULL;
 static volatile bool                 s_connected = false;
 static EventGroupHandle_t            s_evt_group = NULL;
-static bool                          s_ca_store_ready = false;
-
-static esp_err_t ensure_triggercmd_ca_store(void)
-{
-    if (s_ca_store_ready) {
-        return ESP_OK;
-    }
-
-    esp_err_t ret = esp_tls_init_global_ca_store();
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "esp_tls_init_global_ca_store failed: %s", esp_err_to_name(ret));
-        return ret;
-    }
-
-    ret = esp_tls_set_global_ca_store((const unsigned char *)TRIGGERCMD_CA_PEM,
-                                      sizeof(TRIGGERCMD_CA_PEM));
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "esp_tls_set_global_ca_store failed: %s", esp_err_to_name(ret));
-        return ret;
-    }
-
-    s_ca_store_ready = true;
-    return ESP_OK;
-}
 
 /* ── WebSocket event handler ─────────────────────────────────────────────── */
 
@@ -209,7 +185,11 @@ static void ws_event_handler(void *arg, esp_event_base_t base,
             if (d->error_handle.error_type == WEBSOCKET_ERROR_TYPE_TCP_TRANSPORT &&
                 d->error_handle.esp_tls_stack_err != 0) {
                 char mbedtls_err_buf[128];
-                mbedtls_strerror(d->error_handle.esp_tls_stack_err,
+                int mbedtls_err = d->error_handle.esp_tls_stack_err;
+                if (mbedtls_err > 0) {
+                    mbedtls_err = -mbedtls_err;
+                }
+                mbedtls_strerror(mbedtls_err,
                                  mbedtls_err_buf, sizeof(mbedtls_err_buf));
                 ESP_LOGE(TAG, "mbedtls error string: %s", mbedtls_err_buf);
             }
@@ -251,17 +231,13 @@ esp_err_t socketio_connect(const char          *uri,
     ESP_LOGW(TAG, "DIAG device time: %lld (0 or small = not synced, cert may fail date check)",
              (long long)now);
 
-    esp_err_t ca_ret = ensure_triggercmd_ca_store();
-    if (ca_ret != ESP_OK) {
-        return ca_ret;
-    }
-
     for (int attempt = 0; attempt < 3; ++attempt) {
         bool use_bundle = (attempt == 2);
         bool skip_cn_check = (attempt == 1);
 
         esp_websocket_client_config_t cfg = {
             .uri                 = uri,
+            .transport           = WEBSOCKET_TRANSPORT_OVER_SSL,
             .headers             = auth_hdr,
             .network_timeout_ms  = 20000,
             .reconnect_timeout_ms = 5000,
@@ -274,17 +250,23 @@ esp_err_t socketio_connect(const char          *uri,
 
         if (use_bundle) {
             cfg.crt_bundle_attach = esp_crt_bundle_attach;
-            cfg.cert_common_name = NULL;
+            cfg.cert_common_name = "www.triggercmd.com";
             cfg.skip_cert_common_name_check = false;
             ESP_LOGW(TAG, "WS TLS attempt %d/3 using ESP cert bundle", attempt + 1);
         } else {
-            cfg.use_global_ca_store = true;
+            cfg.cert_pem = TRIGGERCMD_CA_PEM;
+            cfg.cert_len = strlen(TRIGGERCMD_CA_PEM) + 1;
             if (skip_cn_check) {
-                ESP_LOGW(TAG, "WS TLS attempt %d/3 using TriggerCMD CA store (CN check skipped)", attempt + 1);
+                ESP_LOGW(TAG, "WS TLS attempt %d/3 using TriggerCMD embedded cert (CN check skipped)", attempt + 1);
             } else {
-                ESP_LOGI(TAG, "WS TLS attempt %d/3 using TriggerCMD CA store", attempt + 1);
+                ESP_LOGI(TAG, "WS TLS attempt %d/3 using TriggerCMD embedded cert", attempt + 1);
             }
         }
+
+        ESP_LOGI(TAG, "WS TLS attempt %d/3 heap: free=%u min=%u",
+                 attempt + 1,
+                 (unsigned)esp_get_free_heap_size(),
+                 (unsigned)esp_get_minimum_free_heap_size());
 
         s_client = esp_websocket_client_init(&cfg);
         if (!s_client) {
