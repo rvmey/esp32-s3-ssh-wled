@@ -20,9 +20,7 @@
 #include <time.h>
 #include "esp_log.h"
 #include "esp_system.h"
-#include "esp_crt_bundle.h"
 #include "esp_websocket_client.h"
-#include "triggercmd_ca.h"   /* embedded Go Daddy Root G2 cert for triggercmd.com */
 #include "mbedtls/error.h"
 #include "mbedtls/x509.h"
 #include "mbedtls/x509_crt.h"
@@ -34,15 +32,6 @@ static const char *TAG = "socketio";
 
 #define SIO_CONNECTED_BIT       BIT0
 #define SIO_CONNECT_TIMEOUT_MS  10000
-#define WS_TLS_ATTEMPTS         1
-
-typedef enum {
-    WS_TLS_INSECURE_NO_VERIFY = 0,
-} ws_tls_mode_t;
-
-static const ws_tls_mode_t s_tls_attempt_order[WS_TLS_ATTEMPTS] = {
-    WS_TLS_INSECURE_NO_VERIFY,
-};
 
 /* ── State ──────────────────────────────────────────────────────────────── */
 
@@ -295,84 +284,66 @@ esp_err_t socketio_connect(const char          *uri,
     ESP_LOGI(TAG, "WS target parsed: host=%s port=%d secure=%d path=%s",
              ws_host, ws_port, secure_transport ? 1 : 0, ws_path);
 
-    for (int attempt = 0; attempt < WS_TLS_ATTEMPTS; ++attempt) {
-        ws_tls_mode_t mode = s_tls_attempt_order[attempt];
-        bool insecure_no_verify = (mode == WS_TLS_INSECURE_NO_VERIFY);
-
-        esp_websocket_client_config_t cfg = {
-            .uri                 = uri,
-            .host                = ws_host,
-            .port                = ws_port,
-            .path                = ws_path,
-            .transport           = secure_transport ? WEBSOCKET_TRANSPORT_OVER_SSL : WEBSOCKET_TRANSPORT_OVER_TCP,
-            .headers             = auth_hdr,
-            .network_timeout_ms  = 20000,
-            .reconnect_timeout_ms = 5000,
-            .disable_auto_reconnect = true,
-            .ping_interval_sec   = 25,   /* keep-alive through NAT idle timeouts */
-            .buffer_size         = 4096,
-            .cert_common_name    = "www.triggercmd.com",
-            .skip_cert_common_name_check = false,
-        };
-
-        if (insecure_no_verify) {
-#if CONFIG_ESP_TLS_INSECURE && CONFIG_ESP_TLS_SKIP_SERVER_CERT_VERIFY
-            cfg.cert_pem = NULL; /* Deliberately skip certificate validation for this project. */
-            cfg.cert_common_name = NULL;
-            cfg.skip_cert_common_name_check = true;
-            ESP_LOGW(TAG, "WS TLS attempt %d/%d using INSECURE no-verify mode", attempt + 1, WS_TLS_ATTEMPTS);
+#if !(CONFIG_ESP_TLS_INSECURE && CONFIG_ESP_TLS_SKIP_SERVER_CERT_VERIFY)
+    ESP_LOGE(TAG, "WS TLS no-verify mode requested but disabled in Kconfig (set CONFIG_ESP_TLS_INSECURE=y and CONFIG_ESP_TLS_SKIP_SERVER_CERT_VERIFY=y)");
+    return ESP_ERR_NOT_SUPPORTED;
 #else
-            ESP_LOGE(TAG, "WS TLS no-verify mode requested but disabled in Kconfig (set CONFIG_ESP_TLS_INSECURE=y and CONFIG_ESP_TLS_SKIP_SERVER_CERT_VERIFY=y)");
-            return ESP_ERR_NOT_SUPPORTED;
-#endif
-        }
+    esp_websocket_client_config_t cfg = {
+        .uri                 = uri,
+        .host                = ws_host,
+        .port                = ws_port,
+        .path                = ws_path,
+        .transport           = secure_transport ? WEBSOCKET_TRANSPORT_OVER_SSL : WEBSOCKET_TRANSPORT_OVER_TCP,
+        .headers             = auth_hdr,
+        .network_timeout_ms  = 20000,
+        .reconnect_timeout_ms = 5000,
+        .disable_auto_reconnect = true,
+        .ping_interval_sec   = 25,
+        .buffer_size         = 4096,
+        .cert_pem            = NULL,
+        .cert_common_name    = NULL,
+        .skip_cert_common_name_check = true,
+    };
 
-        ESP_LOGI(TAG, "WS TLS attempt %d/%d heap: free=%u min=%u",
-                 attempt + 1,
-                 WS_TLS_ATTEMPTS,
-                 (unsigned)esp_get_free_heap_size(),
-                 (unsigned)esp_get_minimum_free_heap_size());
-        ESP_LOGI(TAG, "WS TLS attempt %d/%d internal heap: free=%u largest=%u",
-             attempt + 1,
-             WS_TLS_ATTEMPTS,
+    ESP_LOGW(TAG, "WS TLS attempt 1/1 using INSECURE no-verify mode");
+    ESP_LOGI(TAG, "WS TLS attempt 1/1 heap: free=%u min=%u",
+             (unsigned)esp_get_free_heap_size(),
+             (unsigned)esp_get_minimum_free_heap_size());
+    ESP_LOGI(TAG, "WS TLS attempt 1/1 internal heap: free=%u largest=%u",
              (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
              (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
 
-        s_client = esp_websocket_client_init(&cfg);
-        if (!s_client) {
-            ESP_LOGE(TAG, "esp_websocket_client_init failed");
-            return ESP_FAIL;
-        }
-
-        esp_websocket_register_events(s_client, WEBSOCKET_EVENT_ANY,
-                                      ws_event_handler, NULL);
-
-        esp_err_t ret = esp_websocket_client_start(s_client);
-        if (ret != ESP_OK) {
-            ESP_LOGE(TAG, "esp_websocket_client_start: %s", esp_err_to_name(ret));
-            esp_websocket_client_destroy(s_client);
-            s_client = NULL;
-            if (attempt == WS_TLS_ATTEMPTS - 1) return ret;
-            continue;
-        }
-
-        /* Block until "40" SIO connect ack is received, or timeout */
-        EventBits_t bits = xEventGroupWaitBits(s_evt_group,
-                                               SIO_CONNECTED_BIT,
-                                               pdFALSE, pdFALSE,
-                                               pdMS_TO_TICKS(SIO_CONNECT_TIMEOUT_MS));
-        if (bits & SIO_CONNECTED_BIT) {
-            return ESP_OK;
-        }
-
-           ESP_LOGE(TAG, "SIO connect timeout (%d ms) on attempt %d/%d",
-               SIO_CONNECT_TIMEOUT_MS, attempt + 1, WS_TLS_ATTEMPTS);
-        esp_websocket_client_stop(s_client);
-        esp_websocket_client_destroy(s_client);
-        s_client = NULL;
+    s_client = esp_websocket_client_init(&cfg);
+    if (!s_client) {
+        ESP_LOGE(TAG, "esp_websocket_client_init failed");
+        return ESP_FAIL;
     }
 
+    esp_websocket_register_events(s_client, WEBSOCKET_EVENT_ANY,
+                                  ws_event_handler, NULL);
+
+    esp_err_t ret = esp_websocket_client_start(s_client);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "esp_websocket_client_start: %s", esp_err_to_name(ret));
+        esp_websocket_client_destroy(s_client);
+        s_client = NULL;
+        return ret;
+    }
+
+    EventBits_t bits = xEventGroupWaitBits(s_evt_group,
+                                           SIO_CONNECTED_BIT,
+                                           pdFALSE, pdFALSE,
+                                           pdMS_TO_TICKS(SIO_CONNECT_TIMEOUT_MS));
+    if (bits & SIO_CONNECTED_BIT) {
+        return ESP_OK;
+    }
+
+    ESP_LOGE(TAG, "SIO connect timeout (%d ms)", SIO_CONNECT_TIMEOUT_MS);
+    esp_websocket_client_stop(s_client);
+    esp_websocket_client_destroy(s_client);
+    s_client = NULL;
     return ESP_ERR_TIMEOUT;
+#endif
 }
 
 void socketio_disconnect(void)
