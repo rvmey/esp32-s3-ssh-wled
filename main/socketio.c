@@ -34,6 +34,7 @@ static const char *TAG = "socketio";
 
 #define SIO_CONNECTED_BIT       BIT0
 #define SIO_CONNECT_TIMEOUT_MS  10000
+#define WS_TLS_ATTEMPTS         4
 
 /* ── State ──────────────────────────────────────────────────────────────── */
 
@@ -286,9 +287,10 @@ esp_err_t socketio_connect(const char          *uri,
     ESP_LOGI(TAG, "WS target parsed: host=%s port=%d secure=%d path=%s",
              ws_host, ws_port, secure_transport ? 1 : 0, ws_path);
 
-    for (int attempt = 0; attempt < 3; ++attempt) {
+    for (int attempt = 0; attempt < WS_TLS_ATTEMPTS; ++attempt) {
         bool use_bundle = (attempt == 2);
         bool use_root_only = (attempt == 1);
+        bool insecure_no_verify = (attempt == 3);
 
         esp_websocket_client_config_t cfg = {
             .uri                 = uri,
@@ -310,22 +312,29 @@ esp_err_t socketio_connect(const char          *uri,
             cfg.crt_bundle_attach = esp_crt_bundle_attach;
             cfg.cert_common_name = "www.triggercmd.com";
             cfg.skip_cert_common_name_check = false;
-            ESP_LOGW(TAG, "WS TLS attempt %d/3 using ESP cert bundle", attempt + 1);
+            ESP_LOGW(TAG, "WS TLS attempt %d/%d using ESP cert bundle", attempt + 1, WS_TLS_ATTEMPTS);
         } else if (use_root_only) {
             cfg.cert_pem = TRIGGERCMD_ROOT_G2_PEM;
-            ESP_LOGW(TAG, "WS TLS attempt %d/3 using TriggerCMD root-only cert", attempt + 1);
+            ESP_LOGW(TAG, "WS TLS attempt %d/%d using TriggerCMD root-only cert", attempt + 1, WS_TLS_ATTEMPTS);
+        } else if (insecure_no_verify) {
+            cfg.cert_pem = NULL; /* Diagnostic fallback: verify whether transport works without cert validation. */
+            cfg.cert_common_name = NULL;
+            cfg.skip_cert_common_name_check = true;
+            ESP_LOGW(TAG, "WS TLS attempt %d/%d using INSECURE no-verify mode (diagnostic only)", attempt + 1, WS_TLS_ATTEMPTS);
         } else {
             cfg.cert_pem = TRIGGERCMD_CA_PEM;
             /* Leave cert_len at 0 for PEM so esp_websocket_client does not treat it as DER. */
-            ESP_LOGI(TAG, "WS TLS attempt %d/3 using TriggerCMD embedded cert", attempt + 1);
+            ESP_LOGI(TAG, "WS TLS attempt %d/%d using TriggerCMD embedded cert", attempt + 1, WS_TLS_ATTEMPTS);
         }
 
-        ESP_LOGI(TAG, "WS TLS attempt %d/3 heap: free=%u min=%u",
+        ESP_LOGI(TAG, "WS TLS attempt %d/%d heap: free=%u min=%u",
                  attempt + 1,
+                 WS_TLS_ATTEMPTS,
                  (unsigned)esp_get_free_heap_size(),
                  (unsigned)esp_get_minimum_free_heap_size());
-        ESP_LOGI(TAG, "WS TLS attempt %d/3 internal heap: free=%u largest=%u",
+        ESP_LOGI(TAG, "WS TLS attempt %d/%d internal heap: free=%u largest=%u",
              attempt + 1,
+             WS_TLS_ATTEMPTS,
              (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
              (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
 
@@ -343,7 +352,7 @@ esp_err_t socketio_connect(const char          *uri,
             ESP_LOGE(TAG, "esp_websocket_client_start: %s", esp_err_to_name(ret));
             esp_websocket_client_destroy(s_client);
             s_client = NULL;
-            if (attempt == 2) return ret;
+            if (attempt == WS_TLS_ATTEMPTS - 1) return ret;
             continue;
         }
 
@@ -356,8 +365,8 @@ esp_err_t socketio_connect(const char          *uri,
             return ESP_OK;
         }
 
-        ESP_LOGE(TAG, "SIO connect timeout (%d ms) on attempt %d/3",
-             SIO_CONNECT_TIMEOUT_MS, attempt + 1);
+           ESP_LOGE(TAG, "SIO connect timeout (%d ms) on attempt %d/%d",
+               SIO_CONNECT_TIMEOUT_MS, attempt + 1, WS_TLS_ATTEMPTS);
         esp_websocket_client_stop(s_client);
         esp_websocket_client_destroy(s_client);
         s_client = NULL;
