@@ -80,14 +80,14 @@
   "trigger": "forward",
   "command": "forward",
   "allowParams": "false",
-  "mcpToolDescription": "Skip to the next MP3 file in the current folder.",
+  "mcpToolDescription": "Skip forward 10 seconds within the current MP3.",
   "icon": "⏩"
  },
  {
   "trigger": "reverse",
   "command": "reverse",
   "allowParams": "false",
-  "mcpToolDescription": "Go to the previous MP3 file in the current folder.",
+  "mcpToolDescription": "Skip backward 10 seconds within the current MP3.",
   "icon": "⏪"
  },
  {
@@ -110,6 +110,20 @@
   "allowParams": "true",
   "mcpToolDescription": "Enable or disable shuffle mode. Example: 'shuffle on' or 'shuffle off'",
   "icon": "🔀"
+ },
+ {
+  "trigger": "repeattrack",
+  "command": "repeattrack",
+  "allowParams": "true",
+  "mcpToolDescription": "Enable or disable repeat-track mode. Example: 'repeattrack on' or 'repeattrack off'",
+  "icon": "🔂"
+ },
+ {
+  "trigger": "repeatplaylist",
+  "command": "repeatplaylist",
+  "allowParams": "true",
+  "mcpToolDescription": "Enable or disable repeat-playlist mode. Example: 'repeatplaylist on' or 'repeatplaylist off'",
+  "icon": "🔁"
  },
  {
   "trigger": "pair",

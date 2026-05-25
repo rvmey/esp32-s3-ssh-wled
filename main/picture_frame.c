@@ -4453,14 +4453,15 @@ void picture_frame_run(void)
                 }
             }
 
-            if (s_mp3_ui_pending && s_mp3.active && s_mp3_ui_override_allowed &&
-                !s_pending_jpeg && !s_pending_jpeg_redraw) {
-                s_mp3_ui_pending = false;
-                mp3_render_now_playing();
-            } else if (s_mp3_ui_pending && !s_mp3.active) {
-                s_mp3_ui_pending = false;
-            } else if (s_mp3_ui_pending && !s_mp3_ui_override_allowed) {
-                s_mp3_ui_pending = false;
+            if (s_mp3_ui_pending) {
+                if (!s_mp3.active) {
+                    s_mp3_ui_pending = false;
+                } else if (s_mp3_ui_override_allowed && !s_pending_jpeg && !s_pending_jpeg_redraw) {
+                    s_mp3_ui_pending = false;
+                    mp3_render_now_playing();
+                }
+                /* Keep pending=true when temporarily blocked by JPEG or UI override
+                 * so the next eligible main-loop tick will render now-playing. */
             }
 
             /* Post run/save from the main task — over existing Socket.IO session
