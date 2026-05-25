@@ -18,6 +18,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include "esp_log.h"
+#include "esp_crt_bundle.h"
 #include "esp_websocket_client.h"
 #include "triggercmd_ca.h"   /* embedded Go Daddy Root G2 cert for triggercmd.com */
 #include "freertos/FreeRTOS.h"
@@ -203,47 +204,60 @@ esp_err_t socketio_connect(const char          *uri,
     snprintf(auth_hdr, sizeof(auth_hdr),
              "Authorization: Bearer %s\r\n", auth_token);
 
-    esp_websocket_client_config_t cfg = {
-        .uri               = uri,
-        .headers           = auth_hdr,
-        .cert_pem          = TRIGGERCMD_CA_PEM,   /* GoDaddy Root G2 — avoids cross-signed bundle lookup */
-        .network_timeout_ms = 20000,
-        .reconnect_timeout_ms = 5000,
-        .ping_interval_sec = 25,   /* keep-alive through NAT idle timeouts */
-        .buffer_size       = 4096,
-    };
+    for (int attempt = 0; attempt < 2; ++attempt) {
+        bool use_bundle = (attempt == 1);
 
-    s_client = esp_websocket_client_init(&cfg);
-    if (!s_client) {
-        ESP_LOGE(TAG, "esp_websocket_client_init failed");
-        return ESP_FAIL;
-    }
+        esp_websocket_client_config_t cfg = {
+            .uri                 = uri,
+            .headers             = auth_hdr,
+            .network_timeout_ms  = 20000,
+            .reconnect_timeout_ms = 5000,
+            .ping_interval_sec   = 25,   /* keep-alive through NAT idle timeouts */
+            .buffer_size         = 4096,
+        };
 
-    esp_websocket_register_events(s_client, WEBSOCKET_EVENT_ANY,
-                                  ws_event_handler, NULL);
+        if (use_bundle) {
+            cfg.crt_bundle_attach = esp_crt_bundle_attach;
+            ESP_LOGW(TAG, "WS TLS attempt %d/2 using ESP cert bundle", attempt + 1);
+        } else {
+            cfg.cert_pem = TRIGGERCMD_CA_PEM;
+            ESP_LOGI(TAG, "WS TLS attempt %d/2 using embedded TriggerCMD CA", attempt + 1);
+        }
 
-    esp_err_t ret = esp_websocket_client_start(s_client);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "esp_websocket_client_start: %s", esp_err_to_name(ret));
-        esp_websocket_client_destroy(s_client);
-        s_client = NULL;
-        return ret;
-    }
+        s_client = esp_websocket_client_init(&cfg);
+        if (!s_client) {
+            ESP_LOGE(TAG, "esp_websocket_client_init failed");
+            return ESP_FAIL;
+        }
 
-    /* Block until "40" SIO connect ack is received, or timeout */
-    EventBits_t bits = xEventGroupWaitBits(s_evt_group,
-                                           SIO_CONNECTED_BIT,
-                                           pdFALSE, pdFALSE,
-                                           pdMS_TO_TICKS(SIO_CONNECT_TIMEOUT_MS));
-    if (!(bits & SIO_CONNECTED_BIT)) {
+        esp_websocket_register_events(s_client, WEBSOCKET_EVENT_ANY,
+                                      ws_event_handler, NULL);
+
+        esp_err_t ret = esp_websocket_client_start(s_client);
+        if (ret != ESP_OK) {
+            ESP_LOGE(TAG, "esp_websocket_client_start: %s", esp_err_to_name(ret));
+            esp_websocket_client_destroy(s_client);
+            s_client = NULL;
+            if (use_bundle) return ret;
+            continue;
+        }
+
+        /* Block until "40" SIO connect ack is received, or timeout */
+        EventBits_t bits = xEventGroupWaitBits(s_evt_group,
+                                               SIO_CONNECTED_BIT,
+                                               pdFALSE, pdFALSE,
+                                               pdMS_TO_TICKS(SIO_CONNECT_TIMEOUT_MS));
+        if (bits & SIO_CONNECTED_BIT) {
+            return ESP_OK;
+        }
+
         ESP_LOGE(TAG, "SIO connect timeout (%d ms)", SIO_CONNECT_TIMEOUT_MS);
         esp_websocket_client_stop(s_client);
         esp_websocket_client_destroy(s_client);
         s_client = NULL;
-        return ESP_ERR_TIMEOUT;
     }
 
-    return ESP_OK;
+    return ESP_ERR_TIMEOUT;
 }
 
 void socketio_disconnect(void)
