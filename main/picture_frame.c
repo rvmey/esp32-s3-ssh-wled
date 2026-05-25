@@ -344,6 +344,7 @@ static volatile bool s_pending_jpeg          = false;
 /* Pending display updates — set by WS callback, applied by main loop. */
 static char          s_pending_text[512] __attribute__((unused)) = {0};
 static volatile bool s_pending_text_draw = false;
+static volatile uint8_t s_pending_text_redraw_retries = 0;
 static volatile int  s_pending_orientation = -1; /* -1 none, 0 portrait, 1 landscape */
 static volatile int  s_pending_font_scale = 0;   /* 0 none, 1..4 valid */
 static volatile bool s_pending_bg_color = false;
@@ -3621,8 +3622,17 @@ static bool command_exists_online(const char *list_body, int list_len, const cha
     if (!list_body || list_len <= 0 || !trigger || !trigger[0]) return false;
 
     const char *p = list_body;
-    while ((p = strstr(p, "\"name\"")) != NULL) {
-        const char *q = p + strlen("\"name\"");
+    while ((p = strstr(p, "\"")) != NULL) {
+        const char *q = p + 1;
+
+        bool key_is_name = strncmp(q, "name\"", 5) == 0;
+        bool key_is_trigger = strncmp(q, "trigger\"", 8) == 0;
+        if (!key_is_name && !key_is_trigger) {
+            p = q;
+            continue;
+        }
+
+        q += key_is_name ? 5 : 8;
         while (*q == ' ' || *q == '\t' || *q == '\r' || *q == '\n') q++;
         if (*q != ':') {
             p = q;
@@ -3652,7 +3662,7 @@ static bool command_exists_online(const char *list_body, int list_len, const cha
         name_buf[i] = '\0';
         if (*q == '"') q++;
 
-        if (strcmp(name_buf, trigger) == 0) return true;
+        if (strcasecmp(name_buf, trigger) == 0) return true;
         p = q;
     }
 
@@ -3790,6 +3800,12 @@ static void sync_all_commands(bool remove_stale_mp3)
     char *list_body = NULL;
     int list_len = https_get_auth(list_url, s_hw_token, &list_body);
 
+    if (!list_body || list_len <= 0) {
+        ESP_LOGW(TAG, "cmd sync skipped: command list fetch failed (len=%d)", list_len);
+        if (list_body) free(list_body);
+        return;
+    }
+
     char cmd_url[192];
     snprintf(cmd_url, sizeof(cmd_url), "%s/api/command/save", TCMD_BASE_URL);
 
@@ -3899,6 +3915,7 @@ static void pf_event_handler(const char *event_name,
         strncpy(s_pending_text, s_last_text, sizeof(s_pending_text) - 1);
         s_pending_text[sizeof(s_pending_text) - 1] = '\0';
         s_pending_text_draw = true;
+        s_pending_text_redraw_retries = 5;
         s_current_jpeg_url[0] = '\0';
 
     } else if (strcmp(s_trigger, "color") == 0) {
@@ -4583,7 +4600,13 @@ void picture_frame_run(void)
 
             if (s_pending_text_draw) {
                 s_pending_text_draw = false;
+                ESP_LOGI(TAG, "apply text draw: '%.80s'", s_pending_text);
                 screen_draw_text(s_pending_text[0] ? s_pending_text : " ");
+            }
+
+            if (s_pending_text_redraw_retries > 0 && !s_pending_jpeg && !s_pending_jpeg_redraw) {
+                s_pending_text_redraw_retries--;
+                screen_draw_text(s_last_text[0] ? s_last_text : " ");
             }
 
             /* Download + display JPEG from main task — blocking HTTP + decode */
