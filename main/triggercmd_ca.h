@@ -105,8 +105,52 @@ static const char TRIGGERCMD_CA_PEM[] =
     "-----END CERTIFICATE-----\n"
 ;
 
+/* Leaf certificate pin for www.triggercmd.com captured from the live server.
+ * Use this for websocket verification when the CA chain is brittle.
+ */
+static const char TRIGGERCMD_LEAF_PEM[] =
+    "-----BEGIN CERTIFICATE-----\n"
+    "MIIGnDCCBYSgAwIBAgIJAL3yz8SDWsFCMA0GCSqGSIb3DQEBCwUAMIG0MQswCQYD\n"
+    "VQQGEwJVUzEQMA4GA1UECBMHQXJpem9uYTETMBEGA1UEBxMKU2NvdHRzZGFsZTEa\n"
+    "MBgGA1UEChMRR29EYWRkeS5jb20sIEluYy4xLTArBgNVBAsTJGh0dHA6Ly9jZXJ0\n"
+    "cy5nb2RhZGR5LmNvbS9yZXBvc2l0b3J5LzEzMDEGA1UEAxMqR28gRGFkZHkgU2Vj\n"
+    "dXJlIENlcnRpZmljYXRlIEF1dGhvcml0eSAtIEcyMB4XDTI1MTIxNjIxNTc0MloX\n"
+    "DTI3MDExNDAxNDkwMFowHTEbMBkGA1UEAxMSd3d3LnRyaWdnZXJjbWQuY29tMIIB\n"
+    "IjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA1/TJ3k/csZfsk7VPJwpmgsqF\n"
+    "LbAIdLOYMjNzjc1FqgseYE3nT12CPpt1s99r5BOUhQ5nyoWnDZFskmZA5cqFqQDU\n"
+    "JIsYTpbvUjHBr2mcn5RYKaU5aFZ4TjDQ8Q3K07w68dDBTDrhLezGk4WLfcJyLh3h\n"
+    "BgBj/C8NdNflND7XaHeGoId06RzhkF9wiMpyyZMPRRgKC6vvUaXKZOVWQGu6+KWr\n"
+    "YIl3mqo+ZHUVz/lV8Cb0Y/RshrU7LK/6cG68KRwckmmRfYH3tAv5O1niJqnDqi+X\n"
+    "oI2ApLK9i750Ay13EBO+qP2aUHlsHAAW4jgBg/tc+LW7SnqxRbXHVHbBfXmC0wID\n"
+    "AQABo4IDRTCCA0EwDAYDVR0TAQH/BAIwADAdBgNVHSUEFjAUBggrBgEFBQcDAQYI\n"
+    "KwYBBQUHAwIwDgYDVR0PAQH/BAQDAgWgMDkGA1UdHwQyMDAwLqAsoCqGKGh0dHA6\n"
+    "Ly9jcmwuZ29kYWRkeS5jb20vZ2RpZzJzMS03MTc3OC5jcmwwXQYDVR0gBFYwVDAI\n"
+    "BgZngQwBAgEwSAYLYIZIAYb9bQEHFwEwOTA3BggrBgEFBQcCARYraHR0cDovL2Nl\n"
+    "cnRpZmljYXRlcy5nb2RhZGR5LmNvbS9yZXBvc2l0b3J5LzB2BggrBgEFBQcBAQRq\n"
+    "MGgwJAYIKwYBBQUHMAGGGGh0dHA6Ly9vY3NwLmdvZGFkZHkuY29tLzBABggrBgEF\n"
+    "BQcwAoY0aHR0cDovL2NlcnRpZmljYXRlcy5nb2RhZGR5LmNvbS9yZXBvc2l0b3J5\n"
+    "L2dkaWcyLmNydDAfBgNVHSMEGDAWgBRAwr0njsw0gzCiM9f7bLPwtCyAzjAtBgNV\n"
+    "HREEJjAkghJ3d3cudHJpZ2dlcmNtZC5jb22CDnRyaWdnZXJjbWQuY29tMB0GA1Ud\n"
+    "DgQWBBQ2VG4afSTcJHDkByG5a0ZfkycsHTCCAX8GCisGAQQB1nkCBAIEggFvBIIB\n"
+    "awFpAHYAYEyar3p/d18B1Ab8kg3ImesLHH34yVIb+voXdzuXi8kAAAGbKStxowAA\n"
+    "BAMARzBFAiB7KyEq6ZmSI4sxya+B0diif8FanxLucmdzfIrFWDJtWAIhAKB5Xi+M\n"
+    "JvoJKnpbVoh3q4UaYPVLODeSza9maQ8WOv4yAHcAHJ9oLOn68EVpUPgbloqH3dsy\n"
+    "ENhM5siy44JSSsTPWZ8AAAGbKStzMwAABAMASDBGAiEAh+CFRZgMSfBXUVcfyDWk\n"
+    "UJyUSLevFONLxgLIDTAoKeACIQDG4d5r6HoInyFNoidjgGPhMg3uos0ZO6P5YtIg\n"
+    "Aw3cPAB2AExj3JjlnB2riPYeij3ero+rRKM3e1+blMP7oZz8wb4mAAABmykrdL0A\n"
+    "AAQDAEcwRQIhAPxUx1C988jUhlfZdhrauLuiSN83BObPZMp58d5gj95NAiACfNGb\n"
+    "k4AAhGSydeaIq7f50tXiicHZ1CsuOtXAH/ODZzANBgkqhkiG9w0BAQsFAAOCAQEA\n"
+    "teoZPQhipjBb1PoJEmFgxPXJ0waNDTrx2UmgD6OVDKX03pn/kdgHL6xM7mk4F0/K\n"
+    "1nyAKmZ1UU5idyvBaxcQRwpFUeYDCocWw6OcziXZsKhegu6JDxHs7kewn4OGc9vM\n"
+    "C7HTKewk4Fu3YCiki5wpfefhPdSdcWyZ/uQMNdahBqqIS4mSOn66l+f7zdpwZzmn\n"
+    "kjUwXCkql3TlEWos1wnrUO3j0SldPdDIW4lOGKS40BO2ieJnq/Ei1SIUBxHHenI5\n"
+    "toms1B8kJQcIl4DzuASqWELbN8yRNaurCeG8UnKDTMvT0jwCkXnAw0hO5XVN0K7n\n"
+    "42u0r12t6lWMe/NDFyE9cg==\n"
+    "-----END CERTIFICATE-----\n"
+;
+
 /* Root-only trust anchor variant used for websocket TLS fallback.
- * Some TLS stacks are stricter about non-self-signed trust anchors.
+ * Keep the current live leaf pin above as the preferred websocket anchor.
  */
 static const char TRIGGERCMD_ROOT_G2_PEM[] =
     "-----BEGIN CERTIFICATE-----\n"

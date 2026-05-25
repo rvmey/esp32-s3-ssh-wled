@@ -346,9 +346,9 @@ esp_err_t socketio_connect(const char          *uri,
             continue;
 #endif
         } else {
-            cfg.cert_pem = TRIGGERCMD_CA_PEM;
-            /* Leave cert_len at 0 for PEM so esp_websocket_client does not treat it as DER. */
-            ESP_LOGI(TAG, "WS TLS attempt %d/%d using TriggerCMD embedded cert", attempt + 1, WS_TLS_ATTEMPTS);
+            cfg.cert_pem = TRIGGERCMD_LEAF_PEM;
+            /* Leaf pin for websocket verification; HTTP still uses the broader CA chain. */
+            ESP_LOGI(TAG, "WS TLS attempt %d/%d using TriggerCMD pinned leaf cert", attempt + 1, WS_TLS_ATTEMPTS);
         }
 
         ESP_LOGI(TAG, "WS TLS attempt %d/%d heap: free=%u min=%u",
