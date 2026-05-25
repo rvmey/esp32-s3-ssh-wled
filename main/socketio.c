@@ -17,16 +17,11 @@
 
 #include <string.h>
 #include <stdlib.h>
-#include <time.h>
 #include "esp_log.h"
-#include "esp_system.h"
 #include "esp_websocket_client.h"
-#include "mbedtls/error.h"
-#include "mbedtls/x509.h"
-#include "mbedtls/x509_crt.h"
+#include "triggercmd_ca.h"   /* embedded Go Daddy Root G2 cert for triggercmd.com */
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
-#include "esp_heap_caps.h"
 
 static const char *TAG = "socketio";
 
@@ -176,40 +171,6 @@ static void ws_event_handler(void *arg, esp_event_base_t base,
 
     case WEBSOCKET_EVENT_ERROR:
         ESP_LOGE(TAG, "WS error");
-        /* TEMP DIAG: dump full TLS error details */
-        if (d) {
-            ESP_LOGE(TAG, "WS error detail: error_type=%d tls_last_err=0x%x tls_stack_err=0x%x verify_flags=0x%x sock_errno=%d",
-                     (int)d->error_handle.error_type,
-                     (unsigned)d->error_handle.esp_tls_last_esp_err,
-                     (unsigned)d->error_handle.esp_tls_stack_err,
-                     (unsigned)d->error_handle.esp_tls_cert_verify_flags,
-                     d->error_handle.esp_transport_sock_errno);
-
-            if (d->error_handle.esp_tls_cert_verify_flags) {
-                int flags = d->error_handle.esp_tls_cert_verify_flags;
-                char verify_info[512];
-                mbedtls_x509_crt_verify_info(verify_info, sizeof(verify_info), "  ! ", flags);
-                ESP_LOGE(TAG, "verify info:\n%s", verify_info);
-                if (flags & MBEDTLS_X509_BADCERT_EXPIRED) ESP_LOGE(TAG, "verify flag: MBEDTLS_X509_BADCERT_EXPIRED");
-                if (flags & MBEDTLS_X509_BADCERT_REVOKED) ESP_LOGE(TAG, "verify flag: MBEDTLS_X509_BADCERT_REVOKED");
-                if (flags & MBEDTLS_X509_BADCERT_CN_MISMATCH) ESP_LOGE(TAG, "verify flag: MBEDTLS_X509_BADCERT_CN_MISMATCH");
-                if (flags & MBEDTLS_X509_BADCERT_NOT_TRUSTED) ESP_LOGE(TAG, "verify flag: MBEDTLS_X509_BADCERT_NOT_TRUSTED");
-                if (flags & MBEDTLS_X509_BADCERT_FUTURE) ESP_LOGE(TAG, "verify flag: MBEDTLS_X509_BADCERT_FUTURE");
-                if (flags & MBEDTLS_X509_BADCRL_NOT_TRUSTED) ESP_LOGE(TAG, "verify flag: MBEDTLS_X509_BADCRL_NOT_TRUSTED");
-            }
-
-            if (d->error_handle.error_type == WEBSOCKET_ERROR_TYPE_TCP_TRANSPORT &&
-                d->error_handle.esp_tls_stack_err != 0) {
-                char mbedtls_err_buf[128];
-                int mbedtls_err = d->error_handle.esp_tls_stack_err;
-                if (mbedtls_err > 0) {
-                    mbedtls_err = -mbedtls_err;
-                }
-                mbedtls_strerror(mbedtls_err,
-                                 mbedtls_err_buf, sizeof(mbedtls_err_buf));
-                ESP_LOGE(TAG, "mbedtls error string: %s", mbedtls_err_buf);
-            }
-        }
         s_connected = false;
         break;
 
@@ -242,76 +203,15 @@ esp_err_t socketio_connect(const char          *uri,
     snprintf(auth_hdr, sizeof(auth_hdr),
              "Authorization: Bearer %s\r\n", auth_token);
 
-    /* DIAG: log device time to detect epoch/1970 clock causing cert-date failure */
-    time_t now = time(NULL);
-    ESP_LOGW(TAG, "DIAG device time: %lld (0 or small = not synced, cert may fail date check)",
-             (long long)now);
-
-    /* Parse URI once and feed explicit host/path/port into websocket config.
-     * This avoids any ambiguity in URI parsing affecting SNI/Host handling. */
-    bool secure_transport = (strncmp(uri, "wss://", 6) == 0);
-    const char *host_start = strstr(uri, "://");
-    host_start = host_start ? (host_start + 3) : uri;
-    const char *path_start = strchr(host_start, '/');
-    const char *host_end = path_start ? path_start : (host_start + strlen(host_start));
-
-    char ws_host[96];
-    size_t host_len = (size_t)(host_end - host_start);
-    if (host_len == 0 || host_len >= sizeof(ws_host)) {
-        ESP_LOGE(TAG, "Invalid websocket host in uri: %s", uri);
-        return ESP_ERR_INVALID_ARG;
-    }
-    memcpy(ws_host, host_start, host_len);
-    ws_host[host_len] = '\0';
-
-    int ws_port = secure_transport ? 443 : 80;
-    char *colon = strchr(ws_host, ':');
-    if (colon) {
-        int parsed_port = atoi(colon + 1);
-        if (parsed_port > 0 && parsed_port <= 65535) {
-            ws_port = parsed_port;
-        }
-        *colon = '\0';
-    }
-
-    char ws_path[192];
-    if (path_start && *path_start) {
-        strlcpy(ws_path, path_start, sizeof(ws_path));
-    } else {
-        strlcpy(ws_path, "/", sizeof(ws_path));
-    }
-
-    ESP_LOGI(TAG, "WS target parsed: host=%s port=%d secure=%d path=%s",
-             ws_host, ws_port, secure_transport ? 1 : 0, ws_path);
-
-#if !(CONFIG_ESP_TLS_INSECURE && CONFIG_ESP_TLS_SKIP_SERVER_CERT_VERIFY)
-    ESP_LOGE(TAG, "WS TLS no-verify mode requested but disabled in Kconfig (set CONFIG_ESP_TLS_INSECURE=y and CONFIG_ESP_TLS_SKIP_SERVER_CERT_VERIFY=y)");
-    return ESP_ERR_NOT_SUPPORTED;
-#else
     esp_websocket_client_config_t cfg = {
-        .uri                 = uri,
-        .host                = ws_host,
-        .port                = ws_port,
-        .path                = ws_path,
-        .transport           = secure_transport ? WEBSOCKET_TRANSPORT_OVER_SSL : WEBSOCKET_TRANSPORT_OVER_TCP,
-        .headers             = auth_hdr,
-        .network_timeout_ms  = 20000,
+        .uri               = uri,
+        .headers           = auth_hdr,
+        .cert_pem          = TRIGGERCMD_CA_PEM,
+        .network_timeout_ms = 20000,
         .reconnect_timeout_ms = 5000,
-        .disable_auto_reconnect = true,
-        .ping_interval_sec   = 25,
-        .buffer_size         = 4096,
-        .cert_pem            = NULL,
-        .cert_common_name    = NULL,
-        .skip_cert_common_name_check = true,
+        .ping_interval_sec = 25,
+        .buffer_size       = 4096,
     };
-
-    ESP_LOGW(TAG, "WS TLS attempt 1/1 using INSECURE no-verify mode");
-    ESP_LOGI(TAG, "WS TLS attempt 1/1 heap: free=%u min=%u",
-             (unsigned)esp_get_free_heap_size(),
-             (unsigned)esp_get_minimum_free_heap_size());
-    ESP_LOGI(TAG, "WS TLS attempt 1/1 internal heap: free=%u largest=%u",
-             (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
-             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
 
     s_client = esp_websocket_client_init(&cfg);
     if (!s_client) {
@@ -334,16 +234,15 @@ esp_err_t socketio_connect(const char          *uri,
                                            SIO_CONNECTED_BIT,
                                            pdFALSE, pdFALSE,
                                            pdMS_TO_TICKS(SIO_CONNECT_TIMEOUT_MS));
-    if (bits & SIO_CONNECTED_BIT) {
-        return ESP_OK;
+    if (!(bits & SIO_CONNECTED_BIT)) {
+        ESP_LOGE(TAG, "SIO connect timeout (%d ms)", SIO_CONNECT_TIMEOUT_MS);
+        esp_websocket_client_stop(s_client);
+        esp_websocket_client_destroy(s_client);
+        s_client = NULL;
+        return ESP_ERR_TIMEOUT;
     }
 
-    ESP_LOGE(TAG, "SIO connect timeout (%d ms)", SIO_CONNECT_TIMEOUT_MS);
-    esp_websocket_client_stop(s_client);
-    esp_websocket_client_destroy(s_client);
-    s_client = NULL;
-    return ESP_ERR_TIMEOUT;
-#endif
+    return ESP_OK;
 }
 
 void socketio_disconnect(void)
