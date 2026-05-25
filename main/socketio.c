@@ -39,6 +39,30 @@ static socketio_event_cb_t           s_cb        = NULL;
 static void                         *s_user_ctx  = NULL;
 static volatile bool                 s_connected = false;
 static EventGroupHandle_t            s_evt_group = NULL;
+static bool                          s_ca_store_ready = false;
+
+static esp_err_t ensure_triggercmd_ca_store(void)
+{
+    if (s_ca_store_ready) {
+        return ESP_OK;
+    }
+
+    esp_err_t ret = esp_tls_init_global_ca_store();
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "esp_tls_init_global_ca_store failed: %s", esp_err_to_name(ret));
+        return ret;
+    }
+
+    ret = esp_tls_set_global_ca_store((const unsigned char *)TRIGGERCMD_CA_PEM,
+                                      sizeof(TRIGGERCMD_CA_PEM));
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "esp_tls_set_global_ca_store failed: %s", esp_err_to_name(ret));
+        return ret;
+    }
+
+    s_ca_store_ready = true;
+    return ESP_OK;
+}
 
 /* ── WebSocket event handler ─────────────────────────────────────────────── */
 
@@ -227,10 +251,14 @@ esp_err_t socketio_connect(const char          *uri,
     ESP_LOGW(TAG, "DIAG device time: %lld (0 or small = not synced, cert may fail date check)",
              (long long)now);
 
-    for (int attempt = 0; attempt < 4; ++attempt) {
-        bool use_bundle   = (attempt == 2);
-        bool no_cert      = (attempt == 3); /* VERIFY_NONE – no cert, no bundle */
-        bool skip_cn_check = (attempt == 1) || (attempt == 3);
+    esp_err_t ca_ret = ensure_triggercmd_ca_store();
+    if (ca_ret != ESP_OK) {
+        return ca_ret;
+    }
+
+    for (int attempt = 0; attempt < 3; ++attempt) {
+        bool use_bundle = (attempt == 2);
+        bool skip_cn_check = (attempt == 1);
 
         esp_websocket_client_config_t cfg = {
             .uri                 = uri,
@@ -244,33 +272,17 @@ esp_err_t socketio_connect(const char          *uri,
             .skip_cert_common_name_check = skip_cn_check,
         };
 
-        if (no_cert) {
-            /* VERIFY_NONE: no cert_pem, no bundle → esp-tls uses MBEDTLS_SSL_VERIFY_NONE */
-            ESP_LOGW(TAG, "WS TLS attempt 4/4 NO cert verification (DIAG ONLY - INSECURE)");
-        } else if (use_bundle) {
+        if (use_bundle) {
             cfg.crt_bundle_attach = esp_crt_bundle_attach;
             cfg.cert_common_name = NULL;
             cfg.skip_cert_common_name_check = false;
-            ESP_LOGW(TAG, "WS TLS attempt %d/4 using ESP cert bundle", attempt + 1);
+            ESP_LOGW(TAG, "WS TLS attempt %d/3 using ESP cert bundle", attempt + 1);
         } else {
-            cfg.cert_pem = TRIGGERCMD_CA_PEM;
-            /* esp_websocket_client treats non-zero cert_len as DER input. */
-            /* TEMP DIAG: verify cert_pem pointer and content */
-            if (cfg.cert_pem) {
-                size_t pem_len = strlen(cfg.cert_pem);
-                ESP_LOGI(TAG, "DIAG cert_pem=%p len=%u cert_len=%u cn='%s' skip_cn=%d (attempt %d/4)",
-                         (void *)cfg.cert_pem, (unsigned)pem_len, (unsigned)cfg.cert_len,
-                         cfg.cert_common_name ? cfg.cert_common_name : "(null)",
-                         (int)cfg.skip_cert_common_name_check, attempt + 1);
-                ESP_LOGI(TAG, "DIAG cert_pem start: %.40s", cfg.cert_pem);
-                ESP_LOGI(TAG, "DIAG cert_pem end  : %.40s", cfg.cert_pem + (pem_len > 40 ? pem_len - 40 : 0));
-            } else {
-                ESP_LOGE(TAG, "DIAG cert_pem is NULL!");
-            }
+            cfg.use_global_ca_store = true;
             if (skip_cn_check) {
-                ESP_LOGW(TAG, "WS TLS attempt %d/4 using embedded TriggerCMD CA (CN check skipped)", attempt + 1);
+                ESP_LOGW(TAG, "WS TLS attempt %d/3 using TriggerCMD CA store (CN check skipped)", attempt + 1);
             } else {
-                ESP_LOGI(TAG, "WS TLS attempt %d/4 using embedded TriggerCMD CA", attempt + 1);
+                ESP_LOGI(TAG, "WS TLS attempt %d/3 using TriggerCMD CA store", attempt + 1);
             }
         }
 
@@ -288,7 +300,7 @@ esp_err_t socketio_connect(const char          *uri,
             ESP_LOGE(TAG, "esp_websocket_client_start: %s", esp_err_to_name(ret));
             esp_websocket_client_destroy(s_client);
             s_client = NULL;
-            if (attempt == 3) return ret;
+            if (attempt == 2) return ret;
             continue;
         }
 
@@ -301,7 +313,7 @@ esp_err_t socketio_connect(const char          *uri,
             return ESP_OK;
         }
 
-        ESP_LOGE(TAG, "SIO connect timeout (%d ms) on attempt %d/4",
+        ESP_LOGE(TAG, "SIO connect timeout (%d ms) on attempt %d/3",
              SIO_CONNECT_TIMEOUT_MS, attempt + 1);
         esp_websocket_client_stop(s_client);
         esp_websocket_client_destroy(s_client);
