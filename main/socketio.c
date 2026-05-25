@@ -34,19 +34,13 @@ static const char *TAG = "socketio";
 
 #define SIO_CONNECTED_BIT       BIT0
 #define SIO_CONNECT_TIMEOUT_MS  10000
-#define WS_TLS_ATTEMPTS         4
+#define WS_TLS_ATTEMPTS         1
 
 typedef enum {
-    WS_TLS_EMBEDDED_CERT = 0,
-    WS_TLS_ROOT_ONLY_CERT,
-    WS_TLS_CERT_BUNDLE,
-    WS_TLS_INSECURE_NO_VERIFY,
+    WS_TLS_INSECURE_NO_VERIFY = 0,
 } ws_tls_mode_t;
 
 static const ws_tls_mode_t s_tls_attempt_order[WS_TLS_ATTEMPTS] = {
-    WS_TLS_EMBEDDED_CERT,
-    WS_TLS_ROOT_ONLY_CERT,
-    WS_TLS_CERT_BUNDLE,
     WS_TLS_INSECURE_NO_VERIFY,
 };
 
@@ -303,8 +297,6 @@ esp_err_t socketio_connect(const char          *uri,
 
     for (int attempt = 0; attempt < WS_TLS_ATTEMPTS; ++attempt) {
         ws_tls_mode_t mode = s_tls_attempt_order[attempt];
-        bool use_bundle = (mode == WS_TLS_CERT_BUNDLE);
-        bool use_root_only = (mode == WS_TLS_ROOT_ONLY_CERT);
         bool insecure_no_verify = (mode == WS_TLS_INSECURE_NO_VERIFY);
 
         esp_websocket_client_config_t cfg = {
@@ -323,32 +315,16 @@ esp_err_t socketio_connect(const char          *uri,
             .skip_cert_common_name_check = false,
         };
 
-        if (use_bundle) {
-            cfg.crt_bundle_attach = esp_crt_bundle_attach;
-            cfg.cert_common_name = "www.triggercmd.com";
-            cfg.skip_cert_common_name_check = false;
-            ESP_LOGW(TAG, "WS TLS attempt %d/%d using ESP cert bundle", attempt + 1, WS_TLS_ATTEMPTS);
-        } else if (use_root_only) {
-            cfg.cert_pem = TRIGGERCMD_ROOT_G2_PEM;
-            ESP_LOGW(TAG, "WS TLS attempt %d/%d using TriggerCMD root-only cert", attempt + 1, WS_TLS_ATTEMPTS);
-        } else if (insecure_no_verify) {
+        if (insecure_no_verify) {
 #if CONFIG_ESP_TLS_INSECURE && CONFIG_ESP_TLS_SKIP_SERVER_CERT_VERIFY
-            cfg.cert_pem = NULL; /* Diagnostic fallback: verify whether transport works without cert validation. */
+            cfg.cert_pem = NULL; /* Deliberately skip certificate validation for this project. */
             cfg.cert_common_name = NULL;
             cfg.skip_cert_common_name_check = true;
-            ESP_LOGW(TAG, "WS TLS attempt %d/%d using INSECURE no-verify mode as final fallback (diagnostic only)", attempt + 1, WS_TLS_ATTEMPTS);
+            ESP_LOGW(TAG, "WS TLS attempt %d/%d using INSECURE no-verify mode", attempt + 1, WS_TLS_ATTEMPTS);
 #else
-            ESP_LOGE(TAG, "WS TLS attempt %d/%d insecure mode requested but disabled in Kconfig (set CONFIG_ESP_TLS_INSECURE=y and CONFIG_ESP_TLS_SKIP_SERVER_CERT_VERIFY=y)",
-                     attempt + 1, WS_TLS_ATTEMPTS);
-            if (attempt == WS_TLS_ATTEMPTS - 1) {
-                return ESP_ERR_NOT_SUPPORTED;
-            }
-            continue;
+            ESP_LOGE(TAG, "WS TLS no-verify mode requested but disabled in Kconfig (set CONFIG_ESP_TLS_INSECURE=y and CONFIG_ESP_TLS_SKIP_SERVER_CERT_VERIFY=y)");
+            return ESP_ERR_NOT_SUPPORTED;
 #endif
-        } else {
-            cfg.cert_pem = TRIGGERCMD_LEAF_PEM;
-            /* Leaf pin for websocket verification; HTTP still uses the broader CA chain. */
-            ESP_LOGI(TAG, "WS TLS attempt %d/%d using TriggerCMD pinned leaf cert", attempt + 1, WS_TLS_ATTEMPTS);
         }
 
         ESP_LOGI(TAG, "WS TLS attempt %d/%d heap: free=%u min=%u",
