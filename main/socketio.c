@@ -232,13 +232,52 @@ esp_err_t socketio_connect(const char          *uri,
     ESP_LOGW(TAG, "DIAG device time: %lld (0 or small = not synced, cert may fail date check)",
              (long long)now);
 
+    /* Parse URI once and feed explicit host/path/port into websocket config.
+     * This avoids any ambiguity in URI parsing affecting SNI/Host handling. */
+    bool secure_transport = (strncmp(uri, "wss://", 6) == 0);
+    const char *host_start = strstr(uri, "://");
+    host_start = host_start ? (host_start + 3) : uri;
+    const char *path_start = strchr(host_start, '/');
+    const char *host_end = path_start ? path_start : (host_start + strlen(host_start));
+
+    char ws_host[96];
+    size_t host_len = (size_t)(host_end - host_start);
+    if (host_len == 0 || host_len >= sizeof(ws_host)) {
+        ESP_LOGE(TAG, "Invalid websocket host in uri: %s", uri);
+        return ESP_ERR_INVALID_ARG;
+    }
+    memcpy(ws_host, host_start, host_len);
+    ws_host[host_len] = '\0';
+
+    int ws_port = secure_transport ? 443 : 80;
+    char *colon = strchr(ws_host, ':');
+    if (colon) {
+        int parsed_port = atoi(colon + 1);
+        if (parsed_port > 0 && parsed_port <= 65535) {
+            ws_port = parsed_port;
+        }
+        *colon = '\0';
+    }
+
+    char ws_path[192];
+    if (path_start && *path_start) {
+        strlcpy(ws_path, path_start, sizeof(ws_path));
+    } else {
+        strlcpy(ws_path, "/", sizeof(ws_path));
+    }
+
+    ESP_LOGI(TAG, "WS target parsed: host=%s port=%d secure=%d path=%s",
+             ws_host, ws_port, secure_transport ? 1 : 0, ws_path);
+
     for (int attempt = 0; attempt < 3; ++attempt) {
         bool use_bundle = (attempt == 2);
         bool skip_cn_check = (attempt == 1);
 
         esp_websocket_client_config_t cfg = {
-            .uri                 = uri,
-            .transport           = WEBSOCKET_TRANSPORT_OVER_SSL,
+            .host                = ws_host,
+            .port                = ws_port,
+            .path                = ws_path,
+            .transport           = secure_transport ? WEBSOCKET_TRANSPORT_OVER_SSL : WEBSOCKET_TRANSPORT_OVER_TCP,
             .headers             = auth_hdr,
             .network_timeout_ms  = 20000,
             .reconnect_timeout_ms = 5000,
