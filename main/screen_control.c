@@ -72,6 +72,7 @@ static int               s_scroll_total = 0;   /* total lines from last draw   *
 
 /* Guards concurrent SPI access (touch task vs SSH/HTTP task) */
 static SemaphoreHandle_t s_draw_mutex   = NULL;
+static screen_touch_handler_t s_touch_handler = NULL;
 
 /* ------------------------------------------------------------------ */
 /* Touch controller (AXS15231B built-in capacitive touch, I2C)        */
@@ -88,6 +89,18 @@ static void touch_poll_task(void *arg);
 /* Logical width/height — swapped in landscape mode */
 static inline int lcd_w(void) { return s_landscape ? LCD_PHYS_H : LCD_PHYS_W; }
 static inline int lcd_h(void) { return s_landscape ? LCD_PHYS_W : LCD_PHYS_H; }
+
+static inline void touch_raw_to_logical(uint16_t raw_x, uint16_t raw_y,
+                                        int *logical_x, int *logical_y)
+{
+    if (s_landscape) {
+        *logical_x = (LCD_PHYS_H - 1) - (int)raw_y;
+        *logical_y = (int)raw_x;
+    } else {
+        *logical_x = (int)raw_x;
+        *logical_y = (int)raw_y;
+    }
+}
 
 /* One row of pixel data (RGB565) — widest row is LCD_MAX_DIM pixels */
 static uint8_t s_row_buf[LCD_MAX_DIM * 2];
@@ -537,10 +550,6 @@ static const uint8_t s_font8x16[95][16] = {
     /* 0x7e */ {0x00,0x76,0xdc,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00},
 };
 
-/* Returns true if the given logical pixel falls on a foreground font bit.
- * Always uses the 8×16 IBM VGA font scaled by s_font_scale.
- * char_w = 8 * scale, char_h = 16 * scale.
-
 bool screen_spi_lock(uint32_t timeout_ms)
 {
     if (!s_draw_mutex) return false;
@@ -565,6 +574,15 @@ void screen_spi_unlock(void)
         xSemaphoreGive(s_draw_mutex);
     }
 }
+
+void screen_set_touch_handler(screen_touch_handler_t handler)
+{
+    s_touch_handler = handler;
+}
+
+/* Returns true if the given logical pixel falls on a foreground font bit.
+ * Always uses the 8x16 IBM VGA font scaled by s_font_scale.
+ * char_w = 8 * scale, char_h = 16 * scale.
  * start_y is the top pixel row of the text block in logical coordinates
  * (0 when content overflows the screen; centred otherwise).             */
 static bool text_pixel_is_fg(int logical_x, int logical_y,
@@ -805,6 +823,11 @@ static void touch_poll_task(void *arg)
     bool    touching     = false;
     int     start_scroll = 0;
     int16_t start_v      = 0;   /* raw vertical-axis sample at touch-down */
+    int     start_lx     = 0;
+    int     start_ly     = 0;
+    int     last_lx      = 0;
+    int     last_ly      = 0;
+    bool    scroll_consumed = false;
 
     for (;;) {
         vTaskDelay(pdMS_TO_TICKS(20));
@@ -818,19 +841,43 @@ static void touch_poll_task(void *arg)
          * sign=-1: swipe down decreases raw_v → positive delta → scroll down. */
         int16_t raw_v = s_landscape ? (int16_t)tx : (int16_t)ty;
         int     sign  = -1;
+        int     lx = 0;
+        int     ly = 0;
+        if (have) {
+            touch_raw_to_logical(tx, ty, &lx, &ly);
+        }
 
         if (have && !touching) {
             /* Finger just touched down */
             touching     = true;
             start_scroll = s_scroll_line;
             start_v      = raw_v;
+            start_lx     = lx;
+            start_ly     = ly;
+            last_lx      = lx;
+            last_ly      = ly;
+            scroll_consumed = false;
         } else if (have) {
             /* Finger still down — live-scroll as it moves */
             int row_h = 16 * s_font_scale;
             if (row_h == 0) continue;
             int delta_lines = sign * ((int)raw_v - (int)start_v) / row_h;
-            apply_scroll_abs(start_scroll + delta_lines);
+            if (delta_lines != 0) {
+                scroll_consumed = true;
+                apply_scroll_abs(start_scroll + delta_lines);
+            }
+            last_lx = lx;
+            last_ly = ly;
         } else if (touching) {
+            if (!scroll_consumed && s_touch_handler) {
+                int dx = last_lx - start_lx;
+                if (dx < 0) dx = -dx;
+                int dy = last_ly - start_ly;
+                if (dy < 0) dy = -dy;
+                if (dx <= 16 && dy <= 16) {
+                    (void)s_touch_handler(last_lx, last_ly);
+                }
+            }
             /* Finger lifted */
             touching = false;
         }

@@ -4,6 +4,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+typedef bool (*screen_touch_handler_t)(int x, int y);
+
 /**
  * @brief Initialise the AXS15231 QSPI display on the Guition JC3248W535.
  *        Configures the QSPI SPI bus, sends the AXS15231 init sequence,
@@ -118,3 +120,12 @@ bool screen_spi_lock(uint32_t timeout_ms);
  * @brief Release exclusive access previously acquired via screen_spi_lock().
  */
 void screen_spi_unlock(void);
+
+/**
+ * @brief Register a logical-coordinate touch callback.
+ *
+ * The callback receives x/y in current logical orientation coordinates
+ * (portrait: 320x480, landscape: 480x320). Return true when the touch
+ * was handled and should not be used for text scrolling.
+ */
+void screen_set_touch_handler(screen_touch_handler_t handler);

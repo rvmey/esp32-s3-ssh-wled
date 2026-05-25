@@ -91,10 +91,23 @@ static int               s_scroll_line  = 0;
 static int               s_scroll_total = 0;
 
 static SemaphoreHandle_t s_draw_mutex   = NULL;
+static screen_touch_handler_t s_touch_handler = NULL;
 
 /* Logical width/height — NOTE: landscape is the native/default orientation */
 static inline int lcd_w(void) { return s_landscape ? LCD_PHYS_W : LCD_PHYS_H; }
 static inline int lcd_h(void) { return s_landscape ? LCD_PHYS_H : LCD_PHYS_W; }
+
+static inline void touch_raw_to_logical(uint16_t raw_x, uint16_t raw_y,
+                                        int *logical_x, int *logical_y)
+{
+    if (s_landscape) {
+        *logical_x = (int)raw_x;
+        *logical_y = (int)raw_y;
+    } else {
+        *logical_x = (LCD_PHYS_H - 1) - (int)raw_y;
+        *logical_y = (int)raw_x;
+    }
+}
 
 /* Row buffer — one physical row = 320 × 2 bytes */
 static uint8_t s_row_buf[LCD_MAX_DIM * 2];
@@ -418,6 +431,11 @@ static void touch_poll_task(void *arg)
     bool    touching     = false;
     int     start_scroll = 0;
     int16_t start_v      = 0;
+    int     start_lx     = 0;
+    int     start_ly     = 0;
+    int     last_lx      = 0;
+    int     last_ly      = 0;
+    bool    scroll_consumed = false;
 
     for (;;) {
         vTaskDelay(pdMS_TO_TICKS(20));
@@ -440,17 +458,41 @@ static void touch_poll_task(void *arg)
          */
         int16_t raw_v = s_landscape ? (int16_t)ty : (int16_t)tx;
         int     sign  = -1;  /* swipe up = see later content (natural) */
+        int     lx = 0;
+        int     ly = 0;
+        if (have) {
+            touch_raw_to_logical(tx, ty, &lx, &ly);
+        }
 
         if (have && !touching) {
             touching     = true;
             start_scroll = s_scroll_line;
             start_v      = raw_v;
+            start_lx     = lx;
+            start_ly     = ly;
+            last_lx      = lx;
+            last_ly      = ly;
+            scroll_consumed = false;
         } else if (have) {
             int row_h = 16 * s_font_scale;
             if (row_h == 0) continue;
             int delta_lines = sign * ((int)raw_v - (int)start_v) / row_h;
-            apply_scroll_abs(start_scroll + delta_lines);
+            if (delta_lines != 0) {
+                scroll_consumed = true;
+                apply_scroll_abs(start_scroll + delta_lines);
+            }
+            last_lx = lx;
+            last_ly = ly;
         } else if (touching) {
+            if (!scroll_consumed && s_touch_handler) {
+                int dx = last_lx - start_lx;
+                if (dx < 0) dx = -dx;
+                int dy = last_ly - start_ly;
+                if (dy < 0) dy = -dy;
+                if (dx <= 16 && dy <= 16) {
+                    (void)s_touch_handler(last_lx, last_ly);
+                }
+            }
             touching = false;
         }
     }
@@ -599,7 +641,7 @@ esp_err_t screen_init(void)
                                                     pdMS_TO_TICKS(20));
     if (t_err == ESP_OK) {
         ESP_LOGI(TAG, "FT6336U touch ready (I2C addr=0x%02X)", TOUCH_I2C_ADDR);
-        ESP_LOGW(TAG, "Touch polling temporarily disabled to avoid redraw/WDT contention");
+        xTaskCreate(touch_poll_task, "touch_poll", 3072, NULL, 4, NULL);
     } else {
         ESP_LOGW(TAG, "FT6336U not found (err=%d) — scroll by touch unavailable", t_err);
     }
@@ -682,6 +724,11 @@ void screen_spi_unlock(void)
     if (s_draw_mutex) {
         xSemaphoreGive(s_draw_mutex);
     }
+}
+
+void screen_set_touch_handler(screen_touch_handler_t handler)
+{
+    s_touch_handler = handler;
 }
 
 void screen_draw_text(const char *text)
