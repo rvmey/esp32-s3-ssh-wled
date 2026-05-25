@@ -4071,10 +4071,8 @@ static bool decode_and_show_jpeg(const uint8_t *buf, int len)
     return true;
 }
 
-static bool download_and_show_jpeg(const char *url)
+static bool download_and_show_jpeg_try(const char *url, bool show_failure_ui)
 {
-    screen_draw_text("Loading image...");
-
     esp_http_client_config_t cfg = {
         .url        = url,
         .method     = HTTP_METHOD_GET,
@@ -4089,7 +4087,9 @@ static bool download_and_show_jpeg(const char *url)
     esp_http_client_handle_t client = esp_http_client_init(&cfg);
     if (!client) {
         ESP_LOGE(TAG, "jpeg: http_client_init failed");
-        screen_draw_text("Image load\nfailed");
+        if (show_failure_ui) {
+            screen_draw_text("Image load\nfailed");
+        }
         return false;
     }
 
@@ -4097,7 +4097,9 @@ static bool download_and_show_jpeg(const char *url)
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "jpeg: HTTP open failed: %s", esp_err_to_name(ret));
         esp_http_client_cleanup(client);
-        screen_draw_text("Image load\nfailed");
+        if (show_failure_ui) {
+            screen_draw_text("Image load\nfailed");
+        }
         return false;
     }
 
@@ -4107,7 +4109,9 @@ static bool download_and_show_jpeg(const char *url)
         ESP_LOGE(TAG, "jpeg: HTTP %d for %s", status, url);
         esp_http_client_close(client);
         esp_http_client_cleanup(client);
-        screen_draw_text("Image load\nfailed");
+        if (show_failure_ui) {
+            screen_draw_text("Image load\nfailed");
+        }
         return false;
     }
 
@@ -4123,7 +4127,9 @@ static bool download_and_show_jpeg(const char *url)
         ESP_LOGE(TAG, "jpeg: no memory for %d byte download", max_dl);
         esp_http_client_close(client);
         esp_http_client_cleanup(client);
-        screen_draw_text("Image load\nfailed");
+        if (show_failure_ui) {
+            screen_draw_text("Image load\nfailed");
+        }
         return false;
     }
 
@@ -4139,7 +4145,9 @@ static bool download_and_show_jpeg(const char *url)
     if (total == 0) {
         ESP_LOGE(TAG, "jpeg: empty response from %s", url);
         free(jpeg_buf);
-        screen_draw_text("Image load\nfailed");
+        if (show_failure_ui) {
+            screen_draw_text("Image load\nfailed");
+        }
         return false;
     }
     ESP_LOGI(TAG, "jpeg: downloaded %d bytes", total);
@@ -4153,6 +4161,31 @@ static bool download_and_show_jpeg(const char *url)
         return true;
     }
 
+    if (show_failure_ui) {
+        screen_draw_text("Image decode\nfailed");
+    }
+    return false;
+}
+
+static bool download_and_show_jpeg(const char *url)
+{
+    screen_draw_text("Loading image...");
+
+    if (download_and_show_jpeg_try(url, false)) {
+        return true;
+    }
+
+    if (strncmp(url, "https://", 8) == 0) {
+        char http_url[512];
+        snprintf(http_url, sizeof(http_url), "http://%s", url + 8);
+        ESP_LOGW(TAG, "jpeg: retrying over plain HTTP: %s", http_url);
+        screen_draw_text("Loading image...");
+        if (download_and_show_jpeg_try(http_url, true)) {
+            return true;
+        }
+    }
+
+    screen_draw_text("Image load\nfailed");
     return false;
 }
 

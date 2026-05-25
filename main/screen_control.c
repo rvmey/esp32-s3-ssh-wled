@@ -621,7 +621,7 @@ void screen_draw_text(const char *text)
 
     /* Save so color/orientation/fontsize changes can redraw automatically.
      * Reset scroll offset whenever the text content changes.             */
-    if (text != s_text) {
+    if (text && strcmp(text, s_text) != 0) {
         strncpy(s_text, text, sizeof(s_text) - 1);
         s_text[sizeof(s_text) - 1] = '\0';
         s_scroll_line = 0;
