@@ -317,10 +317,19 @@ esp_err_t socketio_connect(const char          *uri,
             cfg.cert_pem = TRIGGERCMD_ROOT_G2_PEM;
             ESP_LOGW(TAG, "WS TLS attempt %d/%d using TriggerCMD root-only cert", attempt + 1, WS_TLS_ATTEMPTS);
         } else if (insecure_no_verify) {
+#if CONFIG_ESP_TLS_INSECURE && CONFIG_ESP_TLS_SKIP_SERVER_CERT_VERIFY
             cfg.cert_pem = NULL; /* Diagnostic fallback: verify whether transport works without cert validation. */
             cfg.cert_common_name = NULL;
             cfg.skip_cert_common_name_check = true;
             ESP_LOGW(TAG, "WS TLS attempt %d/%d using INSECURE no-verify mode (diagnostic only)", attempt + 1, WS_TLS_ATTEMPTS);
+#else
+            ESP_LOGE(TAG, "WS TLS attempt %d/%d insecure mode requested but disabled in Kconfig (set CONFIG_ESP_TLS_INSECURE=y and CONFIG_ESP_TLS_SKIP_SERVER_CERT_VERIFY=y)",
+                     attempt + 1, WS_TLS_ATTEMPTS);
+            if (attempt == WS_TLS_ATTEMPTS - 1) {
+                return ESP_ERR_NOT_SUPPORTED;
+            }
+            continue;
+#endif
         } else {
             cfg.cert_pem = TRIGGERCMD_CA_PEM;
             /* Leave cert_len at 0 for PEM so esp_websocket_client does not treat it as DER. */
