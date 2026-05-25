@@ -619,13 +619,12 @@ void screen_draw_text(const char *text)
 {
     xSemaphoreTake(s_draw_mutex, portMAX_DELAY);
 
-    /* Save so color/orientation/fontsize changes can redraw automatically.
-     * Reset scroll offset whenever the text content changes.             */
-    if (text && strcmp(text, s_text) != 0) {
+    /* Save so color/orientation/fontsize changes can redraw automatically. */
+    if (text) {
         strncpy(s_text, text, sizeof(s_text) - 1);
         s_text[sizeof(s_text) - 1] = '\0';
-        s_scroll_line = 0;
     }
+    s_scroll_line = 0;
 
     /* ---- Word-wrap ALL content into the scrollable line buffer ---- */
     static char all_lines[ALL_LINES_MAX][TEXT_COLS_MAX + 1];

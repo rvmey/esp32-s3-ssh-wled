@@ -735,11 +735,11 @@ void screen_draw_text(const char *text)
 {
     xSemaphoreTake(s_draw_mutex, portMAX_DELAY);
 
-    if (text && strcmp(text, s_text) != 0) {
+    if (text) {
         strncpy(s_text, text, sizeof(s_text) - 1);
         s_text[sizeof(s_text) - 1] = '\0';
-        s_scroll_line = 0;
     }
+    s_scroll_line = 0;
 
     static char all_lines[ALL_LINES_MAX][TEXT_COLS_MAX + 1];
     static int  all_len[ALL_LINES_MAX];
