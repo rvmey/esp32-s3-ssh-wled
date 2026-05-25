@@ -341,6 +341,16 @@ static TickType_t    s_pending_run_retry_after __attribute__((unused)) = 0;
 static char          s_pending_jpeg_url[512] __attribute__((unused)) = {0};
 static volatile bool s_pending_jpeg          = false;
 
+/* Pending display updates — set by WS callback, applied by main loop. */
+static char          s_pending_text[512] __attribute__((unused)) = {0};
+static volatile bool s_pending_text_draw = false;
+static volatile int  s_pending_orientation = -1; /* -1 none, 0 portrait, 1 landscape */
+static volatile int  s_pending_font_scale = 0;   /* 0 none, 1..4 valid */
+static volatile bool s_pending_bg_color = false;
+static uint8_t       s_pending_bg_r = 0, s_pending_bg_g = 0, s_pending_bg_b = 0;
+static volatile bool s_pending_fg_color = false;
+static uint8_t       s_pending_fg_r = 255, s_pending_fg_g = 255, s_pending_fg_b = 255;
+
 /* Cached compressed JPEG — kept in PSRAM so orientation changes can redraw
  * without re-downloading.  Freed when a non-jpeg command replaces the display. */
 static uint8_t      *s_jpeg_cache     __attribute__((unused)) = NULL;
@@ -3886,15 +3896,18 @@ static void pf_event_handler(const char *event_name,
         s_pending_jpeg_redraw = false;
         strncpy(s_last_text, s_params[0] ? s_params : " ", sizeof(s_last_text) - 1);
         s_last_text[sizeof(s_last_text) - 1] = '\0';
+        strncpy(s_pending_text, s_last_text, sizeof(s_pending_text) - 1);
+        s_pending_text[sizeof(s_pending_text) - 1] = '\0';
+        s_pending_text_draw = true;
         s_current_jpeg_url[0] = '\0';
-        screen_draw_text(s_last_text);
 
     } else if (strcmp(s_trigger, "color") == 0) {
         uint8_t r = 0, g = 0, b = 0;
         if (parse_color(s_params, &r, &g, &b)) {
-            screen_set_color(r, g, b);
-            /* If a JPEG is cached, re-blit it over the new background color */
-            if (s_jpeg_cache) s_pending_jpeg_redraw = true;
+            s_pending_bg_r = r;
+            s_pending_bg_g = g;
+            s_pending_bg_b = b;
+            s_pending_bg_color = true;
         } else {
             ESP_LOGW(TAG, "color: unrecognised '%s'", s_params);
         }
@@ -3902,7 +3915,10 @@ static void pf_event_handler(const char *event_name,
     } else if (strcmp(s_trigger, "textcolor") == 0) {
         uint8_t r = 255, g = 255, b = 255;
         if (parse_color(s_params, &r, &g, &b)) {
-            screen_set_text_color(r, g, b);
+            s_pending_fg_r = r;
+            s_pending_fg_g = g;
+            s_pending_fg_b = b;
+            s_pending_fg_color = true;
         } else {
             ESP_LOGW(TAG, "textcolor: unrecognised '%s'", s_params);
         }
@@ -3911,15 +3927,13 @@ static void pf_event_handler(const char *event_name,
         int scale = atoi(s_params);
         if (scale < 1) scale = 1;
         if (scale > 4) scale = 4;
-        screen_set_font_scale(scale);
+        s_pending_font_scale = scale;
 
     } else if (strcmp(s_trigger, "landscape") == 0) {
-        screen_set_landscape(true);
-        if (s_jpeg_cache) s_pending_jpeg_redraw = true;
+        s_pending_orientation = 1;
 
     } else if (strcmp(s_trigger, "portrait") == 0) {
-        screen_set_landscape(false);
-        if (s_jpeg_cache) s_pending_jpeg_redraw = true;
+        s_pending_orientation = 0;
 
     } else if (strcmp(s_trigger, "jpeg") == 0) {
         if (s_params[0]) {
@@ -4543,6 +4557,35 @@ void picture_frame_run(void)
         }
 
         while (true) {
+            if (s_pending_bg_color) {
+                s_pending_bg_color = false;
+                screen_set_color(s_pending_bg_r, s_pending_bg_g, s_pending_bg_b);
+                if (s_jpeg_cache) s_pending_jpeg_redraw = true;
+            }
+
+            if (s_pending_fg_color) {
+                s_pending_fg_color = false;
+                screen_set_text_color(s_pending_fg_r, s_pending_fg_g, s_pending_fg_b);
+            }
+
+            if (s_pending_font_scale > 0) {
+                int scale = s_pending_font_scale;
+                s_pending_font_scale = 0;
+                screen_set_font_scale(scale);
+            }
+
+            if (s_pending_orientation >= 0) {
+                bool landscape = (s_pending_orientation != 0);
+                s_pending_orientation = -1;
+                screen_set_landscape(landscape);
+                if (s_jpeg_cache) s_pending_jpeg_redraw = true;
+            }
+
+            if (s_pending_text_draw) {
+                s_pending_text_draw = false;
+                screen_draw_text(s_pending_text[0] ? s_pending_text : " ");
+            }
+
             /* Download + display JPEG from main task — blocking HTTP + decode */
             if (s_pending_jpeg_redraw) {
                 s_pending_jpeg_redraw = false;
