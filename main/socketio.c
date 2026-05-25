@@ -25,6 +25,7 @@
 #include "triggercmd_ca.h"   /* embedded Go Daddy Root G2 cert for triggercmd.com */
 #include "mbedtls/error.h"
 #include "mbedtls/x509.h"
+#include "mbedtls/x509_crt.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
 #include "esp_heap_caps.h"
@@ -188,6 +189,9 @@ static void ws_event_handler(void *arg, esp_event_base_t base,
 
             if (d->error_handle.esp_tls_cert_verify_flags) {
                 int flags = d->error_handle.esp_tls_cert_verify_flags;
+                char verify_info[512];
+                mbedtls_x509_crt_verify_info(verify_info, sizeof(verify_info), "  ! ", flags);
+                ESP_LOGE(TAG, "verify info:\n%s", verify_info);
                 if (flags & MBEDTLS_X509_BADCERT_EXPIRED) ESP_LOGE(TAG, "verify flag: MBEDTLS_X509_BADCERT_EXPIRED");
                 if (flags & MBEDTLS_X509_BADCERT_REVOKED) ESP_LOGE(TAG, "verify flag: MBEDTLS_X509_BADCERT_REVOKED");
                 if (flags & MBEDTLS_X509_BADCERT_CN_MISMATCH) ESP_LOGE(TAG, "verify flag: MBEDTLS_X509_BADCERT_CN_MISMATCH");
@@ -287,6 +291,7 @@ esp_err_t socketio_connect(const char          *uri,
         bool use_root_only = (attempt == 1);
 
         esp_websocket_client_config_t cfg = {
+            .uri                 = uri,
             .host                = ws_host,
             .port                = ws_port,
             .path                = ws_path,
