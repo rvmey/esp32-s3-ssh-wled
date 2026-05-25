@@ -3438,6 +3438,116 @@ static bool json_extract_nested(const char *json, const char *outer,
     return json_extract_str(sub, key, out, out_sz);
 }
 
+/* Decode a JSON string literal (with optional surrounding quotes) into plain text. */
+static bool json_unescape_string_literal(const char *in, char *out, size_t out_sz)
+{
+    if (!in || !out || out_sz == 0) return false;
+
+    while (*in == ' ' || *in == '\t' || *in == '\r' || *in == '\n') in++;
+    bool quoted = (*in == '"');
+    if (quoted) in++;
+
+    size_t i = 0;
+    while (*in && i < out_sz - 1) {
+        if (quoted && *in == '"') break;
+
+        if (*in == '\\') {
+            in++;
+            if (!*in) break;
+            switch (*in) {
+                case 'n': out[i++] = '\n'; break;
+                case 'r': out[i++] = '\r'; break;
+                case 't': out[i++] = '\t'; break;
+                case '\\': out[i++] = '\\'; break;
+                case '"': out[i++] = '"'; break;
+                case '/': out[i++] = '/'; break;
+                default: out[i++] = *in; break;
+            }
+            in++;
+            continue;
+        }
+
+        out[i++] = *in++;
+    }
+
+    out[i] = '\0';
+    return i > 0;
+}
+
+/* Extract trigger/id/params from a TriggerCMD message payload across known formats. */
+static void extract_message_fields(const char *payload_json,
+                                   char *trigger,
+                                   size_t trigger_sz,
+                                   char *run_id,
+                                   size_t run_id_sz,
+                                   char *params,
+                                   size_t params_sz)
+{
+    if (!payload_json || !trigger || !run_id || !params) return;
+
+    trigger[0] = '\0';
+    run_id[0] = '\0';
+    params[0] = '\0';
+
+    /* Most common shape: flat object. */
+    json_extract_str(payload_json, "trigger", trigger, trigger_sz);
+    json_extract_str(payload_json, "id", run_id, run_id_sz);
+    json_extract_str(payload_json, "params", params, params_sz);
+
+    if (!trigger[0]) json_extract_str(payload_json, "name", trigger, trigger_sz);
+    if (!trigger[0]) json_extract_str(payload_json, "command", trigger, trigger_sz);
+    if (!run_id[0]) json_extract_str(payload_json, "runId", run_id, run_id_sz);
+    if (!run_id[0]) json_extract_str(payload_json, "run_id", run_id, run_id_sz);
+    if (!params[0]) json_extract_str(payload_json, "param", params, params_sz);
+    if (!params[0]) json_extract_str(payload_json, "value", params, params_sz);
+
+    /* Some servers nest fields under data/message. */
+    if (!trigger[0]) json_extract_nested(payload_json, "data", "trigger", trigger, trigger_sz);
+    if (!trigger[0]) json_extract_nested(payload_json, "message", "trigger", trigger, trigger_sz);
+    if (!run_id[0]) json_extract_nested(payload_json, "data", "id", run_id, run_id_sz);
+    if (!params[0]) json_extract_nested(payload_json, "data", "params", params, params_sz);
+
+    /* If payload itself is a quoted JSON blob, unescape and parse again. */
+    if (!trigger[0]) {
+        char decoded[768] = {0};
+        if (json_unescape_string_literal(payload_json, decoded, sizeof(decoded)) && decoded[0] == '{') {
+            json_extract_str(decoded, "trigger", trigger, trigger_sz);
+            if (!trigger[0]) json_extract_str(decoded, "name", trigger, trigger_sz);
+            json_extract_str(decoded, "id", run_id, run_id_sz);
+            json_extract_str(decoded, "params", params, params_sz);
+        }
+    }
+
+    /* Last-chance fallback: plain text command line like "text hello". */
+    if (!trigger[0]) {
+        const char *p = payload_json;
+        while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n' || *p == '"') p++;
+
+        size_t ti = 0;
+        while (*p && !isspace((unsigned char)*p) && *p != '"' && ti < trigger_sz - 1) {
+            trigger[ti++] = *p++;
+        }
+        trigger[ti] = '\0';
+
+        while (*p == ' ' || *p == '\t') p++;
+        if (*p && params_sz > 0) {
+            strncpy(params, p, params_sz - 1);
+            params[params_sz - 1] = '\0';
+        }
+    }
+
+    /* Trim wrapping quotes from fallback params if present. */
+    size_t plen = strlen(params);
+    if (plen >= 2 && params[0] == '"' && params[plen - 1] == '"') {
+        memmove(params, params + 1, plen - 2);
+        params[plen - 2] = '\0';
+    }
+
+    for (char *t = trigger; *t; ++t) {
+        *t = (char)tolower((unsigned char)*t);
+    }
+}
+
 /* ── URL percent-encoding helpers ──────────────────────────────────────── */
 /*
  * Append a URL-encoded version of src into dst (remaining capacity rem).
@@ -3767,15 +3877,18 @@ static void pf_event_handler(const char *event_name,
     static char s_id[32];
     static char s_params[256];
 
-    s_trigger[0] = s_id[0] = s_params[0] = '\0';
-    json_extract_str(payload_json, "trigger", s_trigger, sizeof(s_trigger));
-    json_extract_str(payload_json, "id",      s_id,      sizeof(s_id));
-    json_extract_str(payload_json, "params",  s_params,  sizeof(s_params));
+    extract_message_fields(payload_json,
+                           s_trigger,
+                           sizeof(s_trigger),
+                           s_id,
+                           sizeof(s_id),
+                           s_params,
+                           sizeof(s_params));
 
     ESP_LOGI(TAG, "message dispatch: trigger='%s' id='%s' params='%s'",
              s_trigger, s_id, s_params);
 
-    if (strcmp(s_trigger, "text") == 0) {
+    if (strcasecmp(s_trigger, "text") == 0) {
         /* Discard any cached JPEG so orientation changes redraw text, not image */
         if (s_jpeg_cache) { free(s_jpeg_cache); s_jpeg_cache = NULL; s_jpeg_cache_len = 0; }
         s_mp3_ui_override_allowed = false;
@@ -3786,7 +3899,7 @@ static void pf_event_handler(const char *event_name,
         s_current_jpeg_url[0] = '\0';
         screen_draw_text(s_last_text);
 
-    } else if (strcmp(s_trigger, "color") == 0) {
+    } else if (strcasecmp(s_trigger, "color") == 0) {
         uint8_t r = 0, g = 0, b = 0;
         if (parse_color(s_params, &r, &g, &b)) {
             screen_set_color(r, g, b);
@@ -3796,7 +3909,7 @@ static void pf_event_handler(const char *event_name,
             ESP_LOGW(TAG, "color: unrecognised '%s'", s_params);
         }
 
-    } else if (strcmp(s_trigger, "textcolor") == 0) {
+    } else if (strcasecmp(s_trigger, "textcolor") == 0) {
         uint8_t r = 255, g = 255, b = 255;
         if (parse_color(s_params, &r, &g, &b)) {
             screen_set_text_color(r, g, b);
@@ -3804,21 +3917,21 @@ static void pf_event_handler(const char *event_name,
             ESP_LOGW(TAG, "textcolor: unrecognised '%s'", s_params);
         }
 
-    } else if (strcmp(s_trigger, "fontsize") == 0) {
+    } else if (strcasecmp(s_trigger, "fontsize") == 0) {
         int scale = atoi(s_params);
         if (scale < 1) scale = 1;
         if (scale > 4) scale = 4;
         screen_set_font_scale(scale);
 
-    } else if (strcmp(s_trigger, "landscape") == 0) {
+    } else if (strcasecmp(s_trigger, "landscape") == 0) {
         screen_set_landscape(true);
         if (s_jpeg_cache) s_pending_jpeg_redraw = true;
 
-    } else if (strcmp(s_trigger, "portrait") == 0) {
+    } else if (strcasecmp(s_trigger, "portrait") == 0) {
         screen_set_landscape(false);
         if (s_jpeg_cache) s_pending_jpeg_redraw = true;
 
-    } else if (strcmp(s_trigger, "jpeg") == 0) {
+    } else if (strcasecmp(s_trigger, "jpeg") == 0) {
         if (s_params[0]) {
             s_mp3_ui_override_allowed = false;
             /* Trim leading whitespace from URL */
@@ -3833,7 +3946,7 @@ static void pf_event_handler(const char *event_name,
             return;  /* don't report run/save for empty command */
         }
 
-    } else if (strcmp(s_trigger, "save") == 0) {
+    } else if (strcasecmp(s_trigger, "save") == 0) {
         esp_err_t err = save_display_state_to_nvs();
         if (err != ESP_OK) {
             ESP_LOGE(TAG, "save: failed to persist display state: %s", esp_err_to_name(err));
@@ -3841,7 +3954,7 @@ static void pf_event_handler(const char *event_name,
             ESP_LOGI(TAG, "save: display state persisted");
         }
 
-    } else if (strcmp(s_trigger, "play") == 0) {
+    } else if (strcasecmp(s_trigger, "play") == 0) {
         s_mp3_ui_override_allowed = true;
         if (s_mp3.active) {
             s_mp3.paused = false;
