@@ -59,3 +59,10 @@ CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y
 # BT controller ISR for > 800 ms under peak load.  2000 ms still catches
 # true deadlocks while avoiding spurious panics during A2DP streaming.
 CONFIG_ESP_INT_WDT_TIMEOUT_MS=2000
+
+# CPU at 240 MHz: required for BT + WiFi coexistence on ESP32.
+# The BT controller ROM's RF coexistence routines contain timing loops
+# calibrated for 240 MHz.  At 160 MHz they run 50% slower, miss RF windows,
+# and spin long enough to trigger the INT WDT during A2DP streaming.
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
+CONFIG_ESP32_DEFAULT_CPU_FREQ_240=y
