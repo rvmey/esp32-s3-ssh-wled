@@ -98,6 +98,13 @@ $FirmwareDir = Join-Path $PSScriptRoot 'docs\firmware'
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+function Get-AppVersion {
+    $mainC = Join-Path $PSScriptRoot 'main\main.c'
+    $match = Select-String -Path $mainC -Pattern '#define APP_VERSION\s+"(.+)"' | Select-Object -First 1
+    if ($match) { return $match.Matches[0].Groups[1].Value }
+    throw "Could not read APP_VERSION from main/main.c"
+}
+
 function Write-Step([string]$msg) {
     Write-Host "`n>>> $msg" -ForegroundColor Cyan
 }
@@ -173,6 +180,12 @@ function Copy-Artifacts([PSCustomObject]$variant) {
     Copy-Item $appSrc $appDst -Force
     Write-Host "  Copied $($variant.OutputBin)" -ForegroundColor Green
 
+    # Versioned copy of the application binary (e.g. esp32_core2_picture_frame-2.0.225.bin)
+    $stem = [System.IO.Path]::GetFileNameWithoutExtension($variant.OutputBin)
+    $versionedBin = "${stem}-${script:AppVersion}.bin"
+    Copy-Item $appDst (Join-Path $FirmwareDir $versionedBin) -Force
+    Write-Host "  Copied $versionedBin" -ForegroundColor Green
+
     # Bootloader and partition table must be chip-specific (ESP32 vs ESP32-S3)
     $bootSrc = Join-Path $buildDir 'bootloader\bootloader.bin'
     Copy-Item $bootSrc (Join-Path $FirmwareDir $variant.BootloaderBin) -Force
@@ -230,6 +243,10 @@ if ($Variant.Count -gt 0) {
     # Ensure $variants stays an array even when filtering to a single item
     $variants = @($variants)
 }
+
+# Read the version once — used by Copy-Artifacts to create the versioned binary
+$script:AppVersion = Get-AppVersion
+Write-Host "APP_VERSION = $script:AppVersion" -ForegroundColor DarkCyan
 
 # Build each variant (skip compiling if sources are unchanged, but refresh artifacts)
 $skipped = 0
