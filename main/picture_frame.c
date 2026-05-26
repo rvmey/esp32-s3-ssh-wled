@@ -383,6 +383,7 @@ static volatile bool s_mp3_resume_on_bt_reconnect = false;
 static TickType_t s_mp3_last_ui_tick __attribute__((unused)) = 0;
 static volatile bool s_mp3_ui_pending = false;
 static bool          s_mp3_ui_override_allowed = true;
+static int           s_mp3_saved_font_scale = -1; /* font scale before music UI; -1 = not saved */
 static TaskHandle_t s_mp3_task = NULL;
 static TickType_t s_mp3_next_mount_retry __attribute__((unused)) = 0;
 static bool s_sd_mount_warned __attribute__((unused)) = false;
@@ -2619,11 +2620,13 @@ static void mp3_render_now_playing(void)
              s_mp3.repeat_track ? "on" : "off",
              s_mp3.repeat_playlist ? "on" : "off",
              s_mp3.paused ? "PLAY" : "PAUSE");
-    int prev_scale = 2;
-    screen_get_font_scale(&prev_scale);
+    if (s_mp3_saved_font_scale < 0) {
+        int cur = 2;
+        screen_get_font_scale(&cur);
+        s_mp3_saved_font_scale = cur;
+    }
     screen_set_font_scale(1);
     screen_draw_text(msg);
-    screen_set_font_scale(prev_scale);
 }
 
 static bool pf_touch_handler(int x, int y)
@@ -4607,6 +4610,10 @@ void picture_frame_run(void)
 
             if (s_pending_text_draw) {
                 s_pending_text_draw = false;
+                if (s_mp3_saved_font_scale >= 0) {
+                    screen_set_font_scale_silent(s_mp3_saved_font_scale);
+                    s_mp3_saved_font_scale = -1;
+                }
                 ESP_LOGI(TAG, "apply text draw: '%.80s'", s_pending_text);
                 screen_draw_text(s_pending_text[0] ? s_pending_text : " ");
             }
@@ -4626,6 +4633,7 @@ void picture_frame_run(void)
 
             if (s_pending_jpeg) {
                 s_pending_jpeg = false;
+                s_mp3_saved_font_scale = -1;
                 char jpeg_url[512];
                 strncpy(jpeg_url, s_pending_jpeg_url, sizeof(jpeg_url) - 1);
                 jpeg_url[sizeof(jpeg_url) - 1] = '\0';
@@ -4638,6 +4646,10 @@ void picture_frame_run(void)
             if (s_mp3_ui_pending) {
                 if (!s_mp3.active) {
                     s_mp3_ui_pending = false;
+                    if (s_mp3_saved_font_scale >= 0) {
+                        screen_set_font_scale_silent(s_mp3_saved_font_scale);
+                        s_mp3_saved_font_scale = -1;
+                    }
                 } else if (s_mp3_ui_override_allowed && !s_pending_jpeg && !s_pending_jpeg_redraw) {
                     s_mp3_ui_pending = false;
                     mp3_render_now_playing();

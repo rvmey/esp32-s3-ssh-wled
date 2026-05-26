@@ -688,6 +688,13 @@ void screen_set_font_scale(int scale)
     if (s_text[0]) screen_draw_text(s_text);
 }
 
+void screen_set_font_scale_silent(int scale)
+{
+    if (scale < 1) scale = 1;
+    if (scale > 8) scale = 8;
+    s_font_scale = scale;
+}
+
 void screen_get_font_scale(int *scale) { *scale = s_font_scale; }
 
 void screen_set_text_color(uint8_t r, uint8_t g, uint8_t b)

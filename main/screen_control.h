@@ -83,6 +83,13 @@ void screen_draw_rgb565(const uint8_t *rgb565, int src_w, int src_h);
 void screen_set_font_scale(int scale);
 
 /**
+ * @brief Set the font scale without redrawing existing text.
+ *        Use this to update the scale that will apply to the *next* draw call
+ *        without causing an intermediate redraw of whatever is currently shown.
+ */
+void screen_set_font_scale_silent(int scale);
+
+/**
  * @brief Return the current font scale factor.
  *
  * @param scale  Output: current scale (1–4).

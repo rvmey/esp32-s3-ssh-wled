@@ -425,6 +425,13 @@ void screen_set_font_scale(int scale)
     }
 }
 
+void screen_set_font_scale_silent(int scale)
+{
+    if (scale < 1) scale = 1;
+    if (scale > 8) scale = 8;
+    s_font_scale = scale;
+}
+
 void screen_get_font_scale(int *scale)
 {
     *scale = s_font_scale;
