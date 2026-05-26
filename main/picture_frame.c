@@ -579,6 +579,8 @@ static int bt_score_candidate(const char *name, int rssi, uint32_t cod)
 }
 
 #if CONFIG_BT_A2DP_ENABLE
+static void bt_update_coex_preference(bool streaming);
+
 static void bt_schedule_reconnect(const char *reason, uint32_t min_delay_ms)
 {
     if (!s_bt.has_bda || s_bt.discovering || s_bt_pending_reconnect) return;
@@ -624,10 +626,12 @@ static bool bt_start_connect_now(const char *reason)
 
     s_bt.connecting = true;
     s_bt_connect_started_at = xTaskGetTickCount();
+    bt_update_coex_preference(true);
 
     esp_err_t err = esp_a2d_source_connect(s_bt.bda);
     if (err != ESP_OK) {
         s_bt.connecting = false;
+        bt_update_coex_preference(false);
         ESP_LOGW(TAG,
                  "bt: connect call failed (%s): %s",
                  reason ? reason : "request",
@@ -2260,6 +2264,16 @@ static void mp3_player_task(void *arg)
             mp3_request_ui_refresh();
             continue;
         }
+
+        /* Hold off SD-card SPI reads while BT is establishing a connection.
+         * The sdspi interrupt-mode SPI ISR adds timing pressure that can push
+         * the BT HCI ISR past the interrupt WDT threshold during pairing. */
+#if CONFIG_BT_ENABLED && CONFIG_BT_A2DP_ENABLE
+        if (s_bt.connecting || s_bt.discovering) {
+            vTaskDelay(pdMS_TO_TICKS(20));
+            continue;
+        }
+#endif
 
         if (bytes_left < (MP3_INPUT_BUF_BYTES / 2)) {
             if (bytes_left > 0 && read_ptr != inbuf) {

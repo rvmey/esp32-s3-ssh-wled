@@ -54,3 +54,8 @@ CONFIG_MBEDTLS_SSL_OUT_CONTENT_LEN=4096
 # the in-flight TX buffer between handshake steps.  Keep EXTERNAL_MEM_ALLOC
 # only so buffers are pre-allocated in SPIRAM at ssl_setup time.
 CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y
+
+# Interrupt watchdog: ESP32 classic BT+WiFi+SD coexistence can hold the
+# BT controller ISR for > 800 ms under peak load.  2000 ms still catches
+# true deadlocks while avoiding spurious panics during A2DP streaming.
+CONFIG_ESP_INT_WDT_TIMEOUT_MS=2000
