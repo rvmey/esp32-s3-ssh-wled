@@ -2626,7 +2626,7 @@ static void mp3_render_now_playing(void)
         screen_get_font_scale(&cur);
         s_mp3_saved_font_scale = cur;
     }
-    screen_set_font_scale(1);
+    screen_set_font_scale_silent(1);
     screen_draw_text(msg);
 }
 
