@@ -272,6 +272,7 @@ typedef struct {
     bool       repeat_track;
     bool       repeat_playlist;
     int        volume;            /* 0..100 */
+    bool       muted;            /* toggled by "mute" command; not persisted */
     int        folder_idx;        /* index into s_mp3_folders */
     int        track_idx;         /* 0-based index in folder */
     uint32_t   duration_ms;
@@ -1747,7 +1748,8 @@ static bool trigger_reserved(const char *trigger)
         "text", "color", "textcolor", "fontsize", "landscape", "portrait",
         "jpeg", "save", "play", "stop", "next", "previous", "forward", "reverse", "volumeup",
         "volumedown", "shuffle", "repeattrack", "repeatplaylist",
-        "pair", "btstatus", "btdisconnect", "btforget"
+        "pair", "btstatus", "btdisconnect", "btforget",
+        "mute"
     };
     for (size_t i = 0; i < sizeof(reserved) / sizeof(reserved[0]); i++) {
         if (strcasecmp(trigger, reserved[i]) == 0) return true;
@@ -2365,7 +2367,7 @@ static void mp3_player_task(void *arg)
                                        (size_t)fi.outputSamps,
                                        fi.nChans,
                                        fi.samprate,
-                                       s_mp3.volume);
+                                       s_mp3.muted ? 0 : s_mp3.volume);
             speaker_path_ready = false;
             speaker_last_rate = 0;
             size_t bt_fill = bt_pcm_fill_bytes();
@@ -2469,7 +2471,7 @@ static void mp3_player_task(void *arg)
                 core2_audio_set_sample_rate((uint32_t)fi.samprate);
                 speaker_last_rate = (uint32_t)fi.samprate;
             }
-            core2_audio_write_pcm(pcm, (size_t)fi.outputSamps, fi.nChans, s_mp3.volume);
+            core2_audio_write_pcm(pcm, (size_t)fi.outputSamps, fi.nChans, s_mp3.muted ? 0 : s_mp3.volume);
         }
 
         /* Position tracking and periodic UI refresh (Core2 path) */
@@ -2663,6 +2665,12 @@ static void mp3_render_now_playing(void)
         file_short[sizeof(file_short) - 1] = '\0';
     }
 
+    char vol_str[12];
+    if (s_mp3.muted) {
+        strcpy(vol_str, "MUTE");
+    } else {
+        snprintf(vol_str, sizeof(vol_str), "%d%%", s_mp3.volume);
+    }
     char msg[1000];
     snprintf(msg, sizeof(msg),
              "MUSIC %s\n"
@@ -2670,7 +2678,7 @@ static void mp3_render_now_playing(void)
              "Folder: %s\n"
              "[%s]\n"
              "%s / %s\n"
-             "Vol:%d%%  Shuffle:%s\n"
+             "Vol:%s  Shuffle:%s\n"
              "RptTrack:%s  RptList:%s\n"
              "\n"
              "[      %s      ]\n"
@@ -2683,7 +2691,7 @@ static void mp3_render_now_playing(void)
              bar,
              cur,
              total,
-             s_mp3.volume,
+             vol_str,
              s_mp3.shuffle ? "on" : "off",
              s_mp3.repeat_track ? "on" : "off",
              s_mp3.repeat_playlist ? "on" : "off",
@@ -4132,6 +4140,11 @@ static void pf_event_handler(const char *event_name,
         s_mp3.volume -= 5;
         if (s_mp3.volume < 0) s_mp3.volume = 0;
         nvs_write_u8(NVS_KEY_VOLUME, (uint8_t)s_mp3.volume);
+        if (s_mp3.active) mp3_request_ui_refresh();
+
+    } else if (strcmp(s_trigger, "mute") == 0) {
+        s_mp3_ui_override_allowed = true;
+        s_mp3.muted = !s_mp3.muted;
         if (s_mp3.active) mp3_request_ui_refresh();
 
     } else if (strcmp(s_trigger, "shuffle") == 0) {

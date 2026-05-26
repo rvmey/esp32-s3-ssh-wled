@@ -105,6 +105,13 @@
   "icon": "🔉"
  },
  {
+  "trigger": "mute",
+  "command": "mute",
+  "allowParams": "false",
+  "mcpToolDescription": "Toggle mute on or off. Mute state is not saved across reboots.",
+  "icon": "🔇"
+ },
+ {
   "trigger": "shuffle",
   "command": "shuffle",
   "allowParams": "true",
