@@ -49,7 +49,8 @@ CONFIG_MBEDTLS_SSL_OUT_CONTENT_LEN=4096
 # Allocate mbedTLS buffers from SPIRAM instead of internal SRAM so that
 # simultaneous TLS sessions (Socket.IO WebSocket + JPEG HTTPS download)
 # do not exhaust the ~72 KB of available internal heap.
-# DYNAMIC_BUFFER additionally makes RX/TX buffers per-record rather than
-# statically held, further reducing peak internal memory usage.
+# NOTE: DYNAMIC_BUFFER was tried but caused mbedtls_ssl_handshake to fail
+# with -0x7780 (server fatal alert), likely due to SPIRAM realloc corrupting
+# the in-flight TX buffer between handshake steps.  Keep EXTERNAL_MEM_ALLOC
+# only so buffers are pre-allocated in SPIRAM at ssl_setup time.
 CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y
-CONFIG_MBEDTLS_DYNAMIC_BUFFER=y
