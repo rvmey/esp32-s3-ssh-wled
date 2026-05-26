@@ -27,7 +27,11 @@ Whenever **any firmware source file is modified** (files under `main/`, `CMakeLi
    ```powershell
    . C:\esp\v6.0\esp-idf\export.ps1 2>&1 | Out-Null ; .\build.ps1 -Variant <name>
    ```
-   Valid variant names: `devkitc`, `jc3248w535`, `bike_tracker`, `picture_frame`.
+    Example variant names:
+    - `devkitc`
+    - `jc3248w535`
+    - `bike_tracker`
+    - `picture_frame`
 
    Example — working on the DevKitC variant:
    ```powershell
