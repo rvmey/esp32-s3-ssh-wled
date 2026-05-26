@@ -209,19 +209,6 @@ static void ili_write_row(void)
     ESP_ERROR_CHECK(spi_device_polling_transmit(s_spi, &t));
 }
 
-/* Write a subsequent row (RAMWRC avoids re-sending the window command) */
-static void ili_write_cont_row(void)
-{
-    /* For standard SPI ILI9342C, just re-assert the data with RAMWRC (0x3C) */
-    ili_cmd(0x3C);  /* RAMWRC — memory write continue */
-    spi_transaction_t t = {
-        .length    = (size_t)LCD_PHYS_W * 2 * 8,
-        .tx_buffer = s_row_buf,
-        .user      = (void *)1,
-    };
-    ESP_ERROR_CHECK(spi_device_polling_transmit(s_spi, &t));
-}
-
 /* ------------------------------------------------------------------ */
 /* Internal fill                                                       */
 /* ------------------------------------------------------------------ */
@@ -241,8 +228,8 @@ static void screen_fill(uint8_t r, uint8_t g, uint8_t b)
         s_row_buf[i + 1] = pl;
     }
 
+    ili_set_window(0, 0, LCD_PHYS_W - 1, LCD_PHYS_H - 1);
     for (int y = 0; y < LCD_PHYS_H; y++) {
-        ili_set_window(0, y, LCD_PHYS_W - 1, y);
         ili_write_row();
         screen_full_redraw_yield(y);
     }
@@ -827,6 +814,7 @@ void screen_draw_text(const char *text)
 
     int logical_w = lcd_w();
 
+    ili_set_window(0, 0, LCD_PHYS_W - 1, LCD_PHYS_H - 1);
     for (int y = 0; y < LCD_PHYS_H; y++) {
         for (int i = 0; i < LCD_PHYS_W * 2; i += 2) {
             s_row_buf[i]     = bg_h;
@@ -851,7 +839,6 @@ void screen_draw_text(const char *text)
             }
         }
 
-        ili_set_window(0, y, LCD_PHYS_W - 1, y);
         ili_write_row();
         screen_full_redraw_yield(y);
     }
@@ -910,6 +897,7 @@ void screen_draw_rgb565(const uint8_t *rgb565, int src_w, int src_h)
 
     const uint16_t *src = (const uint16_t *)rgb565;
 
+    ili_set_window(0, 0, LCD_PHYS_W - 1, LCD_PHYS_H - 1);
     for (int y = 0; y < LCD_PHYS_H; y++) {
         for (int i = 0; i < LCD_PHYS_W * 2; i += 2) {
             s_row_buf[i]     = bg_h;
@@ -938,7 +926,6 @@ void screen_draw_rgb565(const uint8_t *rgb565, int src_w, int src_h)
             s_row_buf[x * 2 + 1] = (uint8_t)(pixel & 0xFF);
         }
 
-        ili_set_window(0, y, LCD_PHYS_W - 1, y);
         ili_write_row();
         screen_full_redraw_yield(y);
     }
