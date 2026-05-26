@@ -320,6 +320,7 @@ static const char *tcmd_display_host(void)
 #define NVS_KEY_SHUFFLE "mp3_shuffle"
 #define NVS_KEY_REPEAT_TRACK "mp3_repeat_track"
 #define NVS_KEY_REPEAT_PLAYLIST "mp3_repeat_playlist"
+#define NVS_KEY_VOLUME  "mp3_volume"
 #define NVS_KEY_BT_BDA  "bt_bda"
 #define NVS_KEY_BT_NAME "bt_name"
 
@@ -2710,10 +2711,12 @@ static bool pf_touch_handler(int x, int y)
         if (x >= left_x0 && x < left_x1) {
             s_mp3.volume -= 5;
             if (s_mp3.volume < 0) s_mp3.volume = 0;
+            nvs_write_u8(NVS_KEY_VOLUME, (uint8_t)s_mp3.volume);
             handled = true;
         } else if (x >= right_x0 && x < right_x1) {
             s_mp3.volume += 5;
             if (s_mp3.volume > 100) s_mp3.volume = 100;
+            nvs_write_u8(NVS_KEY_VOLUME, (uint8_t)s_mp3.volume);
             handled = true;
         }
     }
@@ -4054,12 +4057,14 @@ static void pf_event_handler(const char *event_name,
         s_mp3_ui_override_allowed = true;
         s_mp3.volume += 5;
         if (s_mp3.volume > 100) s_mp3.volume = 100;
+        nvs_write_u8(NVS_KEY_VOLUME, (uint8_t)s_mp3.volume);
         if (s_mp3.active) mp3_request_ui_refresh();
 
     } else if (strcmp(s_trigger, "volumedown") == 0) {
         s_mp3_ui_override_allowed = true;
         s_mp3.volume -= 5;
         if (s_mp3.volume < 0) s_mp3.volume = 0;
+        nvs_write_u8(NVS_KEY_VOLUME, (uint8_t)s_mp3.volume);
         if (s_mp3.active) mp3_request_ui_refresh();
 
     } else if (strcmp(s_trigger, "shuffle") == 0) {
@@ -4421,6 +4426,10 @@ void picture_frame_run(void)
         uint8_t repeat_playlist = 0;
         if (nvs_read_u8(NVS_KEY_REPEAT_PLAYLIST, &repeat_playlist)) {
             s_mp3.repeat_playlist = (repeat_playlist != 0);
+        }
+        uint8_t volume = 0;
+        if (nvs_read_u8(NVS_KEY_VOLUME, &volume)) {
+            s_mp3.volume = (int)volume;
         }
     }
     /* Defer SD mount/index work until the main loop so boot UI is responsive. */
