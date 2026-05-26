@@ -2923,9 +2923,13 @@ static bool mount_sd_card_if_needed(void)
         return false;
     }
 
-    /* Keep LCD and SD deselected while probing so only one device can drive MISO. */
-    gpio_set_direction(GPIO_NUM_5, GPIO_MODE_OUTPUT);
-    gpio_set_level(GPIO_NUM_5, 1);
+    /* Keep SD CS deselected while probing so only one device can drive MISO.
+     * NOTE: Do NOT reconfigure GPIO5 (LCD_CS) here.  gpio_set_direction() calls
+     * esp_rom_gpio_connect_out_signal(GPIO_OUT_IDX) which disconnects the SPI
+     * peripheral's CS signal from GPIO5 and routes the plain GPIO output register
+     * there instead — locking LCD_CS permanently HIGH and breaking all subsequent
+     * LCD SPI transactions.  The SPI peripheral already holds GPIO5 HIGH between
+     * transactions; no manual management is needed. */
     gpio_set_direction(GPIO_NUM_4, GPIO_MODE_OUTPUT);
     gpio_set_level(GPIO_NUM_4, 1);
 
