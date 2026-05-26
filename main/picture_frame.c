@@ -4220,9 +4220,7 @@ static bool download_and_show_jpeg(const char *url)
         .timeout_ms = 15000,
     };
     if (strncmp(url, "https://", 8) == 0) {
-        cfg.cert_pem = NULL;
-        cfg.common_name = NULL;
-        cfg.skip_cert_common_name_check = true;
+        cfg.crt_bundle_attach = esp_crt_bundle_attach;
     }
 
     esp_http_client_handle_t client = esp_http_client_init(&cfg);
