@@ -4329,7 +4329,7 @@ static void sync_time_before_tls(void)
 
 static esp_err_t connect_and_subscribe(void)
 {
-    pf_status_draw("Connecting to server...");
+    if (!s_mp3.active) pf_status_draw("Connecting to server...");
 
     /* __sails_io_sdk_version=0.11.0 in the handshake URL is how Sails 0.12.x
      * identifies a valid sails.io SDK client (checked in parseVirtualRequest). */
@@ -4358,7 +4358,11 @@ static esp_err_t connect_and_subscribe(void)
              s_computer_id);
     socketio_send_vget(sub_path, s_hw_token);
 
-    pf_status_draw("Connected!\nWaiting for\ncommands...");
+    if (s_mp3.active) {
+        mp3_request_ui_refresh();
+    } else {
+        pf_status_draw("Connected!\nWaiting for\ncommands...");
+    }
     return ESP_OK;
 }
 
@@ -4565,7 +4569,7 @@ void picture_frame_run(void)
     while (true) {
         esp_err_t ret = connect_and_subscribe();
         if (ret != ESP_OK) {
-            pf_status_draw("Server connect\nfailed\nRetrying in 10s");
+            if (!s_mp3.active) pf_status_draw("Server connect\nfailed\nRetrying in 10s");
             vTaskDelay(pdMS_TO_TICKS(10000));
             socketio_disconnect();
             continue;
@@ -4734,7 +4738,7 @@ void picture_frame_run(void)
 
             if (!socketio_connected()) {
                 ESP_LOGW(TAG, "Socket.IO disconnected — reconnecting");
-                pf_status_draw("Reconnecting...");
+                if (!s_mp3.active) pf_status_draw("Reconnecting...");
                 vTaskDelay(pdMS_TO_TICKS(5000));
                 socketio_disconnect();
                 break;
