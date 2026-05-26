@@ -706,6 +706,14 @@ static void bt_update_coex_streaming_hint(bool streaming)
 #if CONFIG_ESP_COEX_ENABLED
     if (s_bt_coex_streaming_hint == streaming) return;
 
+    /* Disable WiFi power save while A2DP is streaming.  The ESP32 BT ROM RF
+     * coexistence ISR polls a hardware grant flag that the WiFi modem sets.
+     * When WiFi is in MIN_MODEM PS it sleeps between beacon intervals; during
+     * that sleep it never sets the flag and the BT ISR spins indefinitely,
+     * triggering the interrupt watchdog.  WIFI_PS_NONE keeps the modem awake
+     * so it responds to BT's RF request immediately. */
+    esp_wifi_set_ps(streaming ? WIFI_PS_NONE : WIFI_PS_MIN_MODEM);
+
     esp_err_t err;
     if (streaming) {
         err = esp_coex_status_bit_set(ESP_COEX_ST_TYPE_BT, ESP_COEX_BT_ST_A2DP_STREAMING);
