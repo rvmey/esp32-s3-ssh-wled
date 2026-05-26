@@ -2619,7 +2619,11 @@ static void mp3_render_now_playing(void)
              s_mp3.repeat_track ? "on" : "off",
              s_mp3.repeat_playlist ? "on" : "off",
              s_mp3.paused ? "PLAY" : "PAUSE");
+    int prev_scale = 2;
+    screen_get_font_scale(&prev_scale);
+    screen_set_font_scale(1);
     screen_draw_text(msg);
+    screen_set_font_scale(prev_scale);
 }
 
 static bool pf_touch_handler(int x, int y)
