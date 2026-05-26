@@ -391,11 +391,15 @@ static void apply_scroll_abs(int target)
 
 static bool touch_read_point(uint16_t *tx, uint16_t *ty)
 {
+    /* 50 ms: BT A2DP RF slots are 7.5 ms; at 10 ms the I2C ISR could be
+     * preempted by a BT slot, miss the timeout, and trigger i2c_master_clear_bus
+     * which deadlocks with the I2C ISR on the driver spinlock. 50 ms gives 6+
+     * slot intervals for the ISR to complete before the timeout fires. */
     uint8_t reg  = 0x02;
     uint8_t npts = 0;
     if (i2c_master_write_read_device(AXP_I2C_NUM, TOUCH_I2C_ADDR,
                                      &reg, 1, &npts, 1,
-                                     pdMS_TO_TICKS(10)) != ESP_OK) {
+                                     pdMS_TO_TICKS(50)) != ESP_OK) {
         return false;
     }
     if (npts == 0 || npts > 5) return false;
@@ -404,7 +408,7 @@ static bool touch_read_point(uint16_t *tx, uint16_t *ty)
     uint8_t data_reg = 0x03;
     if (i2c_master_write_read_device(AXP_I2C_NUM, TOUCH_I2C_ADDR,
                                      &data_reg, 1, data, 4,
-                                     pdMS_TO_TICKS(10)) != ESP_OK) {
+                                     pdMS_TO_TICKS(50)) != ESP_OK) {
         return false;
     }
     *tx = (uint16_t)(((data[0] & 0x0F) << 8) | data[1]);

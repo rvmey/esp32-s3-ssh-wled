@@ -1088,10 +1088,12 @@ static void bt_a2dp_cb(esp_a2d_cb_event_t event, esp_a2d_cb_param_t *param)
             ESP_LOGI(TAG, "bt: A2DP connected to %s", s_bt.selected_bda[0] ? s_bt.selected_bda : connected_bda);
 
             if (s_bt.pairing_ui_active) {
-                ESP_LOGI(TAG,
-                         "bt: pairing complete name=%s bda=%s",
-                         s_bt.selected_name[0] ? s_bt.selected_name : "(unknown)",
-                         s_bt.selected_bda[0] ? s_bt.selected_bda : "");
+                const char *pair_name = s_bt.selected_name[0] ? s_bt.selected_name : "(unknown)";
+                const char *pair_bda  = s_bt.selected_bda[0]  ? s_bt.selected_bda  : "";
+                ESP_LOGI(TAG, "bt: pairing complete name=%s bda=%s", pair_name, pair_bda);
+                char pair_msg[128];
+                snprintf(pair_msg, sizeof(pair_msg), "BT Paired\n%s\n%s", pair_name, pair_bda);
+                screen_draw_text(pair_msg);
                 s_bt.pairing_ui_active = false;
             }
             if (s_mp3_resume_on_bt_reconnect && s_mp3.active) {
