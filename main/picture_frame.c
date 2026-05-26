@@ -1868,29 +1868,51 @@ static bool mp3_stream_next_frame(FILE *fp, mp3_frame_info_t *info)
     }
 }
 
-static uint32_t mp3_probe_duration_ms(const char *file_path) __attribute__((unused));
-static uint32_t mp3_probe_duration_ms(const char *file_path)
+/* Fast duration estimate: reads only the first frame header + file size.
+ * Accurate for CBR; approximate (±10%) for VBR.  Never blocks more than
+ * a handful of SD sector reads. */
+static uint32_t mp3_estimate_duration_ms(const char *file_path)
 {
     FILE *fp = fopen(file_path, "rb");
-    if (!fp) return 180000;
+    if (!fp) return 0;
 
-    uint64_t total_samples = 0;
-    int last_sample_rate = 0;
+    if (fseek(fp, 0, SEEK_END) != 0) { fclose(fp); return 0; }
+    long file_size = ftell(fp);
+    if (file_size <= 0) { fclose(fp); return 0; }
+
+    rewind(fp);
+
+    /* Skip ID3v2 tag if present */
+    long audio_start = 0;
+    uint8_t hdr[10];
+    if (fread(hdr, 1, 10, fp) == 10 &&
+        hdr[0] == 'I' && hdr[1] == 'D' && hdr[2] == '3') {
+        uint32_t tag_size = ((uint32_t)(hdr[6] & 0x7F) << 21) |
+                            ((uint32_t)(hdr[7] & 0x7F) << 14) |
+                            ((uint32_t)(hdr[8] & 0x7F) << 7)  |
+                            (uint32_t)(hdr[9] & 0x7F);
+        audio_start = 10 + (long)tag_size;
+        if (fseek(fp, audio_start, SEEK_SET) != 0) { fclose(fp); return 0; }
+    } else {
+        rewind(fp);
+    }
+
     mp3_frame_info_t info;
-
-    while (mp3_stream_next_frame(fp, &info)) {
-        total_samples += (uint64_t)info.samples_per_frame;
-        last_sample_rate = info.sample_rate;
-        if (fseek(fp, info.frame_bytes - 4, SEEK_CUR) != 0) {
-            break;
-        }
+    if (!mp3_stream_next_frame(fp, &info) || info.frame_bytes <= 0 || info.sample_rate <= 0) {
+        fclose(fp);
+        return 0;
     }
     fclose(fp);
 
-    if (total_samples == 0 || last_sample_rate <= 0) return 180000;
+    /* Audio bytes: subtract header area and 128-byte ID3v1 tail reservation */
+    long audio_size = file_size - audio_start - 128;
+    if (audio_size < info.frame_bytes) return 0;
 
-    uint64_t ms = (total_samples * 1000ULL) / (uint64_t)last_sample_rate;
-    if (ms < 1000ULL) ms = 1000ULL;
+    uint64_t total_frames  = (uint64_t)audio_size / (uint64_t)info.frame_bytes;
+    uint64_t total_samples = total_frames * (uint64_t)info.samples_per_frame;
+    uint64_t ms            = total_samples * 1000ULL / (uint64_t)info.sample_rate;
+
+    if (ms < 1000ULL) return 0;
     if (ms > 7200000ULL) ms = 7200000ULL;
     return (uint32_t)ms;
 }
@@ -2133,6 +2155,11 @@ static void mp3_player_task(void *arg)
                 mp3_request_ui_refresh();
                 vTaskDelay(pdMS_TO_TICKS(200));
                 continue;
+            }
+            uint32_t probed_ms = mp3_estimate_duration_ms(s_mp3.file_path);
+            if (probed_ms > 0) {
+                s_mp3.duration_ms = probed_ms;
+                mp3_request_ui_refresh();
             }
         }
 
