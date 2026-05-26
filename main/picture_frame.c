@@ -644,14 +644,19 @@ static bool bt_start_connect_now(const char *reason)
 }
 #endif
 
-#define BT_PCM_RING_BYTES (64 * 1024)
-#define BT_PCM_LOW_WATER_BYTES  (10 * 1024)
-#define BT_PCM_HIGH_WATER_BYTES (40 * 1024)
-#define BT_PCM_TARGET_FILL_BYTES (20 * 1024)
-#define BT_PCM_START_PRIME_BYTES (24 * 1024)
-#define BT_PCM_START_PRIME_TIMEOUT_MS 1500
-#define BT_PCM_RESUME_PRIME_BYTES (12 * 1024)
-#define BT_PCM_RESUME_PRIME_TIMEOUT_MS 400
+/* LCD (ILI9342C) and SD card share SPI3 on Core2.  A full screen redraw
+ * holds SPI3 for ~840 ms in polling mode, blocking fread() and halting
+ * MP3 decode for that window.  At 176 KB/s PCM consumption the BT PCM
+ * ring must hold > 840 ms worth of audio to avoid underflowing.
+ * 192 KB ≈ 1.09 s — leaves ~45 KB headroom after the longest draw. */
+#define BT_PCM_RING_BYTES        (256 * 1024)
+#define BT_PCM_LOW_WATER_BYTES   ( 40 * 1024)
+#define BT_PCM_HIGH_WATER_BYTES  (220 * 1024)
+#define BT_PCM_TARGET_FILL_BYTES (192 * 1024)
+#define BT_PCM_START_PRIME_BYTES (192 * 1024)
+#define BT_PCM_START_PRIME_TIMEOUT_MS 5000
+#define BT_PCM_RESUME_PRIME_BYTES ( 96 * 1024)
+#define BT_PCM_RESUME_PRIME_TIMEOUT_MS 2000
 #define BT_A2DP_TARGET_SAMPLE_RATE 44100
 #define BT_PCM_FRAME_BYTES 4
 #define MP3_INPUT_BUF_BYTES (32 * 1024)
