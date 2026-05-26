@@ -381,7 +381,7 @@ static mp3_state_t   s_mp3 = {
     .last_tick = 0,
 };
 static volatile bool s_mp3_resume_on_bt_reconnect = false;
-static TickType_t s_mp3_last_ui_tick __attribute__((unused)) = 0;
+static TickType_t s_mp3_last_ui_tick = 0;
 static volatile bool s_mp3_ui_pending = false;
 static bool          s_mp3_ui_override_allowed = true;
 static int           s_mp3_saved_font_scale = -1; /* font scale before music UI; -1 = not saved */
@@ -2429,6 +2429,32 @@ static void mp3_player_task(void *arg)
                 speaker_last_rate = (uint32_t)fi.samprate;
             }
             core2_audio_write_pcm(pcm, (size_t)fi.outputSamps, fi.nChans, s_mp3.volume);
+        }
+
+        /* Position tracking and periodic UI refresh (Core2 path) */
+        {
+            uint32_t mono_samples = (uint32_t)(fi.outputSamps / fi.nChans);
+            uint32_t frame_ms = (uint32_t)(((uint64_t)mono_samples * 1000ULL) /
+                                           (uint64_t)fi.samprate);
+            if (frame_ms == 0) frame_ms = 1;
+
+            if (s_mp3.active && !s_mp3.paused && opened_token == s_mp3.play_token) {
+                if (s_mp3.position_ms + frame_ms >= s_mp3.duration_ms) {
+                    if (!mp3_handle_track_end()) {
+                        s_mp3.position_ms = s_mp3.duration_ms;
+                        s_mp3.paused = true;
+                        mp3_request_ui_refresh();
+                    }
+                } else {
+                    s_mp3.position_ms += frame_ms;
+                }
+
+                TickType_t now = xTaskGetTickCount();
+                if ((now - s_mp3_last_ui_tick) >= pdMS_TO_TICKS(3000)) {
+                    s_mp3_last_ui_tick = now;
+                    mp3_request_ui_refresh();
+                }
+            }
         }
 #else
         uint64_t output_us = (uint64_t)(esp_timer_get_time() - output_t0);
