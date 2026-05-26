@@ -4672,7 +4672,10 @@ void picture_frame_run(void)
 
             if (s_pending_jpeg) {
                 s_pending_jpeg = false;
-                s_mp3_saved_font_scale = -1;
+                if (s_mp3_saved_font_scale >= 0) {
+                    screen_set_font_scale_silent(s_mp3_saved_font_scale);
+                    s_mp3_saved_font_scale = -1;
+                }
                 char jpeg_url[512];
                 strncpy(jpeg_url, s_pending_jpeg_url, sizeof(jpeg_url) - 1);
                 jpeg_url[sizeof(jpeg_url) - 1] = '\0';
