@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(. C:\\\\esp\\\\v6.0\\\\esp-idf\\\\export.ps1 2>&1)",
+      "PowerShell(.\\\\build.ps1 -Variant core2 2>&1)",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)",
+      "Bash(git push *)",
+      "PowerShell(.\\\\build.ps1 -Variant core2)",
+      "PowerShell(git -C \"c:\\\\appdev\\\\esp\\\\esp32-s3-ssh-wled\" status)",
+      "PowerShell(git -C \"c:\\\\appdev\\\\esp\\\\esp32-s3-ssh-wled\" add main/main.c main/improv_wifi.c main/picture_frame.c main/screen_control_core2.c docs/manifest-core2.json docs/manifest-core2-2.0.230.json docs/index.html docs/sw.js \"docs/firmware/esp32_core2_picture_frame.bin\" \"docs/firmware/esp32_core2_picture_frame-2.0.230.bin\")",
+      "PowerShell(git -C \"c:\\\\appdev\\\\esp\\\\esp32-s3-ssh-wled\" push)",
+      "Bash(*)",
+      "PowerShell(*)"
+    ]
+  }
+}
