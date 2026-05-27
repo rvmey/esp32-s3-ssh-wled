@@ -659,7 +659,6 @@ static bool bt_start_connect_now(const char *reason)
 #define BT_PCM_RESUME_PRIME_TIMEOUT_MS 2000
 #define BT_A2DP_TARGET_SAMPLE_RATE 44100
 #define BT_PCM_FRAME_BYTES 4
-#define MP3_INPUT_BUF_BYTES (32 * 1024)
 static uint8_t *s_bt_pcm_ring = NULL;
 static size_t s_bt_pcm_rpos = 0;
 static size_t s_bt_pcm_wpos = 0;
@@ -1968,6 +1967,10 @@ static void mp3_log_mode_status(const char *reason)
              s_mp3.repeat_playlist ? "on" : "off");
 }
 
+#ifndef MP3_INPUT_BUF_BYTES
+#define MP3_INPUT_BUF_BYTES (32 * 1024)
+#endif
+
 static void mp3_player_task(void *arg) __attribute__((unused));
 static void mp3_player_task(void *arg)
 {
@@ -3035,11 +3038,15 @@ static bool mount_sd_card_if_needed(void)
 
     /* Core2 wiring can be marginal on these lines; enable internal pull-ups where supported. */
     gpio_pullup_en(GPIO_NUM_4);
+#if CONFIG_HARDWARE_CORE2
     gpio_pullup_en(GPIO_NUM_18);
     gpio_pullup_en(GPIO_NUM_23);
+#endif
     gpio_set_drive_capability(GPIO_NUM_4, GPIO_DRIVE_CAP_3);
+#if CONFIG_HARDWARE_CORE2
     gpio_set_drive_capability(GPIO_NUM_18, GPIO_DRIVE_CAP_3);
     gpio_set_drive_capability(GPIO_NUM_23, GPIO_DRIVE_CAP_3);
+#endif
     vTaskDelay(pdMS_TO_TICKS(5));
 
     esp_vfs_fat_sdmmc_mount_config_t mount_config = {
@@ -3712,6 +3719,7 @@ static const pf_cmd_t s_pf_media_cmds[] = {
     { "reverse",     "reverse",     "false", "Skip backward 10 seconds within the current MP3.", "\xE2\x8F\xAA" /* ⏪ */ },
     { "volumeup",    "volumeup",    "false", "Increase playback volume.", "\xF0\x9F\x94\x8A" /* 🔊 */ },
     { "volumedown",  "volumedown",  "false", "Decrease playback volume.", "\xF0\x9F\x94\x89" /* 🔉 */ },
+    { "mute",        "mute",        "false", "Toggle mute on or off. Mute state is not saved across reboots.", "\xF0\x9F\x94\x87" /* 🔇 */ },
     { "shuffle",     "shuffle",     "true",  "Enable or disable shuffle mode. Example: 'shuffle on' or 'shuffle off'", "\xF0\x9F\x94\x80" /* 🔀 */ },
     { "repeattrack", "repeattrack", "true",  "Enable or disable repeat-track mode. Example: 'repeattrack on' or 'repeattrack off'", "\xF0\x9F\x94\x82" /* 🔂 */ },
     { "repeatplaylist", "repeatplaylist", "true",  "Enable or disable repeat-playlist mode. Example: 'repeatplaylist on' or 'repeatplaylist off'", "\xF0\x9F\x94\x81" /* 🔁 */ },
