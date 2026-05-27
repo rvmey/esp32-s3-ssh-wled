@@ -322,6 +322,7 @@ static const char *tcmd_display_host(void)
 #define NVS_KEY_REPEAT_TRACK "mp3_rpt_trk"
 #define NVS_KEY_REPEAT_PLAYLIST "mp3_rpt_list"
 #define NVS_KEY_VOLUME  "mp3_volume"
+#define NVS_KEY_MP3_MODE "mp3_mode"
 #define NVS_KEY_BT_BDA  "bt_bda"
 #define NVS_KEY_BT_NAME "bt_name"
 
@@ -388,6 +389,7 @@ static bool          s_mp3_ui_override_allowed = true;
 static int           s_mp3_saved_font_scale = -1; /* font scale before music UI; -1 = not saved */
 static TaskHandle_t s_mp3_task = NULL;
 static TickType_t s_mp3_next_mount_retry __attribute__((unused)) = 0;
+static bool s_mp3_autostart = false;
 static bool s_sd_mount_warned __attribute__((unused)) = false;
 static volatile int32_t s_mp3_seek_target_ms = -1;
 
@@ -3168,7 +3170,12 @@ static esp_err_t save_display_state_to_nvs(void)
     if ((err = nvs_write_u8(NVS_KEY_FONT, (uint8_t)font_scale)) != ESP_OK) return err;
     if ((err = nvs_write_str(NVS_KEY_TEXT, s_last_text)) != ESP_OK) return err;
 
-    if (s_jpeg_cache && s_jpeg_cache_len > 0 && s_current_jpeg_url[0]) {
+    bool music_active = s_mp3.active && s_mp3_ui_override_allowed;
+    if ((err = nvs_write_u8(NVS_KEY_MP3_MODE, music_active ? 1 : 0)) != ESP_OK) return err;
+
+    if (music_active) {
+        if ((err = nvs_erase_key_local(NVS_KEY_JPEGURL)) != ESP_OK) return err;
+    } else if (s_jpeg_cache && s_jpeg_cache_len > 0 && s_current_jpeg_url[0]) {
         if ((err = nvs_write_str(NVS_KEY_JPEGURL, s_current_jpeg_url)) != ESP_OK) return err;
     } else {
         if ((err = nvs_erase_key_local(NVS_KEY_JPEGURL)) != ESP_OK) return err;
@@ -3241,6 +3248,15 @@ static void restore_display_state_from_nvs(void)
 
     strncpy(s_last_text, text, sizeof(s_last_text) - 1);
     s_last_text[sizeof(s_last_text) - 1] = '\0';
+
+    uint8_t mp3_mode = 0;
+    nvs_read_u8(NVS_KEY_MP3_MODE, &mp3_mode);
+
+    if (mp3_mode) {
+        s_mp3_autostart = true;
+        ESP_LOGI(TAG, "Restored saved display state (music mode — autostart pending)");
+        return;
+    }
 
     if (jpeg_url[0]) {
         strncpy(s_current_jpeg_url, jpeg_url, sizeof(s_current_jpeg_url) - 1);
@@ -4812,6 +4828,10 @@ void picture_frame_run(void)
                 if (!was_mounted && s_sd_mounted) {
                     ESP_LOGI(TAG, "sd: mount restored; reconciling MP3 folder commands");
                     sync_all_commands(true);
+                    if (s_mp3_autostart && s_mp3_folder_count > 0) {
+                        s_mp3_autostart = false;
+                        mp3_start_track(0, -1, false);
+                    }
                 }
             }
 
