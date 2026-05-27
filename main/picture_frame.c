@@ -3253,8 +3253,13 @@ static void restore_display_state_from_nvs(void)
     nvs_read_u8(NVS_KEY_MP3_MODE, &mp3_mode);
 
     if (mp3_mode) {
-        s_mp3_autostart = true;
-        ESP_LOGI(TAG, "Restored saved display state (music mode — autostart pending)");
+        if (s_sd_mounted && s_mp3_folder_count > 0) {
+            mp3_start_track(0, -1, false);
+            ESP_LOGI(TAG, "Restored saved display state (music mode — started immediately)");
+        } else {
+            s_mp3_autostart = true;
+            ESP_LOGI(TAG, "Restored saved display state (music mode — autostart pending SD mount)");
+        }
         return;
     }
 
