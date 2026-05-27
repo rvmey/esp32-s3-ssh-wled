@@ -1761,7 +1761,7 @@ static bool trigger_reserved(const char *trigger)
     static const char *reserved[] = {
         "text", "color", "textcolor", "fontsize", "landscape", "portrait",
         "jpeg", "save", "play", "stop", "next", "previous", "forward", "reverse", "volumeup",
-        "volumedown", "shuffle", "repeattrack", "repeatplaylist",
+        "volumedown", "volumelevel", "shuffle", "repeattrack", "repeatplaylist",
         "pair", "btstatus", "btdisconnect", "btforget", "reboot",
         "mute"
     };
@@ -3720,6 +3720,7 @@ static const pf_cmd_t s_pf_media_cmds[] = {
     { "reverse",     "reverse",     "false", "Skip backward 10 seconds within the current MP3.", "\xE2\x8F\xAA" /* ⏪ */ },
     { "volumeup",    "volumeup",    "false", "Increase playback volume.", "\xF0\x9F\x94\x8A" /* 🔊 */ },
     { "volumedown",  "volumedown",  "false", "Decrease playback volume.", "\xF0\x9F\x94\x89" /* 🔉 */ },
+    { "volumelevel", "volumelevel", "true",  "Set the playback volume to an exact percentage (0-100). Example: 'volumelevel 75'", "\xF0\x9F\x94\x8A" /* 🔊 */ },
     { "mute",        "mute",        "false", "Toggle mute on or off. Mute state is not saved across reboots.", "\xF0\x9F\x94\x87" /* 🔇 */ },
     { "shuffle",     "shuffle",     "true",  "Enable or disable shuffle mode. Example: 'shuffle on' or 'shuffle off'", "\xF0\x9F\x94\x80" /* 🔀 */ },
     { "repeattrack", "repeattrack", "true",  "Enable or disable repeat-track mode. Example: 'repeattrack on' or 'repeattrack off'", "\xF0\x9F\x94\x82" /* 🔂 */ },
@@ -4169,6 +4170,15 @@ static void pf_event_handler(const char *event_name,
         s_mp3_ui_override_allowed = true;
         s_mp3.volume -= 5;
         if (s_mp3.volume < 0) s_mp3.volume = 0;
+        nvs_write_u8(NVS_KEY_VOLUME, (uint8_t)s_mp3.volume);
+        if (s_mp3.active) mp3_request_ui_refresh();
+
+    } else if (strcmp(s_trigger, "volumelevel") == 0) {
+        s_mp3_ui_override_allowed = true;
+        int lvl = atoi(s_params);
+        if (lvl < 0) lvl = 0;
+        if (lvl > 100) lvl = 100;
+        s_mp3.volume = lvl;
         nvs_write_u8(NVS_KEY_VOLUME, (uint8_t)s_mp3.volume);
         if (s_mp3.active) mp3_request_ui_refresh();
 

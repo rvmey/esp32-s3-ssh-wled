@@ -112,6 +112,13 @@
   "icon": "🔉"
  },
  {
+  "trigger": "volumelevel",
+  "command": "volumelevel",
+  "allowParams": "true",
+  "mcpToolDescription": "Set the playback volume to an exact percentage (0–100). Example: 'volumelevel 75'",
+  "icon": "🔊"
+ },
+ {
   "trigger": "mute",
   "command": "mute",
   "allowParams": "false",
