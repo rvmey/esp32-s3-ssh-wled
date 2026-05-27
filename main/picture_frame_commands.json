@@ -63,6 +63,13 @@
   "icon": "💾"
  },
  {
+  "trigger": "reboot",
+  "command": "reboot",
+  "allowParams": "false",
+  "mcpToolDescription": "Reboot the device.",
+  "icon": "🔁"
+ },
+ {
   "trigger": "play",
   "command": "play",
   "allowParams": "false",

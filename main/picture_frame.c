@@ -1762,7 +1762,7 @@ static bool trigger_reserved(const char *trigger)
         "text", "color", "textcolor", "fontsize", "landscape", "portrait",
         "jpeg", "save", "play", "stop", "next", "previous", "forward", "reverse", "volumeup",
         "volumedown", "shuffle", "repeattrack", "repeatplaylist",
-        "pair", "btstatus", "btdisconnect", "btforget",
+        "pair", "btstatus", "btdisconnect", "btforget", "reboot",
         "mute"
     };
     for (size_t i = 0; i < sizeof(reserved) / sizeof(reserved[0]); i++) {
@@ -3707,6 +3707,7 @@ static const pf_cmd_t s_pf_cmds[] = {
     { "portrait",  "portrait",  "false", "Set the display to portrait orientation.",                         "\xE2\x86\x95\xEF\xB8\x8F" /* ↕️ */ },
     { "jpeg",      "jpeg",      "true",  "Display a JPEG image. Example: 'jpeg https://example.com/image.jpg'", "\xF0\x9F\x96\xBC\xEF\xB8\x8F" /* 🖼️ */ },
     { "save",      "save",      "false", "Save the current display settings and image to non-volatile memory.", "\xF0\x9F\x92\xBE" /* 💾 */ },
+    { "reboot",    "reboot",    "false", "Reboot the device.", "\xF0\x9F\x94\x81" /* 🔁 */ },
 };
 #define PF_CMD_COUNT  (sizeof(s_pf_cmds) / sizeof(s_pf_cmds[0]))
 
@@ -4087,6 +4088,12 @@ static void pf_event_handler(const char *event_name,
         } else {
             ESP_LOGI(TAG, "save: display state persisted");
         }
+
+    } else if (strcmp(s_trigger, "reboot") == 0) {
+        ESP_LOGW(TAG, "reboot: restarting device by command");
+        screen_draw_text("Rebooting...");
+        vTaskDelay(pdMS_TO_TICKS(250));
+        esp_restart();
 
     } else if (strcmp(s_trigger, "play") == 0) {
         s_mp3_ui_override_allowed = true;
