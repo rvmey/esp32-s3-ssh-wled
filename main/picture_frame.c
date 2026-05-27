@@ -2790,12 +2790,14 @@ static bool pf_touch_handler(int x, int y, screen_gesture_t gesture)
             handled = mp3_advance_track(1, "swipe next");
             break;
         case SCREEN_GESTURE_SWIPE_UP:
+            s_mp3.muted = false;
             s_mp3.volume += 5;
             if (s_mp3.volume > 100) s_mp3.volume = 100;
             nvs_write_u8(NVS_KEY_VOLUME, (uint8_t)s_mp3.volume);
             handled = true;
             break;
         case SCREEN_GESTURE_SWIPE_DOWN:
+            s_mp3.muted = false;
             s_mp3.volume -= 5;
             if (s_mp3.volume < 0) s_mp3.volume = 0;
             nvs_write_u8(NVS_KEY_VOLUME, (uint8_t)s_mp3.volume);
@@ -4168,6 +4170,7 @@ static void pf_event_handler(const char *event_name,
 
     } else if (strcmp(s_trigger, "volumeup") == 0) {
         s_mp3_ui_override_allowed = true;
+        s_mp3.muted = false;
         s_mp3.volume += 5;
         if (s_mp3.volume > 100) s_mp3.volume = 100;
         nvs_write_u8(NVS_KEY_VOLUME, (uint8_t)s_mp3.volume);
@@ -4175,6 +4178,7 @@ static void pf_event_handler(const char *event_name,
 
     } else if (strcmp(s_trigger, "volumedown") == 0) {
         s_mp3_ui_override_allowed = true;
+        s_mp3.muted = false;
         s_mp3.volume -= 5;
         if (s_mp3.volume < 0) s_mp3.volume = 0;
         nvs_write_u8(NVS_KEY_VOLUME, (uint8_t)s_mp3.volume);
@@ -4182,6 +4186,7 @@ static void pf_event_handler(const char *event_name,
 
     } else if (strcmp(s_trigger, "volumelevel") == 0) {
         s_mp3_ui_override_allowed = true;
+        s_mp3.muted = false;
         int lvl = atoi(s_params);
         if (lvl < 0) lvl = 0;
         if (lvl > 100) lvl = 100;
