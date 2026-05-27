@@ -16,6 +16,8 @@
 #define NVS_NAMESPACE        "wifi_cfg"
 #define NVS_KEY_SSID         "ssid"
 #define NVS_KEY_PASS         "password"
+#define NVS_KEY_SSID2        "ssid2"
+#define NVS_KEY_PASS2        "password2"
 
 static const char *TAG = "wifi";
 
@@ -137,16 +139,19 @@ esp_err_t wifi_connect_with_credentials(const char *ssid, const char *password)
 
 esp_err_t wifi_connect(void)
 {
-    char ssid[33]     = {0};
-    char password[65] = {0};
+    char ssid[33]      = {0};
+    char password[65]  = {0};
+    char ssid2[33]     = {0};
+    char password2[65] = {0};
 
     /* Prefer credentials stored in NVS over Kconfig defaults */
     nvs_handle_t nvs;
     if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &nvs) == ESP_OK) {
-        size_t ssid_len = sizeof(ssid);
-        size_t pass_len = sizeof(password);
-        nvs_get_str(nvs, NVS_KEY_SSID, ssid, &ssid_len);
-        nvs_get_str(nvs, NVS_KEY_PASS, password, &pass_len);
+        size_t len;
+        len = sizeof(ssid);      nvs_get_str(nvs, NVS_KEY_SSID,  ssid,      &len);
+        len = sizeof(password);  nvs_get_str(nvs, NVS_KEY_PASS,  password,  &len);
+        len = sizeof(ssid2);     nvs_get_str(nvs, NVS_KEY_SSID2, ssid2,     &len);
+        len = sizeof(password2); nvs_get_str(nvs, NVS_KEY_PASS2, password2, &len);
         nvs_close(nvs);
     }
 
@@ -155,7 +160,14 @@ esp_err_t wifi_connect(void)
         strncpy(password, CONFIG_WIFI_PASSWORD, sizeof(password) - 1);
     }
 
-    return wifi_connect_with_credentials(ssid, password);
+    esp_err_t ret = wifi_connect_with_credentials(ssid, password);
+    if (ret == ESP_OK) return ESP_OK;
+
+    if (ssid2[0]) {
+        ESP_LOGW(TAG, "Primary network failed; trying secondary \"%s\"", ssid2);
+        ret = wifi_connect_with_credentials(ssid2, password2);
+    }
+    return ret;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -182,6 +194,24 @@ esp_err_t wifi_save_credentials(const char *ssid, const char *password)
 
     ret = nvs_set_str(nvs, NVS_KEY_SSID, ssid);
     if (ret == ESP_OK) ret = nvs_set_str(nvs, NVS_KEY_PASS, password);
+    if (ret == ESP_OK) ret = nvs_commit(nvs);
+    nvs_close(nvs);
+    return ret;
+}
+
+esp_err_t wifi_save_credentials2(const char *ssid, const char *password)
+{
+    nvs_handle_t nvs;
+    esp_err_t ret = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs);
+    if (ret != ESP_OK) return ret;
+
+    if (ssid && ssid[0]) {
+        ret = nvs_set_str(nvs, NVS_KEY_SSID2, ssid);
+        if (ret == ESP_OK) ret = nvs_set_str(nvs, NVS_KEY_PASS2, password ? password : "");
+    } else {
+        nvs_erase_key(nvs, NVS_KEY_SSID2);
+        nvs_erase_key(nvs, NVS_KEY_PASS2);
+    }
     if (ret == ESP_OK) ret = nvs_commit(nvs);
     nvs_close(nvs);
     return ret;

@@ -89,6 +89,11 @@ static const char s_c2_prov_html[] =
     "<form method='POST' action='/save'>"
     "<label>Wi-Fi SSID</label><input name='ssid' required>"
     "<label>Wi-Fi Password</label><input name='pass' type='password'>"
+    "<hr style='border-color:#2d3148;margin:1.25rem 0 .5rem'>"
+    "<p style='color:#94a3b8;font-size:.85rem;margin:0 0 .25rem'>"
+    "Secondary Network (optional)</p>"
+    "<label>SSID 2</label><input name='ssid2'>"
+    "<label>Password 2</label><input name='pass2' type='password'>"
     "<button type='submit'>Save &amp; Connect</button>"
     "</form></div></body></html>";
 
@@ -156,10 +161,14 @@ static esp_err_t c2_save_handler(httpd_req_t *req)
     }
     body[len] = '\0';
 
-    char ssid[64] = {0};
-    char pass[64] = {0};
-    c2_form_get_field(body, "ssid", ssid, sizeof(ssid));
-    c2_form_get_field(body, "pass", pass, sizeof(pass));
+    char ssid[64]  = {0};
+    char pass[64]  = {0};
+    char ssid2[64] = {0};
+    char pass2[64] = {0};
+    c2_form_get_field(body, "ssid",  ssid,  sizeof(ssid));
+    c2_form_get_field(body, "pass",  pass,  sizeof(pass));
+    c2_form_get_field(body, "ssid2", ssid2, sizeof(ssid2));
+    c2_form_get_field(body, "pass2", pass2, sizeof(pass2));
 
     httpd_resp_set_type(req, "text/html");
     httpd_resp_send(req, s_c2_saved_html, HTTPD_RESP_USE_STRLEN);
@@ -167,6 +176,10 @@ static esp_err_t c2_save_handler(httpd_req_t *req)
     if (ssid[0]) {
         wifi_save_credentials(ssid, pass);
         ESP_LOGI("pf_c2", "WiFi credentials saved for SSID: %s", ssid);
+    }
+    wifi_save_credentials2(ssid2, pass2);
+    if (ssid2[0]) {
+        ESP_LOGI("pf_c2", "Secondary WiFi credentials saved for SSID: %s", ssid2);
     }
     s_c2_prov_done = true;
     return ESP_OK;
