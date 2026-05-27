@@ -196,6 +196,99 @@ function Copy-Artifacts([PSCustomObject]$variant) {
     Write-Host "  Copied $($variant.PartitionBin)" -ForegroundColor Green
 }
 
+function Update-StableAliasPinning([PSCustomObject]$variant) {
+    # Only variants with stable installer aliases need pinning updates.
+    $aliasManifest = $null
+    $pinnedManifest = $null
+    $appStem = $null
+
+    switch ($variant.Name) {
+        'picture_frame' {
+            $aliasManifest = 'manifest-picture_frame.json'
+            $pinnedManifest = "manifest-picture_frame-$($script:AppVersion).json"
+            $appStem = 'esp32_picture_frame'
+        }
+        'core2' {
+            $aliasManifest = 'manifest-core2.json'
+            $pinnedManifest = "manifest-core2-$($script:AppVersion).json"
+            $appStem = 'esp32_core2_picture_frame'
+        }
+        default {
+            return
+        }
+    }
+
+    $docsDir = Join-Path $PSScriptRoot 'docs'
+    $aliasPath = Join-Path $docsDir $aliasManifest
+    $pinnedPath = Join-Path $docsDir $pinnedManifest
+
+    if (-not (Test-Path $aliasPath)) {
+        Write-Warning "Stable alias manifest not found: $aliasManifest"
+        return
+    }
+
+    $manifest = Get-Content -Path $aliasPath -Raw
+    $manifest = [regex]::Replace(
+        $manifest,
+        '"version"\s*:\s*"[^"]+"',
+        '"version": "' + $script:AppVersion + '"',
+        1
+    )
+    $manifest = [regex]::Replace(
+        $manifest,
+        '("path"\s*:\s*"firmware/' + [regex]::Escape($appStem) + ')(-[0-9]+\.[0-9]+\.[0-9]+)?(\.bin")',
+        '${1}-' + $script:AppVersion + '${3}',
+        1
+    )
+    Set-Content -Path $aliasPath -Value $manifest -NoNewline
+
+    # Keep a pinned, immutable manifest for browser/service-worker cache safety.
+    Set-Content -Path $pinnedPath -Value $manifest -NoNewline
+
+    $indexPath = Join-Path $docsDir 'index.html'
+    if (Test-Path $indexPath) {
+        $index = Get-Content -Path $indexPath -Raw
+        $index = [regex]::Replace(
+            $index,
+            "('" + [regex]::Escape($aliasManifest) + "': rawBase \+ 'manifest-[^']+\.json')",
+            "'" + $aliasManifest + "': rawBase + '" + $pinnedManifest + "'",
+            1
+        )
+
+        if ($index -match ("'" + [regex]::Escape($aliasManifest) + "': '\\d+\\.\\d+\\.\\d+'")) {
+            $index = [regex]::Replace(
+                $index,
+                "'" + [regex]::Escape($aliasManifest) + "': '\\d+\\.\\d+\\.\\d+'",
+                "'" + $aliasManifest + "': '" + $script:AppVersion + "'",
+                1
+            )
+        } else {
+            $index = $index -replace "(var fixedVersionMap = \{\s*)", ("`$1`n        '" + $aliasManifest + "': '" + $script:AppVersion + "',")
+        }
+        Set-Content -Path $indexPath -Value $index -NoNewline
+    }
+
+    $swPath = Join-Path $docsDir 'sw.js'
+    if (Test-Path $swPath) {
+        $sw = Get-Content -Path $swPath -Raw
+        $sw = [regex]::Replace(
+            $sw,
+            "(master/docs/manifest-" + [regex]::Escape($variant.Name) + ")-[0-9]+\.[0-9]+\.[0-9]+(\.json)",
+            "`$1-$($script:AppVersion)`$2",
+            1
+        )
+        $sw = [regex]::Replace(
+            $sw,
+            "(/esp32-s3-ssh-wled/firmware/" + [regex]::Escape($appStem) + ")-[0-9]+\.[0-9]+\.[0-9]+(\.bin)",
+            "`$1-$($script:AppVersion)`$2",
+            1
+        )
+        Set-Content -Path $swPath -Value $sw -NoNewline
+    }
+
+    Write-Host "  Updated flasher pinning for $($variant.Name): $($script:AppVersion)" -ForegroundColor Green
+}
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -254,11 +347,13 @@ foreach ($v in $variants) {
     if (-not $Clean -and -not (Test-VariantNeedsRebuild -variant $v)) {
         Write-Host "`n>>> Skipping compile for variant '$($v.Name)' -- no source changes detected" -ForegroundColor DarkGray
         Copy-Artifacts -variant $v
+        Update-StableAliasPinning -variant $v
         $skipped++
         continue
     }
     Invoke-IdfBuild -variant $v
     Copy-Artifacts  -variant $v
+    Update-StableAliasPinning -variant $v
 }
 
 if ($skipped -eq $variants.Count) {
