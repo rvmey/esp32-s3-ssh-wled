@@ -395,7 +395,7 @@ static bool nvs_read_str(const char *key, char *out, size_t out_sz);
 static esp_err_t nvs_write_str(const char *key, const char *val);
 static esp_err_t nvs_erase_key_local(const char *key);
 static inline void mp3_request_ui_refresh(void);
-static bool pf_touch_handler(int x, int y);
+static bool pf_touch_handler(int x, int y, screen_gesture_t gesture);
 static bool mp3_advance_track(int step, const char *reason);
 static bool mp3_handle_track_end(void);
 static bool mp3_queue_seek_relative(int32_t delta_ms, const char *reason);
@@ -2723,101 +2723,75 @@ static void mp3_render_now_playing(void)
     screen_draw_text(msg);
 }
 
-static bool pf_touch_handler(int x, int y)
+static bool pf_touch_handler(int x, int y, screen_gesture_t gesture)
 {
+    (void)x; (void)y;
     if (!s_mp3.active || !s_mp3_ui_override_allowed) return false;
 
-    bool landscape = false;
-    screen_get_landscape(&landscape);
-    int w = landscape ? 480 : 320;
-    int h = landscape ? 320 : 480;
-
-    int play_y0 = (h * 56) / 100;
-    int play_y1 = (h * 70) / 100;
-    int row2_y0 = (h * 70) / 100;
-    int row2_y1 = (h * 80) / 100;
-    int row3_y0 = (h * 80) / 100;
-    int row3_y1 = (h * 90) / 100;
-    int row4_y0 = (h * 90) / 100;
-    int row4_y1 = h;
-
-    int left_x0 = (w * 10) / 100;
-    int left_x1 = (w * 48) / 100;
-    int right_x0 = (w * 52) / 100;
-    int right_x1 = (w * 90) / 100;
-
+    s_mp3_ui_override_allowed = true;
     bool handled = false;
 
-    if (y >= play_y0 && y < play_y1) {
-        s_mp3_ui_override_allowed = true;
-        if (s_mp3.paused) {
-            s_mp3.paused = false;
-            s_mp3_resume_on_bt_reconnect = false;
-            s_mp3.last_tick = xTaskGetTickCount();
+    switch (gesture) {
+        case SCREEN_GESTURE_TAP:
+            if (s_mp3.paused) {
+                s_mp3.paused = false;
+                s_mp3_resume_on_bt_reconnect = false;
+                s_mp3.last_tick = xTaskGetTickCount();
 #if CONFIG_BT_ENABLED && CONFIG_BT_A2DP_ENABLE
-            if (s_bt.connected) {
-                size_t bt_fill = bt_pcm_fill_bytes();
-                if (bt_fill >= BT_PCM_RESUME_PRIME_BYTES) {
-                    bt_media_start_if_needed();
+                if (s_bt.connected) {
+                    size_t bt_fill = bt_pcm_fill_bytes();
+                    if (bt_fill >= BT_PCM_RESUME_PRIME_BYTES) {
+                        bt_media_start_if_needed();
+                        s_bt_media_prime_pending = false;
+                        s_bt_media_prime_deadline = 0;
+                        s_bt_media_prime_target_bytes = BT_PCM_START_PRIME_BYTES;
+                    } else {
+                        s_bt_media_prime_pending = true;
+                        s_bt_media_prime_target_bytes = BT_PCM_RESUME_PRIME_BYTES;
+                        s_bt_media_prime_deadline = xTaskGetTickCount() +
+                                                    pdMS_TO_TICKS(BT_PCM_RESUME_PRIME_TIMEOUT_MS);
+                    }
+                } else {
                     s_bt_media_prime_pending = false;
                     s_bt_media_prime_deadline = 0;
                     s_bt_media_prime_target_bytes = BT_PCM_START_PRIME_BYTES;
-                } else {
-                    s_bt_media_prime_pending = true;
-                    s_bt_media_prime_target_bytes = BT_PCM_RESUME_PRIME_BYTES;
-                    s_bt_media_prime_deadline = xTaskGetTickCount() +
-                                                pdMS_TO_TICKS(BT_PCM_RESUME_PRIME_TIMEOUT_MS);
                 }
+#endif
             } else {
+                s_mp3.paused = true;
+                s_mp3_resume_on_bt_reconnect = false;
+#if CONFIG_BT_ENABLED && CONFIG_BT_A2DP_ENABLE
                 s_bt_media_prime_pending = false;
                 s_bt_media_prime_deadline = 0;
                 s_bt_media_prime_target_bytes = BT_PCM_START_PRIME_BYTES;
+                bt_media_stop_if_needed();
+#endif
             }
-#endif
-        } else {
-            s_mp3.paused = true;
-            s_mp3_resume_on_bt_reconnect = false;
-#if CONFIG_BT_ENABLED && CONFIG_BT_A2DP_ENABLE
-            s_bt_media_prime_pending = false;
-            s_bt_media_prime_deadline = 0;
-            s_bt_media_prime_target_bytes = BT_PCM_START_PRIME_BYTES;
-            bt_media_stop_if_needed();
-#endif
-        }
-        handled = true;
-    } else if (y >= row2_y0 && y < row2_y1) {
-        s_mp3_ui_override_allowed = true;
-        if (x >= left_x0 && x < left_x1) {
-            handled = mp3_advance_track(-1, "touch previous");
-        } else if (x >= right_x0 && x < right_x1) {
-            handled = mp3_advance_track(1, "touch next");
-        }
-    } else if (y >= row3_y0 && y < row3_y1) {
-        s_mp3_ui_override_allowed = true;
-        if (x >= left_x0 && x < left_x1) {
-            handled = mp3_queue_seek_relative(-(int32_t)MP3_SEEK_STEP_MS, "touch reverse");
-        } else if (x >= right_x0 && x < right_x1) {
-            handled = mp3_queue_seek_relative((int32_t)MP3_SEEK_STEP_MS, "touch forward");
-        }
-    } else if (y >= row4_y0 && y < row4_y1) {
-        s_mp3_ui_override_allowed = true;
-        if (x >= left_x0 && x < left_x1) {
-            s_mp3.volume -= 5;
-            if (s_mp3.volume < 0) s_mp3.volume = 0;
-            nvs_write_u8(NVS_KEY_VOLUME, (uint8_t)s_mp3.volume);
             handled = true;
-        } else if (x >= right_x0 && x < right_x1) {
+            break;
+        case SCREEN_GESTURE_SWIPE_LEFT:
+            handled = mp3_advance_track(-1, "swipe previous");
+            break;
+        case SCREEN_GESTURE_SWIPE_RIGHT:
+            handled = mp3_advance_track(1, "swipe next");
+            break;
+        case SCREEN_GESTURE_SWIPE_UP:
             s_mp3.volume += 5;
             if (s_mp3.volume > 100) s_mp3.volume = 100;
             nvs_write_u8(NVS_KEY_VOLUME, (uint8_t)s_mp3.volume);
             handled = true;
-        }
+            break;
+        case SCREEN_GESTURE_SWIPE_DOWN:
+            s_mp3.volume -= 5;
+            if (s_mp3.volume < 0) s_mp3.volume = 0;
+            nvs_write_u8(NVS_KEY_VOLUME, (uint8_t)s_mp3.volume);
+            handled = true;
+            break;
     }
 
     if (handled) {
         mp3_request_ui_refresh();
     }
-
     return handled;
 }
 

@@ -880,13 +880,21 @@ static void touch_poll_task(void *arg)
             last_lx = lx;
             last_ly = ly;
         } else if (touching) {
-            if (!scroll_consumed && s_touch_handler) {
+            if (s_touch_handler) {
                 int dx = last_lx - start_lx;
-                if (dx < 0) dx = -dx;
                 int dy = last_ly - start_ly;
-                if (dy < 0) dy = -dy;
-                if (dx <= 16 && dy <= 16) {
-                    (void)s_touch_handler(last_lx, last_ly);
+                int abs_dx = dx < 0 ? -dx : dx;
+                int abs_dy = dy < 0 ? -dy : dy;
+                if (abs_dx <= 16 && abs_dy <= 16) {
+                    if (!scroll_consumed)
+                        (void)s_touch_handler(last_lx, last_ly, SCREEN_GESTURE_TAP);
+                } else {
+                    screen_gesture_t g;
+                    if (abs_dx >= abs_dy)
+                        g = (dx > 0) ? SCREEN_GESTURE_SWIPE_RIGHT : SCREEN_GESTURE_SWIPE_LEFT;
+                    else
+                        g = (dy > 0) ? SCREEN_GESTURE_SWIPE_DOWN : SCREEN_GESTURE_SWIPE_UP;
+                    (void)s_touch_handler(last_lx, last_ly, g);
                 }
             }
             /* Finger lifted */

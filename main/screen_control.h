@@ -4,7 +4,15 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-typedef bool (*screen_touch_handler_t)(int x, int y);
+typedef enum {
+    SCREEN_GESTURE_TAP,
+    SCREEN_GESTURE_SWIPE_LEFT,
+    SCREEN_GESTURE_SWIPE_RIGHT,
+    SCREEN_GESTURE_SWIPE_UP,
+    SCREEN_GESTURE_SWIPE_DOWN,
+} screen_gesture_t;
+
+typedef bool (*screen_touch_handler_t)(int x, int y, screen_gesture_t gesture);
 
 /**
  * @brief Initialise the AXS15231 QSPI display on the Guition JC3248W535.
