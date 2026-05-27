@@ -2702,7 +2702,7 @@ static void mp3_render_now_playing(void)
              "RptTrack:%s  RptList:%s\n"
              "\n"
              "[      %s      ]\n"
-             "[ VOLUME  ^  v ]\n"
+             "[ VOLUME  ^  ⌄ ]\n"
              "[ TRACK  <  > ]",
              s_mp3.paused ? "Paused" : "Playing",
              file_short[0] ? file_short : "(none)",
