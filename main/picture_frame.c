@@ -2700,9 +2700,8 @@ static void mp3_render_now_playing(void)
              "RptTrack:%s  RptList:%s\n"
              "\n"
              "[      %s      ]\n"
-             "[ PREV ] [ NEXT ]\n"
-             "[ REV-10 ] [ FWD+10 ]\n"
-             "[ VOL- ] [ VOL+ ]",
+             "[ VOLUME  ^  v ]\n"
+             "[ TRACK  <  > ]",
              s_mp3.paused ? "Paused" : "Playing",
              file_short[0] ? file_short : "(none)",
              s_mp3.folder_name[0] ? s_mp3.folder_name : "(none)",
