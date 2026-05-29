@@ -11,7 +11,8 @@
 
 #define WIFI_CONNECTED_BIT   BIT0
 #define WIFI_FAIL_BIT        BIT1
-#define WIFI_MAX_RETRIES     10
+#define WIFI_ABORT_BIT       BIT2
+#define WIFI_MAX_RETRIES     2   /* retries per attempt; callers alternate SSIDs across rounds */
 
 #define NVS_NAMESPACE        "wifi_cfg"
 #define NVS_KEY_SSID         "ssid"
@@ -29,6 +30,7 @@ static esp_netif_t    *s_netif             = NULL;
 /* Per-attempt state -------------------------------------------------------- */
 static EventGroupHandle_t s_wifi_event_group = NULL;
 static int                s_retry_count      = 0;
+static volatile bool      s_abort_requested  = false;
 
 /* -------------------------------------------------------------------------- */
 
@@ -40,7 +42,9 @@ static void event_handler(void *arg, esp_event_base_t event_base,
 
     } else if (event_base == WIFI_EVENT &&
                event_id == WIFI_EVENT_STA_DISCONNECTED) {
-        if (s_retry_count < WIFI_MAX_RETRIES) {
+        if (s_abort_requested) {
+            xEventGroupSetBits(s_wifi_event_group, WIFI_ABORT_BIT);
+        } else if (s_retry_count < WIFI_MAX_RETRIES) {
             esp_wifi_connect();
             s_retry_count++;
             ESP_LOGW(TAG, "Retry %d/%d ...", s_retry_count, WIFI_MAX_RETRIES);
@@ -120,7 +124,7 @@ esp_err_t wifi_connect_with_credentials(const char *ssid, const char *password)
     ESP_LOGI(TAG, "Connecting to \"%s\" ...", ssid);
 
     EventBits_t bits = xEventGroupWaitBits(s_wifi_event_group,
-                                           WIFI_CONNECTED_BIT | WIFI_FAIL_BIT,
+                                           WIFI_CONNECTED_BIT | WIFI_FAIL_BIT | WIFI_ABORT_BIT,
                                            pdFALSE, pdFALSE,
                                            portMAX_DELAY);
 
@@ -129,13 +133,26 @@ esp_err_t wifi_connect_with_credentials(const char *ssid, const char *password)
     vEventGroupDelete(s_wifi_event_group);
     s_wifi_event_group = NULL;
 
-    if (bits & WIFI_CONNECTED_BIT) return ESP_OK;
-
+    if (bits & WIFI_CONNECTED_BIT) { s_abort_requested = false; return ESP_OK; }
+    if (bits & WIFI_ABORT_BIT) {
+        ESP_LOGW(TAG, "WiFi connect aborted by user");
+        return ESP_FAIL;
+    }
     ESP_LOGE(TAG, "Failed to connect to \"%s\"", ssid);
     return ESP_FAIL;
 }
 
 /* -------------------------------------------------------------------------- */
+
+void wifi_connect_abort(void)
+{
+    s_abort_requested = true;
+    if (s_wifi_event_group) {
+        xEventGroupSetBits(s_wifi_event_group, WIFI_ABORT_BIT);
+    }
+}
+
+bool wifi_connect_was_aborted(void) { return s_abort_requested; }
 
 esp_err_t wifi_connect(void)
 {
@@ -143,6 +160,8 @@ esp_err_t wifi_connect(void)
     char password[65]  = {0};
     char ssid2[33]     = {0};
     char password2[65] = {0};
+
+    s_abort_requested = false;
 
     /* Prefer credentials stored in NVS over Kconfig defaults */
     nvs_handle_t nvs;
@@ -160,14 +179,21 @@ esp_err_t wifi_connect(void)
         strncpy(password, CONFIG_WIFI_PASSWORD, sizeof(password) - 1);
     }
 
-    esp_err_t ret = wifi_connect_with_credentials(ssid, password);
-    if (ret == ESP_OK) return ESP_OK;
+    bool has_secondary = (ssid2[0] != '\0');
 
-    if (ssid2[0]) {
-        ESP_LOGW(TAG, "Primary network failed; trying secondary \"%s\"", ssid2);
-        ret = wifi_connect_with_credentials(ssid2, password2);
+    /* Alternate between primary and secondary across 3 rounds so a working
+     * secondary is found quickly rather than after N primary failures. */
+    for (int round = 0; round < 3 && !s_abort_requested; round++) {
+        ESP_LOGI(TAG, "Round %d/3: trying \"%s\"", round + 1, ssid);
+        if (wifi_connect_with_credentials(ssid, password) == ESP_OK) return ESP_OK;
+        if (s_abort_requested) break;
+
+        if (has_secondary) {
+            ESP_LOGI(TAG, "Round %d/3: trying secondary \"%s\"", round + 1, ssid2);
+            if (wifi_connect_with_credentials(ssid2, password2) == ESP_OK) return ESP_OK;
+        }
     }
-    return ret;
+    return ESP_FAIL;
 }
 
 /* -------------------------------------------------------------------------- */
