@@ -412,11 +412,19 @@ static esp_err_t nvs_erase_key_local(const char *key);
 static inline void mp3_request_ui_refresh(void);
 static bool pf_touch_handler(int x, int y, screen_gesture_t gesture);
 
-/* Installed only during wifi_connect() — any tap aborts the retry loop. */
+/* Installed only during wifi_connect() -- any tap aborts the retry loop. */
 static bool pf_wifi_skip_touch_handler(int x, int y, screen_gesture_t gesture)
 {
     (void)x; (void)y;
     if (gesture == SCREEN_GESTURE_TAP) wifi_connect_abort();
+    return true;
+}
+
+/* Installed after a skipped/failed wifi connect -- any tap reboots. */
+static bool pf_reboot_touch_handler(int x, int y, screen_gesture_t gesture)
+{
+    (void)x; (void)y;
+    if (gesture == SCREEN_GESTURE_TAP) esp_restart();
     return true;
 }
 static bool mp3_advance_track(int step, const char *reason);
@@ -4544,12 +4552,14 @@ void picture_frame_run(void)
 
     if (wifi_ret != ESP_OK) {
         if (wifi_connect_was_aborted()) {
-            pf_status_draw("No WiFi — tap again to reboot");
             ESP_LOGW(TAG, "WiFi skipped by user");
+            pf_status_draw("No WiFi - tap to reboot");
         } else {
             screen_set_color(64, 0, 0);
             ESP_LOGE(TAG, "WiFi connect failed");
+            pf_status_draw("WiFi failed - tap to reboot");
         }
+        screen_set_touch_handler(pf_reboot_touch_handler);
         vTaskSuspend(NULL);
     }
 
