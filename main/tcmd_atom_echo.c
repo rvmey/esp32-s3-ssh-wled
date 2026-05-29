@@ -49,6 +49,8 @@
 
 /* ── Constants ───────────────────────────────────────────────────────────── */
 
+extern const char g_firmware_version[];   /* defined in main.c */
+
 #define TAG             "atom_echo"
 
 #define BUTTON_GPIO     39       /* active-low */
@@ -246,8 +248,10 @@ static esp_err_t prov_save_handler(httpd_req_t *req)
         nvs_write_str(NVS_KEY_STT, stt);
         ESP_LOGI(TAG, "STT API key saved");
     }
-    nvs_write_str(NVS_KEY_COMPUTER, computer);
-    if (computer[0]) ESP_LOGI(TAG, "Computer name saved: %s", computer);
+    if (computer[0]) {
+        nvs_write_str(NVS_KEY_COMPUTER, computer);
+        ESP_LOGI(TAG, "Computer name saved: %s", computer);
+    }
 
     s_prov_done = true;
     return ESP_OK;
@@ -287,6 +291,7 @@ static void run_softap_provisioning(void)
 
     /* Start HTTP server */
     httpd_config_t http_cfg = HTTPD_DEFAULT_CONFIG();
+    http_cfg.stack_size       = 8192; /* prov handler uses ~3 KB of locals */
     http_cfg.max_open_sockets = 4;  /* provisioning: AP-only, no STA sockets in use */
     http_cfg.lru_purge_enable = true;
     httpd_handle_t server   = NULL;
@@ -982,6 +987,8 @@ void tcmd_atom_echo_run(void)
     /* ── Hardware init ────────────────────────────────────────────────────── */
     atom_led_init();
     atom_led_set(100, 80, 0);  /* yellow: booting */
+
+    ESP_LOGI(TAG, "TRIGGERcmd ATOM Echo firmware v%s", g_firmware_version);
 
     atom_audio_init();
 
