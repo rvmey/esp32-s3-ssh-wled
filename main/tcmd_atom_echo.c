@@ -104,6 +104,14 @@ static const char s_wifi_prov_html[] =
     "<form method='POST' action='/save'>"
     "<label>Wi-Fi SSID</label><input name='ssid' required>"
     "<label>Wi-Fi Password</label><input name='pass' type='password'>"
+    "<hr style='border-color:#2d3148;margin:1.25rem 0 .5rem'>"
+    "<p style='color:#94a3b8;font-size:.85rem;margin:0 0 .25rem'>"
+    "Secondary Network (optional)</p>"
+    "<label>SSID 2</label><input name='ssid2'>"
+    "<label>Password 2</label><input name='pass2' type='password'>"
+    "<label>SSID 3</label><input name='ssid3'>"
+    "<label>Password 3</label><input name='pass3' type='password'>"
+    "<hr style='border-color:#2d3148;margin:1.25rem 0 .5rem'>"
     "<label>OpenAI API Key (for voice)</label><input name='stt' placeholder='sk-...'>"
     "<button type='submit'>Save &amp; Connect</button>"
     "</form></div></body></html>";
@@ -191,7 +199,7 @@ static esp_err_t prov_get_handler(httpd_req_t *req)
 
 static esp_err_t prov_save_handler(httpd_req_t *req)
 {
-    char body[1024] = {0};
+    char body[2048] = {0};
     int  len = httpd_req_recv(req, body, sizeof(body) - 1);
     if (len <= 0) {
         httpd_resp_send_500(req);
@@ -201,11 +209,19 @@ static esp_err_t prov_save_handler(httpd_req_t *req)
 
     char ssid[64]  = {0};
     char pass[64]  = {0};
+    char ssid2[64] = {0};
+    char pass2[64] = {0};
+    char ssid3[64] = {0};
+    char pass3[64] = {0};
     char stt[STT_KEY_MAX]  = {0};
 
-    form_get_field(body, "ssid", ssid, sizeof(ssid));
-    form_get_field(body, "pass", pass, sizeof(pass));
-    form_get_field(body, "stt",  stt,  sizeof(stt));
+    form_get_field(body, "ssid",  ssid,  sizeof(ssid));
+    form_get_field(body, "pass",  pass,  sizeof(pass));
+    form_get_field(body, "ssid2", ssid2, sizeof(ssid2));
+    form_get_field(body, "pass2", pass2, sizeof(pass2));
+    form_get_field(body, "ssid3", ssid3, sizeof(ssid3));
+    form_get_field(body, "pass3", pass3, sizeof(pass3));
+    form_get_field(body, "stt",   stt,   sizeof(stt));
 
     httpd_resp_set_type(req, "text/html");
     httpd_resp_send(req, s_saved_html, HTTPD_RESP_USE_STRLEN);
@@ -214,6 +230,10 @@ static esp_err_t prov_save_handler(httpd_req_t *req)
         wifi_save_credentials(ssid, pass);
         ESP_LOGI(TAG, "WiFi credentials saved for SSID: %s", ssid);
     }
+    wifi_save_credentials2(ssid2, pass2);
+    if (ssid2[0]) ESP_LOGI(TAG, "Secondary WiFi saved: %s", ssid2);
+    wifi_save_credentials3(ssid3, pass3);
+    if (ssid3[0]) ESP_LOGI(TAG, "Tertiary WiFi saved: %s", ssid3);
     if (stt[0]) {
         nvs_write_str(NVS_KEY_STT, stt);
         ESP_LOGI(TAG, "STT API key saved");

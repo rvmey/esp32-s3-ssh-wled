@@ -14,6 +14,7 @@
 #include "esp_http_server.h"
 #include "esp_log.h"
 #include "nvs.h"
+#include "wifi_manager.h"
 
 #define TAG          "http_cfg"
 #define NVS_NS       "ssh_cfg"
@@ -188,6 +189,32 @@ static const char s_init_form_tail[] =
     "<button type='submit'>Save Script</button>"
     "</form>";
 
+/* WiFi networks section – value of SSID2/SSID3 injected between head/mid/tail */
+static const char s_wifi_form_head[] =
+    "<h2>Secondary Wi-Fi Networks "
+    "<span style='font-weight:400;color:#64748b'>(optional)</span></h2>"
+    "<form method='POST' action='/wifi'>"
+    "<p style='color:#94a3b8;font-size:.85rem;margin:0 0 1rem'>"
+    "Alternate networks tried when the primary is unavailable.</p>"
+    "<label>SSID 2</label>"
+    "<input type='text' name='ssid2' value='";
+static const char s_wifi_form_mid1[] =
+    "'>"
+    "<label>Password 2</label>"
+    "<input type='password' name='pass2'>"
+    "<label>SSID 3</label>"
+    "<input type='text' name='ssid3' value='";
+static const char s_wifi_form_mid2[] =
+    "'>"
+    "<label>Password 3</label>"
+    "<input type='password' name='pass3'>"
+    "<p class='hint'>Leave a password blank to keep the current one. "
+    "Clear an SSID field to remove that network.</p>"
+    "<button type='submit'>Save Networks</button>"
+    "</form>";
+
+static const char s_ok_wifi[]  = "<p class='ok'>&#10003; Networks saved.</p>";
+
 static const char s_tail[]              = "</div></body></html>";
 static const char s_ok_pass[]           = "<p class='ok'>&#10003; Password saved.</p>";
 static const char s_ok_key[]            = "<p class='ok'>&#10003; Public key saved &#8211; pubkey auth is now active.</p>";
@@ -234,14 +261,30 @@ static void read_init_val(char *out, size_t out_sz)
     nvs_close(h);
 }
 
+static void send_wifi_section(httpd_req_t *req, const char *wifi_msg)
+{
+    char ssid2[33] = {0};
+    char ssid3[33] = {0};
+    wifi_get_ssid2(ssid2, sizeof(ssid2));
+    wifi_get_ssid3(ssid3, sizeof(ssid3));
+    if (wifi_msg) httpd_resp_sendstr_chunk(req, wifi_msg);
+    httpd_resp_sendstr_chunk(req, s_wifi_form_head);
+    send_escaped(req, ssid2);
+    httpd_resp_sendstr_chunk(req, s_wifi_form_mid1);
+    send_escaped(req, ssid3);
+    httpd_resp_sendstr_chunk(req, s_wifi_form_mid2);
+}
+
 static void send_page(httpd_req_t *req,
                       const char  *pass_msg,
                       const char  *key_msg,
                       const char  *init_msg,
-                      const char  *init_val)
+                      const char  *init_val,
+                      const char  *wifi_msg)
 {
     httpd_resp_set_type(req, "text/html");
     httpd_resp_sendstr_chunk(req, s_html_head);
+    send_wifi_section(req, wifi_msg);
     if (pass_msg) httpd_resp_sendstr_chunk(req, pass_msg);
     httpd_resp_sendstr_chunk(req, s_pass_form);
     if (key_msg)  httpd_resp_sendstr_chunk(req, key_msg);
@@ -260,7 +303,7 @@ static esp_err_t get_handler(httpd_req_t *req)
 {
     char init_val[MAX_INIT_LEN] = {0};
     read_init_val(init_val, sizeof(init_val));
-    send_page(req, NULL, NULL, NULL, init_val);
+    send_page(req, NULL, NULL, NULL, init_val, NULL);
     return ESP_OK;
 }
 
@@ -297,7 +340,7 @@ static esp_err_t post_password_handler(httpd_req_t *req)
     }
     char init_val[MAX_INIT_LEN] = {0};
     read_init_val(init_val, sizeof(init_val));
-    send_page(req, msg, NULL, NULL, init_val);
+    send_page(req, msg, NULL, NULL, init_val, NULL);
     return ESP_OK;
 }
 
@@ -361,7 +404,7 @@ static esp_err_t post_pubkey_handler(httpd_req_t *req)
     free(pubkey);
     char init_val[MAX_INIT_LEN] = {0};
     read_init_val(init_val, sizeof(init_val));
-    send_page(req, NULL, msg, NULL, init_val);
+    send_page(req, NULL, msg, NULL, init_val, NULL);
     return ESP_OK;
 }
 
@@ -404,7 +447,55 @@ static esp_err_t post_initscript_handler(httpd_req_t *req)
     /* Re-read from NVS to show the saved value in the form */
     char init_val[MAX_INIT_LEN] = {0};
     read_init_val(init_val, sizeof(init_val));
-    send_page(req, NULL, NULL, msg, init_val);
+    send_page(req, NULL, NULL, msg, init_val, NULL);
+    return ESP_OK;
+}
+
+static esp_err_t post_wifi_handler(httpd_req_t *req)
+{
+    char *body = read_body(req);
+    if (!body) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, NULL);
+        return ESP_OK;
+    }
+
+    char ssid2[33] = {0};
+    char pass2[65] = {0};
+    char ssid3[33] = {0};
+    char pass3[65] = {0};
+    form_get_value(body, "ssid2", ssid2, sizeof(ssid2));
+    form_get_value(body, "pass2", pass2, sizeof(pass2));
+    form_get_value(body, "ssid3", ssid3, sizeof(ssid3));
+    form_get_value(body, "pass3", pass3, sizeof(pass3));
+    free(body);
+
+    /* For each slot: if the user left the password blank, preserve the
+     * existing password (read it back from NVS before overwriting). */
+    if (ssid2[0] && !pass2[0]) {
+        nvs_handle_t h;
+        if (nvs_open("wifi_cfg", NVS_READONLY, &h) == ESP_OK) {
+            size_t l = sizeof(pass2);
+            nvs_get_str(h, "password2", pass2, &l);
+            nvs_close(h);
+        }
+    }
+    if (ssid3[0] && !pass3[0]) {
+        nvs_handle_t h;
+        if (nvs_open("wifi_cfg", NVS_READONLY, &h) == ESP_OK) {
+            size_t l = sizeof(pass3);
+            nvs_get_str(h, "password3", pass3, &l);
+            nvs_close(h);
+        }
+    }
+
+    wifi_save_credentials2(ssid2, pass2);
+    wifi_save_credentials3(ssid3, pass3);
+    ESP_LOGI(TAG, "Secondary WiFi networks updated (ssid2='%s' ssid3='%s')",
+             ssid2, ssid3);
+
+    char init_val[MAX_INIT_LEN] = {0};
+    read_init_val(init_val, sizeof(init_val));
+    send_page(req, NULL, NULL, NULL, init_val, s_ok_wifi);
     return ESP_OK;
 }
 
@@ -428,11 +519,13 @@ esp_err_t http_config_start(void)
     static const httpd_uri_t u_pass   = { "/password",    HTTP_POST, post_password_handler,     NULL };
     static const httpd_uri_t u_pkey   = { "/pubkey",      HTTP_POST, post_pubkey_handler,       NULL };
     static const httpd_uri_t u_init   = { "/initscript",  HTTP_POST, post_initscript_handler,   NULL };
+    static const httpd_uri_t u_wifi   = { "/wifi",        HTTP_POST, post_wifi_handler,         NULL };
 
     httpd_register_uri_handler(server, &u_get);
     httpd_register_uri_handler(server, &u_pass);
     httpd_register_uri_handler(server, &u_pkey);
     httpd_register_uri_handler(server, &u_init);
+    httpd_register_uri_handler(server, &u_wifi);
 
     ESP_LOGI(TAG, "HTTP config server started on port 80");
     return ESP_OK;

@@ -265,6 +265,24 @@ esp_err_t wifi_save_credentials3(const char *ssid, const char *password)
     return ret;
 }
 
+void wifi_get_ssid2(char *buf, size_t len)
+{
+    nvs_handle_t nvs;
+    buf[0] = '\0';
+    if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &nvs) != ESP_OK) return;
+    nvs_get_str(nvs, NVS_KEY_SSID2, buf, &len);
+    nvs_close(nvs);
+}
+
+void wifi_get_ssid3(char *buf, size_t len)
+{
+    nvs_handle_t nvs;
+    buf[0] = '\0';
+    if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &nvs) != ESP_OK) return;
+    nvs_get_str(nvs, NVS_KEY_SSID3, buf, &len);
+    nvs_close(nvs);
+}
+
 esp_err_t wifi_get_ip(char *buf, size_t buf_len)
 {
     if (!s_netif) return ESP_FAIL;

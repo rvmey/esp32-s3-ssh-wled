@@ -11,15 +11,173 @@
 #include "esp_sleep.h"
 #include "esp_wifi.h"
 #include "esp_log.h"
+#include "esp_http_server.h"
 #include "driver/gpio.h"
 #include "driver/rtc_io.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "nvs.h"
 
 #include <inttypes.h>
 #include <limits.h>
+#include <stdlib.h>
+#include <string.h>
 
 static const char *TAG = "bike_tracker";
+
+/* ── Post-provisioning WiFi settings window ──────────────────────────────── */
+
+static bool s_wifi_settings_done = false;
+
+static void bt_url_decode(char *s)
+{
+    char *r = s, *w = s;
+    while (*r) {
+        if (*r == '%' && r[1] && r[2]) {
+            char hex[3] = { r[1], r[2], '\0' };
+            *w++ = (char)strtol(hex, NULL, 16); r += 3;
+        } else if (*r == '+') { *w++ = ' '; r++;
+        } else { *w++ = *r++; }
+    }
+    *w = '\0';
+}
+
+static void bt_form_get(const char *body, const char *key, char *out, size_t max)
+{
+    size_t klen = strlen(key);
+    const char *p = body; out[0] = '\0';
+    while (*p) {
+        if (strncmp(p, key, klen) == 0 && p[klen] == '=') {
+            p += klen + 1;
+            size_t i = 0;
+            while (*p && *p != '&' && i < max - 1) out[i++] = *p++;
+            out[i] = '\0'; bt_url_decode(out); return;
+        }
+        while (*p && *p != '&') p++;
+        if (*p == '&') p++;
+    }
+}
+
+static esp_err_t bt_wifi_get_handler(httpd_req_t *req)
+{
+    char ssid2[33] = {0}, ssid3[33] = {0};
+    wifi_get_ssid2(ssid2, sizeof(ssid2));
+    wifi_get_ssid3(ssid3, sizeof(ssid3));
+
+    const char *head =
+        "<!DOCTYPE html><html><head>"
+        "<meta charset='UTF-8'>"
+        "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+        "<title>Bike Tracker Wi-Fi</title>"
+        "<style>body{font-family:system-ui,sans-serif;background:#0f1117;color:#e2e8f0;"
+        "display:flex;align-items:center;justify-content:center;min-height:100vh}"
+        ".card{background:#1e2130;border:1px solid #2d3148;border-radius:1rem;"
+        "padding:2rem;max-width:380px;width:100%}"
+        "h1{color:#a5b4fc;font-size:1.3rem;margin:0 0 .5rem}"
+        "p{color:#94a3b8;font-size:.85rem;margin:0 0 1rem}"
+        "label{display:block;color:#94a3b8;font-size:.85rem;margin:.6rem 0 .2rem}"
+        "input{width:100%;box-sizing:border-box;padding:.6rem;background:#0f1117;"
+        "border:1px solid #4f46e5;border-radius:.4rem;color:#e2e8f0;font-size:.95rem}"
+        "button{margin-top:1.25rem;width:100%;padding:.75rem;background:#4f46e5;"
+        "color:#fff;border:none;border-radius:.6rem;font-size:1rem;cursor:pointer}"
+        "</style></head><body><div class='card'>"
+        "<h1>Secondary Wi-Fi Networks</h1>"
+        "<p>Optional. Leave blank to skip.</p>"
+        "<form method='POST' action='/wifi'>";
+
+    httpd_resp_set_type(req, "text/html");
+    httpd_resp_sendstr_chunk(req, head);
+
+    /* SSID2 input with current value */
+    char buf[512];
+    snprintf(buf, sizeof(buf),
+             "<label>SSID 2</label><input name='ssid2' value='%s'>"
+             "<label>Password 2</label><input name='pass2' type='password'>"
+             "<label>SSID 3</label><input name='ssid3' value='%s'>"
+             "<label>Password 3</label><input name='pass3' type='password'>",
+             ssid2, ssid3);
+    httpd_resp_sendstr_chunk(req, buf);
+    httpd_resp_sendstr_chunk(req,
+        "<button type='submit'>Save &amp; Continue</button>"
+        "</form></div></body></html>");
+    httpd_resp_sendstr_chunk(req, NULL);
+    return ESP_OK;
+}
+
+static esp_err_t bt_wifi_post_handler(httpd_req_t *req)
+{
+    int len = req->content_len;
+    if (len <= 0 || len >= 512) { httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, NULL); return ESP_OK; }
+    char *body = calloc(len + 1, 1);
+    if (!body) { httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, NULL); return ESP_OK; }
+    int got = 0, rem = len;
+    while (rem > 0) { int n = httpd_req_recv(req, body + got, rem); if (n <= 0) { free(body); return ESP_FAIL; } got += n; rem -= n; }
+
+    char ssid2[33] = {0}, pass2[65] = {0};
+    char ssid3[33] = {0}, pass3[65] = {0};
+    bt_form_get(body, "ssid2", ssid2, sizeof(ssid2));
+    bt_form_get(body, "pass2", pass2, sizeof(pass2));
+    bt_form_get(body, "ssid3", ssid3, sizeof(ssid3));
+    bt_form_get(body, "pass3", pass3, sizeof(pass3));
+    free(body);
+
+    if (ssid2[0] && !pass2[0]) {
+        nvs_handle_t h;
+        if (nvs_open("wifi_cfg", NVS_READONLY, &h) == ESP_OK) { size_t l = sizeof(pass2); nvs_get_str(h, "password2", pass2, &l); nvs_close(h); }
+    }
+    if (ssid3[0] && !pass3[0]) {
+        nvs_handle_t h;
+        if (nvs_open("wifi_cfg", NVS_READONLY, &h) == ESP_OK) { size_t l = sizeof(pass3); nvs_get_str(h, "password3", pass3, &l); nvs_close(h); }
+    }
+
+    wifi_save_credentials2(ssid2, pass2);
+    wifi_save_credentials3(ssid3, pass3);
+    ESP_LOGI(TAG, "Secondary WiFi saved: ssid2='%s' ssid3='%s'", ssid2, ssid3);
+
+    const char *done =
+        "<!DOCTYPE html><html><body style='font-family:system-ui;background:#0f1117;"
+        "color:#86efac;display:flex;align-items:center;justify-content:center;"
+        "min-height:100vh'><h2>Saved! Continuing&hellip;</h2></body></html>";
+    httpd_resp_set_type(req, "text/html");
+    httpd_resp_send(req, done, HTTPD_RESP_USE_STRLEN);
+    s_wifi_settings_done = true;
+    return ESP_OK;
+}
+
+/* Start a temporary HTTP server; block until the form is submitted or timeout_ms elapses. */
+static void run_wifi_settings_window(int timeout_ms)
+{
+    s_wifi_settings_done = false;
+
+    httpd_config_t cfg   = HTTPD_DEFAULT_CONFIG();
+    cfg.server_port      = 80;
+    cfg.lru_purge_enable = true;
+    cfg.max_open_sockets = 3;
+    httpd_handle_t server = NULL;
+    if (httpd_start(&server, &cfg) != ESP_OK) {
+        ESP_LOGW(TAG, "Could not start WiFi settings server");
+        return;
+    }
+
+    static const httpd_uri_t u_get  = { "/",     HTTP_GET,  bt_wifi_get_handler,  NULL };
+    static const httpd_uri_t u_post = { "/wifi",  HTTP_POST, bt_wifi_post_handler, NULL };
+    httpd_register_uri_handler(server, &u_get);
+    httpd_register_uri_handler(server, &u_post);
+
+    char ip[24] = {0};
+    if (wifi_get_ip(ip, sizeof(ip)) == ESP_OK)
+        ESP_LOGI(TAG, "WiFi settings window open at http://%s (%.0f s)", ip, timeout_ms / 1000.0f);
+
+    int elapsed = 0;
+    while (!s_wifi_settings_done && elapsed < timeout_ms) {
+        vTaskDelay(pdMS_TO_TICKS(500));
+        elapsed += 500;
+    }
+
+    httpd_stop(server);
+    ESP_LOGI(TAG, "WiFi settings window closed%s",
+             s_wifi_settings_done ? " (form submitted)" : " (timeout)");
+}
 
 #if CONFIG_TRACKER_HALL_ACTIVE_HIGH
 #define HALL_INTR_TYPE GPIO_INTR_POSEDGE
@@ -291,7 +449,10 @@ void bike_tracker_run(void)
          * so the user can configure SSID, password and upload URL.         */
         if (!wifi_has_stored_credentials()) {
             ESP_LOGI(TAG, "No WiFi credentials — starting Improv-WiFi");
-            if (improv_wifi_start() != ESP_OK) {
+            if (improv_wifi_start() == ESP_OK) {
+                /* Give the user 60 s to optionally set secondary SSIDs. */
+                run_wifi_settings_window(60000);
+            } else {
                 ESP_LOGW(TAG, "Improv-WiFi failed (will retry next boot)");
             }
         }
