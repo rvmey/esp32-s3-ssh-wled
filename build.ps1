@@ -58,7 +58,7 @@ $variants = @(
         Config       = 'sdkconfig.bike_tracker'
         BuildDir     = 'build_bike_tracker'
         Chip         = 'esp32s3'
-        BootloaderBin = 'bootloader-esp32s3.bin'
+        BootloaderBin = 'bootloader-bike_tracker.bin'
         OutputBin    = 'esp32_bike_tracker.bin'
         PartitionBin = 'partition-table-bike_tracker.bin'
     },
