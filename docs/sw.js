@@ -28,7 +28,7 @@ self.addEventListener('fetch', event => {
   }
 
   if (reqUrl.pathname.endsWith('/manifest-picture_frame.json')) {
-    const target = 'https://raw.githubusercontent.com/rvmey/esp32-s3-ssh-wled/master/docs/manifest-picture_frame-2.0.259.json';
+    const target = 'https://raw.githubusercontent.com/rvmey/esp32-s3-ssh-wled/master/docs/manifest-picture_frame-2.0.260.json';
     event.respondWith(fetch(target, { cache: 'no-store' }));
     return;
   }
@@ -82,7 +82,7 @@ self.addEventListener('fetch', event => {
     reqUrl.pathname.endsWith('/firmware/esp32_picture_frame.bin') ||
     reqUrl.pathname.endsWith('/firmware/esp32_picture_frame-2.0.243.bin')
   ) {
-    const target = new URL('/esp32-s3-ssh-wled/firmware/esp32_picture_frame-2.0.259.bin', self.location.origin);
+    const target = new URL('/esp32-s3-ssh-wled/firmware/esp32_picture_frame-2.0.260.bin', self.location.origin);
     event.respondWith(fetch(target.toString(), { cache: 'no-store' }));
   }
 });
