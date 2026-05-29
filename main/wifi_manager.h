@@ -24,6 +24,9 @@ esp_err_t wifi_save_credentials(const char *ssid, const char *password);
 /** Persist secondary SSID and password to NVS (pass empty ssid to clear). */
 esp_err_t wifi_save_credentials2(const char *ssid, const char *password);
 
+/** Persist tertiary SSID and password to NVS (pass empty ssid to clear). */
+esp_err_t wifi_save_credentials3(const char *ssid, const char *password);
+
 /** Fill buf with the current IPv4 address string (e.g. "192.168.1.10"). */
 esp_err_t wifi_get_ip(char *buf, size_t buf_len);
 

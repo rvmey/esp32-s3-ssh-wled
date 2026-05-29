@@ -19,6 +19,8 @@
 #define NVS_KEY_PASS         "password"
 #define NVS_KEY_SSID2        "ssid2"
 #define NVS_KEY_PASS2        "password2"
+#define NVS_KEY_SSID3        "ssid3"
+#define NVS_KEY_PASS3        "password3"
 
 static const char *TAG = "wifi";
 
@@ -160,6 +162,8 @@ esp_err_t wifi_connect(void)
     char password[65]  = {0};
     char ssid2[33]     = {0};
     char password2[65] = {0};
+    char ssid3[33]     = {0};
+    char password3[65] = {0};
 
     s_abort_requested = false;
 
@@ -171,6 +175,8 @@ esp_err_t wifi_connect(void)
         len = sizeof(password);  nvs_get_str(nvs, NVS_KEY_PASS,  password,  &len);
         len = sizeof(ssid2);     nvs_get_str(nvs, NVS_KEY_SSID2, ssid2,     &len);
         len = sizeof(password2); nvs_get_str(nvs, NVS_KEY_PASS2, password2, &len);
+        len = sizeof(ssid3);     nvs_get_str(nvs, NVS_KEY_SSID3, ssid3,     &len);
+        len = sizeof(password3); nvs_get_str(nvs, NVS_KEY_PASS3, password3, &len);
         nvs_close(nvs);
     }
 
@@ -179,18 +185,16 @@ esp_err_t wifi_connect(void)
         strncpy(password, CONFIG_WIFI_PASSWORD, sizeof(password) - 1);
     }
 
-    bool has_secondary = (ssid2[0] != '\0');
+    /* Build a list of the configured SSIDs so the round loop is uniform. */
+    const char *ssids[3]     = { ssid,  ssid2[0]  ? ssid2  : NULL, ssid3[0]  ? ssid3  : NULL };
+    const char *passwords[3] = { password, ssid2[0] ? password2 : NULL, ssid3[0] ? password3 : NULL };
 
-    /* Alternate between primary and secondary across 3 rounds so a working
-     * secondary is found quickly rather than after N primary failures. */
+    /* Try each configured SSID in turn, cycling through up to 3 rounds. */
     for (int round = 0; round < 3 && !s_abort_requested; round++) {
-        ESP_LOGI(TAG, "Round %d/3: trying \"%s\"", round + 1, ssid);
-        if (wifi_connect_with_credentials(ssid, password) == ESP_OK) return ESP_OK;
-        if (s_abort_requested) break;
-
-        if (has_secondary) {
-            ESP_LOGI(TAG, "Round %d/3: trying secondary \"%s\"", round + 1, ssid2);
-            if (wifi_connect_with_credentials(ssid2, password2) == ESP_OK) return ESP_OK;
+        for (int i = 0; i < 3 && !s_abort_requested; i++) {
+            if (!ssids[i]) continue;
+            ESP_LOGI(TAG, "Round %d/3: trying \"%s\"", round + 1, ssids[i]);
+            if (wifi_connect_with_credentials(ssids[i], passwords[i]) == ESP_OK) return ESP_OK;
         }
     }
     return ESP_FAIL;
@@ -237,6 +241,24 @@ esp_err_t wifi_save_credentials2(const char *ssid, const char *password)
     } else {
         nvs_erase_key(nvs, NVS_KEY_SSID2);
         nvs_erase_key(nvs, NVS_KEY_PASS2);
+    }
+    if (ret == ESP_OK) ret = nvs_commit(nvs);
+    nvs_close(nvs);
+    return ret;
+}
+
+esp_err_t wifi_save_credentials3(const char *ssid, const char *password)
+{
+    nvs_handle_t nvs;
+    esp_err_t ret = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs);
+    if (ret != ESP_OK) return ret;
+
+    if (ssid && ssid[0]) {
+        ret = nvs_set_str(nvs, NVS_KEY_SSID3, ssid);
+        if (ret == ESP_OK) ret = nvs_set_str(nvs, NVS_KEY_PASS3, password ? password : "");
+    } else {
+        nvs_erase_key(nvs, NVS_KEY_SSID3);
+        nvs_erase_key(nvs, NVS_KEY_PASS3);
     }
     if (ret == ESP_OK) ret = nvs_commit(nvs);
     nvs_close(nvs);
