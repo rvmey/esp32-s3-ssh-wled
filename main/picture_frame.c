@@ -263,6 +263,7 @@ static void pf_softap_provision(void)
 #include "esp_vfs_fat.h"
 #include "sdmmc_cmd.h"
 #include "driver/sdspi_host.h"
+#include "driver/spi_master.h"
 #include "driver/gpio.h"
 #include "driver/i2c.h"
 #include "mp3dec.h"
@@ -3042,26 +3043,38 @@ static bool mount_sd_card_if_needed(void)
         return false;
     }
 
-    /* Keep SD CS deselected while probing so only one device can drive MISO.
-     * NOTE: Do NOT reconfigure GPIO5 (LCD_CS) here.  gpio_set_direction() calls
-     * esp_rom_gpio_connect_out_signal(GPIO_OUT_IDX) which disconnects the SPI
-     * peripheral's CS signal from GPIO5 and routes the plain GPIO output register
-     * there instead — locking LCD_CS permanently HIGH and breaking all subsequent
-     * LCD SPI transactions.  The SPI peripheral already holds GPIO5 HIGH between
-     * transactions; no manual management is needed. */
+#if CONFIG_HARDWARE_CORE2
+    /* Core2: SPI3 is already initialized for the LCD; SD CS = GPIO4.
+     * Keep CS high and strengthen marginal bus lines. */
     gpio_set_direction(GPIO_NUM_4, GPIO_MODE_OUTPUT);
     gpio_set_level(GPIO_NUM_4, 1);
-
-    /* Core2 wiring can be marginal on these lines; enable internal pull-ups where supported. */
     gpio_pullup_en(GPIO_NUM_4);
-#if CONFIG_HARDWARE_CORE2
     gpio_pullup_en(GPIO_NUM_18);
     gpio_pullup_en(GPIO_NUM_23);
-#endif
     gpio_set_drive_capability(GPIO_NUM_4, GPIO_DRIVE_CAP_3);
-#if CONFIG_HARDWARE_CORE2
     gpio_set_drive_capability(GPIO_NUM_18, GPIO_DRIVE_CAP_3);
     gpio_set_drive_capability(GPIO_NUM_23, GPIO_DRIVE_CAP_3);
+#else
+    /* JC3248W535: built-in TF slot on dedicated SPI3 pins (schematic SD_Car block).
+     * SPI3 is not used by the LCD (which is on SPI2), so initialize it here. */
+    gpio_set_direction(GPIO_NUM_10, GPIO_MODE_OUTPUT);
+    gpio_set_level(GPIO_NUM_10, 1);
+    {
+        spi_bus_config_t sd_bus = {
+            .mosi_io_num   = GPIO_NUM_11,
+            .miso_io_num   = GPIO_NUM_13,
+            .sclk_io_num   = GPIO_NUM_12,
+            .quadwp_io_num = GPIO_NUM_NC,
+            .quadhd_io_num = GPIO_NUM_NC,
+            .max_transfer_sz = 4096,
+        };
+        esp_err_t bus_err = spi_bus_initialize(SPI3_HOST, &sd_bus, SPI_DMA_CH_AUTO);
+        if (bus_err != ESP_OK && bus_err != ESP_ERR_INVALID_STATE) {
+            ESP_LOGE(TAG, "sd: SPI3 init failed: %s", esp_err_to_name(bus_err));
+            if (spi_locked) screen_spi_unlock();
+            return false;
+        }
+    }
 #endif
     vTaskDelay(pdMS_TO_TICKS(5));
 
@@ -3096,7 +3109,11 @@ static bool mount_sd_card_if_needed(void)
 
             sdspi_device_config_t slot_config = SDSPI_DEVICE_CONFIG_DEFAULT();
             slot_config.host_id = host_candidates[h];
+#if CONFIG_HARDWARE_CORE2
             slot_config.gpio_cs = GPIO_NUM_4;
+#else
+            slot_config.gpio_cs = GPIO_NUM_10;  /* JC3248W535 TF_CS */
+#endif
             slot_config.gpio_cd = GPIO_NUM_NC;
             slot_config.gpio_wp = GPIO_NUM_NC;
             slot_config.gpio_int = GPIO_NUM_NC;
