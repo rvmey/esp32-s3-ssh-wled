@@ -58,6 +58,7 @@
 #define NVS_KEY_TOKEN       "hw_token"
 #define NVS_KEY_CONV        "conversation_id"
 #define NVS_KEY_STT         "stt_key"
+#define NVS_KEY_COMPUTER    "computer_name"
 
 #define TCMD_BASE_URL       "https://www.triggercmd.com"  /* prod server */
 // #define TCMD_BASE_URL       "http://192.168.86.248:1337"  /* local dev server */
@@ -78,6 +79,7 @@
 #define HW_TOKEN_MAX        512
 #define CONV_ID_MAX         64
 #define STT_KEY_MAX         256
+#define COMPUTER_NAME_MAX   64
 #define TRANSCRIPT_MAX      512
 
 /* ── SoftAP provisioning ─────────────────────────────────────────────────── */
@@ -113,6 +115,10 @@ static const char s_wifi_prov_html[] =
     "<label>Password 3</label><input name='pass3' type='password'>"
     "<hr style='border-color:#2d3148;margin:1.25rem 0 .5rem'>"
     "<label>OpenAI API Key (for voice)</label><input name='stt' placeholder='sk-...'>"
+    "<label>TRIGGERcmd Computer Name (optional)</label>"
+    "<input name='computer' placeholder='e.g. MyDesktop'>"
+    "<p style='color:#64748b;font-size:.75rem;margin:.25rem 0 0'>"
+    "Limit voice commands to this computer&rsquo;s tools only</p>"
     "<button type='submit'>Save &amp; Connect</button>"
     "</form></div></body></html>";
 
@@ -213,15 +219,17 @@ static esp_err_t prov_save_handler(httpd_req_t *req)
     char pass2[64] = {0};
     char ssid3[64] = {0};
     char pass3[64] = {0};
-    char stt[STT_KEY_MAX]  = {0};
+    char stt[STT_KEY_MAX]           = {0};
+    char computer[COMPUTER_NAME_MAX] = {0};
 
-    form_get_field(body, "ssid",  ssid,  sizeof(ssid));
-    form_get_field(body, "pass",  pass,  sizeof(pass));
-    form_get_field(body, "ssid2", ssid2, sizeof(ssid2));
-    form_get_field(body, "pass2", pass2, sizeof(pass2));
-    form_get_field(body, "ssid3", ssid3, sizeof(ssid3));
-    form_get_field(body, "pass3", pass3, sizeof(pass3));
-    form_get_field(body, "stt",   stt,   sizeof(stt));
+    form_get_field(body, "ssid",     ssid,     sizeof(ssid));
+    form_get_field(body, "pass",     pass,     sizeof(pass));
+    form_get_field(body, "ssid2",    ssid2,    sizeof(ssid2));
+    form_get_field(body, "pass2",    pass2,    sizeof(pass2));
+    form_get_field(body, "ssid3",    ssid3,    sizeof(ssid3));
+    form_get_field(body, "pass3",    pass3,    sizeof(pass3));
+    form_get_field(body, "stt",      stt,      sizeof(stt));
+    form_get_field(body, "computer", computer, sizeof(computer));
 
     httpd_resp_set_type(req, "text/html");
     httpd_resp_send(req, s_saved_html, HTTPD_RESP_USE_STRLEN);
@@ -238,6 +246,8 @@ static esp_err_t prov_save_handler(httpd_req_t *req)
         nvs_write_str(NVS_KEY_STT, stt);
         ESP_LOGI(TAG, "STT API key saved");
     }
+    nvs_write_str(NVS_KEY_COMPUTER, computer);
+    if (computer[0]) ESP_LOGI(TAG, "Computer name saved: %s", computer);
 
     s_prov_done = true;
     return ESP_OK;
@@ -771,12 +781,23 @@ static void do_voice_query(const char *token, char *conv_id)
 
     ESP_LOGI(TAG, "Transcript: %s", transcript);
 
+    char computer_name[COMPUTER_NAME_MAX] = {0};
+    nvs_read_str(NVS_KEY_COMPUTER, computer_name, sizeof(computer_name));
+
     /* Build JSON body — escape any quotes in transcript */
-    char json_body[TRANSCRIPT_MAX + 128];
-    if (conv_id[0]) {
+    char json_body[TRANSCRIPT_MAX + 256];
+    if (conv_id[0] && computer_name[0]) {
+        snprintf(json_body, sizeof(json_body),
+                 "{\"message\":\"%s\",\"conversationId\":\"%s\",\"computerName\":\"%s\"}",
+                 transcript, conv_id, computer_name);
+    } else if (conv_id[0]) {
         snprintf(json_body, sizeof(json_body),
                  "{\"message\":\"%s\",\"conversationId\":\"%s\"}",
                  transcript, conv_id);
+    } else if (computer_name[0]) {
+        snprintf(json_body, sizeof(json_body),
+                 "{\"message\":\"%s\",\"computerName\":\"%s\"}",
+                 transcript, computer_name);
     } else {
         snprintf(json_body, sizeof(json_body),
                  "{\"message\":\"%s\"}", transcript);
