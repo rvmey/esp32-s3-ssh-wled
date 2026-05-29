@@ -76,8 +76,8 @@ $variants = @(
         Config    = 'sdkconfig.tcmd_atom_echo'
         BuildDir  = 'build_tcmd_atom_echo'
         Chip      = 'esp32'
-        BootloaderBin = 'bootloader-esp32.bin'
-        PartitionBin  = 'partition-table-esp32.bin'
+        BootloaderBin = 'bootloader-tcmd_atom_echo.bin'
+        PartitionBin  = 'partition-table-tcmd_atom_echo.bin'
         OutputBin = 'esp32_tcmd_atom_echo.bin'
         Target    = 'esp32'          # classic ESP32-PICO-D4, not ESP32-S3
     },
