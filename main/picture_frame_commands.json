@@ -4,7 +4,7 @@
   "command": "text",
   "voice": "text",
   "allowParams": "true",
-  "mcpToolDescription": "Update the display text. Example: 'text Hello world!'",
+  "mcpToolDescription": "Update the display text. Example: 'Hello world!'",
   "icon": "📝"
  },
  {
@@ -12,7 +12,7 @@
   "command": "color",
   "voice": "color",
   "allowParams": "true",
-  "mcpToolDescription": "Change the display color. Example: 'color red' or 'color #FF0000'",
+  "mcpToolDescription": "Change the display color. Example: 'red' or '#FF0000'",
   "icon": "🔤"
  },
  {
@@ -21,7 +21,7 @@
   "voice": "textcolor",
   "allowParams": "true",
   "quoteParams": "false",
-  "mcpToolDescription": "Change the text color. Example: 'textcolor blue' or 'textcolor #0000FF'",
+  "mcpToolDescription": "Change the text color. Example: 'blue' or '#0000FF'",
   "icon": "🎨"
  },
  {
@@ -29,7 +29,7 @@
   "command": "fontsize",
   "voice": "fontsize",
   "allowParams": "true",
-  "mcpToolDescription": "Change the font size (1-4). Example: 'fontsize 3'",
+  "mcpToolDescription": "Change the font size (1-4). Example: '3'",
   "icon": "🔡"
  },
  {
@@ -115,7 +115,7 @@
   "trigger": "volumelevel",
   "command": "volumelevel",
   "allowParams": "true",
-  "mcpToolDescription": "Set the playback volume to an exact percentage (0–100). Example: 'volumelevel 75'",
+  "mcpToolDescription": "Set the playback volume to an exact percentage (0–100). Example: '75'",
   "icon": "🔊"
  },
  {
@@ -129,21 +129,21 @@
   "trigger": "shuffle",
   "command": "shuffle",
   "allowParams": "true",
-  "mcpToolDescription": "Enable or disable shuffle mode. Example: 'shuffle on' or 'shuffle off'",
+  "mcpToolDescription": "Enable or disable shuffle mode. Example: 'on' or 'off'",
   "icon": "🔀"
  },
  {
   "trigger": "repeattrack",
   "command": "repeattrack",
   "allowParams": "true",
-  "mcpToolDescription": "Enable or disable repeat-track mode. Example: 'repeattrack on' or 'repeattrack off'",
+  "mcpToolDescription": "Enable or disable repeat-track mode. Example: 'on' or 'off'",
   "icon": "🔂"
  },
  {
   "trigger": "repeatplaylist",
   "command": "repeatplaylist",
   "allowParams": "true",
-  "mcpToolDescription": "Enable or disable repeat-playlist mode. Example: 'repeatplaylist on' or 'repeatplaylist off'",
+  "mcpToolDescription": "Enable or disable repeat-playlist mode. Example: 'on' or 'off'",
   "icon": "🔁"
  },
  {

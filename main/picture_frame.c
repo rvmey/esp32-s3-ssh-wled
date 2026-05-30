@@ -3751,32 +3751,32 @@ typedef struct {
 } pf_cmd_t;
 
 static const pf_cmd_t s_pf_cmds[] = {
-    { "text",      "text",      "true",  "Update the display text. Example: 'text Hello world!'",           "\xF0\x9F\x93\x9D" /* 📝 */ },
-    { "color",     "color",     "true",  "Change the display color. Example: 'color red' or 'color #FF0000'", "\xF0\x9F\x94\xA4" /* 🔤 */ },
-    { "textcolor", "textcolor", "true",  "Change the text color. Example: 'textcolor blue' or 'textcolor #0000FF'", "\xF0\x9F\x8E\xA8" /* 🎨 */ },
-    { "fontsize",  "fontsize",  "true",  "Change the font size (1-4). Example: 'fontsize 3'",                     "\xF0\x9F\x94\xA1" /* 🔡 */ },
+    { "text",      "text",      "true",  "Update the display text. Example: 'Hello world!'",           "\xF0\x9F\x93\x9D" /* 📝 */ },
+    { "color",     "color",     "true",  "Change the display color. Example: 'red' or '#FF0000'", "\xF0\x9F\x94\xA4" /* 🔤 */ },
+    { "textcolor", "textcolor", "true",  "Change the text color. Example: 'blue' or '#0000FF'", "\xF0\x9F\x8E\xA8" /* 🎨 */ },
+    { "fontsize",  "fontsize",  "true",  "Change the font size (1-4). Example: '3'",                     "\xF0\x9F\x94\xA1" /* 🔡 */ },
     { "landscape", "landscape", "false", "Set the display to landscape orientation.",                        "\xE2\x86\x94\xEF\xB8\x8F" /* ↔️ */ },
     { "portrait",  "portrait",  "false", "Set the display to portrait orientation.",                         "\xE2\x86\x95\xEF\xB8\x8F" /* ↕️ */ },
     { "jpeg",      "jpeg",      "true",  "Display a JPEG image. Example: 'jpeg https://example.com/image.jpg'", "\xF0\x9F\x96\xBC\xEF\xB8\x8F" /* 🖼️ */ },
-    { "save",      "save",      "false", "Save the current display settings and image to non-volatile memory.", "\xF0\x9F\x92\xBE" /* 💾 */ },
+    { "save",      "save",      "false", "Save the screen settings to non-volatile memory. Example: 'save'", "\xF0\x9F\x92\xBE" /* 💾 */ },
     { "reboot",    "reboot",    "false", "Reboot the device.", "\xF0\x9F\x94\x81" /* 🔁 */ },
 };
 #define PF_CMD_COUNT  (sizeof(s_pf_cmds) / sizeof(s_pf_cmds[0]))
 
 static const pf_cmd_t s_pf_media_cmds[] = {
     { "play",        "play",        "false", "Resume paused MP3 playback.", "\xE2\x96\xB6\xEF\xB8\x8F" /* ▶️ */ },
-    { "stop",        "stop",        "false", "Pause MP3 playback at the current position.", "\xE2\x8F\xB8\xEF\xB8\x8F" /* ⏸️ */ },
+    { "stop",        "stop",        "false", "Pause MP3 playback and keep the current position visible.", "\xE2\x8F\xB8\xEF\xB8\x8F" /* ⏸️ */ },
     { "next",        "next",        "false", "Skip to the next MP3 file in the current folder.", "\xE2\x8F\xA9" /* ⏩ */ },
     { "previous",    "previous",    "false", "Go to the previous MP3 file in the current folder.", "\xE2\x8F\xAA" /* ⏪ */ },
     { "forward",     "forward",     "false", "Skip forward 10 seconds within the current MP3.", "\xE2\x8F\xA9" /* ⏩ */ },
     { "reverse",     "reverse",     "false", "Skip backward 10 seconds within the current MP3.", "\xE2\x8F\xAA" /* ⏪ */ },
     { "volumeup",    "volumeup",    "false", "Increase playback volume.", "\xF0\x9F\x94\x8A" /* 🔊 */ },
     { "volumedown",  "volumedown",  "false", "Decrease playback volume.", "\xF0\x9F\x94\x89" /* 🔉 */ },
-    { "volumelevel", "volumelevel", "true",  "Set the playback volume to an exact percentage (0-100). Example: 'volumelevel 75'", "\xF0\x9F\x94\x8A" /* 🔊 */ },
+    { "volumelevel", "volumelevel", "true",  "Set the playback volume to an exact percentage (0\xe2\x80\x93" "100). Example: '75'", "\xF0\x9F\x94\x8A" /* 🔊 */ },
     { "mute",        "mute",        "false", "Toggle mute on or off. Mute state is not saved across reboots.", "\xF0\x9F\x94\x87" /* 🔇 */ },
-    { "shuffle",     "shuffle",     "true",  "Enable or disable shuffle mode. Example: 'shuffle on' or 'shuffle off'", "\xF0\x9F\x94\x80" /* 🔀 */ },
-    { "repeattrack", "repeattrack", "true",  "Enable or disable repeat-track mode. Example: 'repeattrack on' or 'repeattrack off'", "\xF0\x9F\x94\x82" /* 🔂 */ },
-    { "repeatplaylist", "repeatplaylist", "true",  "Enable or disable repeat-playlist mode. Example: 'repeatplaylist on' or 'repeatplaylist off'", "\xF0\x9F\x94\x81" /* 🔁 */ },
+    { "shuffle",     "shuffle",     "true",  "Enable or disable shuffle mode. Example: 'on' or 'off'", "\xF0\x9F\x94\x80" /* 🔀 */ },
+    { "repeattrack", "repeattrack", "true",  "Enable or disable repeat-track mode. Example: 'on' or 'off'", "\xF0\x9F\x94\x82" /* 🔂 */ },
+    { "repeatplaylist", "repeatplaylist", "true",  "Enable or disable repeat-playlist mode. Example: 'on' or 'off'", "\xF0\x9F\x94\x81" /* 🔁 */ },
     { "pair",        "pair",        "true",  "Pair with a Bluetooth headset or speaker. Example: 'pair'", "\xF0\x9F\x8E\xA7" /* 🎧 */ },
     { "btstatus",    "btstatus",    "false", "Show Bluetooth audio connection status.", "\xF0\x9F\x93\xB6" /* 📶 */ },
     { "btdisconnect", "btdisconnect", "false", "Disconnect the current Bluetooth audio device.", "\xF0\x9F\x94\x8C" /* 🔌 */ },
