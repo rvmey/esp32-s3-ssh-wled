@@ -1,0 +1,16 @@
+{
+  "name": "TRIGGERcmd AtomS3 Lite (M5Stack AtomS3 Lite)",
+  "version": "2.0.265",
+  "new_install_improv_wifi": false,
+  "builds": [
+    {
+      "chipFamily": "ESP32-S3",
+      "parts": [
+        { "path": "firmware/bootloader-esp32s3.bin",      "offset": 0     },
+        { "path": "firmware/partition-table-esp32s3.bin", "offset": 32768 },
+        { "path": "firmware/nvs_blank.bin",               "offset": 36864 },
+        { "path": "firmware/esp32_atoms3_lite.bin",       "offset": 65536 }
+      ]
+    }
+  ]
+}
