@@ -543,6 +543,13 @@ esp_err_t screen_init(void)
     axp_write(0x27, 0x67);              /* DC3 backlight rail nominal setting     */
     axp_read_modify_write(0x92, 0x07, 0x00); /* GPIO1 open-drain style (Core2/Tough) */
     axp_read_modify_write(0x12, 0x0E, 0x06); /* ON: DC3+LDO2, OFF: LDO3 (vibration)  */
+    /* PEK (power-enable key) config — reg 0x36:
+     *   bits[7:6]=01 → short press 512 ms
+     *   bits[5:4]=11 → long press 2.5 s (max, reduces accidental shutdown)
+     *   bit[3]=0     → long press shutdown DISABLED (device runs from USB)
+     *   bits[1:0]=00 → PWROK delay 32 ms
+     * Clear bit3 by read-modify-write so we don't clobber other fields. */
+    axp_read_modify_write(0x36, 0xF8, 0x70); /* short=512ms, long=2.5s, no shutdown */
     axp_read_modify_write(0x96, 0x02, 0x00); /* LCD reset low                          */
     vTaskDelay(pdMS_TO_TICKS(20));
     axp_read_modify_write(0x96, 0x02, 0x02); /* LCD reset high                         */

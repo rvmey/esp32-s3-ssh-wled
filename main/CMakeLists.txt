@@ -30,6 +30,7 @@ elseif(CONFIG_HARDWARE_CORE2)
     set(VARIANT_SRCS
         "screen_control_core2.c"
         "core2_audio.c"
+        "core2_mic.c"
         "picture_frame.c"
         "socketio.c"
         "http_pf_config.c")

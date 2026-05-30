@@ -25,6 +25,7 @@
 #define TAG_PF_WIFI "http_pf_cfg"
 #define NVS_NS      "pf_cfg"
 #define NVS_KEY_CID "computer_id"
+#define NVS_KEY_STT "stt_key"
 
 /* Pair code set by http_pf_config_start(); read by the GET / handler */
 static char            s_pair_code[8] = "-----";
@@ -106,6 +107,26 @@ static const char s_wifi_form_mid2[] =
 
 static const char s_ok_wifi[] =
     "<p style='color:#86efac;margin-top:.75rem;text-align:center'>&#10003; Networks saved.</p>";
+
+static const char s_stt_form[] =
+    "<hr>"
+    "<h2 style='font-size:1.1rem;color:#a5b4fc;margin:0 0 .5rem'>Voice Feature (OpenAI Whisper)</h2>"
+    "<p style='color:#94a3b8;font-size:.85rem;margin:0 0 .75rem'>"
+    "Press the side button to record a voice command. "
+    "An OpenAI API key is required for transcription.</p>"
+    "<form method='POST' action='/stt_key'>"
+    "<label style='display:block;color:#94a3b8;font-size:.85rem;margin:.5rem 0 .2rem'>"
+    "OpenAI API Key</label>"
+    "<input style='width:100%;box-sizing:border-box;padding:.5rem;background:#0f1117;"
+           "border:1px solid #4f46e5;border-radius:.4rem;color:#e2e8f0;font-size:.95rem;"
+           "margin-bottom:.75rem' type='password' name='stt_key' placeholder='sk-...'>"
+    "<button style='width:100%;padding:.65rem;background:#4f46e5;color:#fff;border:none;"
+            "border-radius:.6rem;font-size:.95rem;font-weight:600;cursor:pointer'>"
+    "Save API Key</button>"
+    "</form>";
+
+static const char s_ok_stt[] =
+    "<p style='color:#86efac;margin-top:.75rem;text-align:center'>&#10003; API key saved.</p>";
 
 static const char s_tail[] = "</div></body></html>";
 
@@ -205,6 +226,7 @@ static esp_err_t get_handler(httpd_req_t *req)
             "Re-provision (reassign to a different account)"
         "</button>"
         "</form>");
+    httpd_resp_sendstr_chunk(req, s_stt_form);
     send_wifi_section_pf(req, NULL);
     httpd_resp_sendstr_chunk(req, s_tail);
     httpd_resp_sendstr_chunk(req, NULL);
@@ -283,6 +305,55 @@ static esp_err_t post_wifi_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
+static esp_err_t post_stt_key_handler(httpd_req_t *req)
+{
+    int len = req->content_len;
+    if (len <= 0 || len >= 512) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, NULL);
+        return ESP_OK;
+    }
+    char *body = calloc(len + 1, 1);
+    if (!body) { httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, NULL); return ESP_OK; }
+    int got = 0, rem = len;
+    while (rem > 0) {
+        int n = httpd_req_recv(req, body + got, rem);
+        if (n <= 0) { free(body); httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, NULL); return ESP_OK; }
+        got += n; rem -= n;
+    }
+
+    char key[256] = {0};
+    form_get_pf(body, "stt_key", key, sizeof(key));
+    free(body);
+
+    if (key[0]) {
+        nvs_handle_t h;
+        if (nvs_open(NVS_NS, NVS_READWRITE, &h) == ESP_OK) {
+            nvs_set_str(h, NVS_KEY_STT, key);
+            nvs_commit(h);
+            nvs_close(h);
+            ESP_LOGI(TAG, "STT API key saved (%d chars)", (int)strlen(key));
+        }
+    }
+
+    httpd_resp_set_type(req, "text/html");
+    httpd_resp_sendstr_chunk(req, s_html_head);
+    char code_block[64];
+    snprintf(code_block, sizeof(code_block), "<div class='code'>%s</div>", s_pair_code);
+    httpd_resp_sendstr_chunk(req, code_block);
+    httpd_resp_sendstr_chunk(req,
+        "<p class='note'>This code expires in 10 minutes.</p>"
+        "<hr>"
+        "<form method='POST' action='/reprovision'>"
+        "<button type='submit'>Re-provision (reassign to a different account)</button>"
+        "</form>");
+    httpd_resp_sendstr_chunk(req, key[0] ? s_ok_stt : s_stt_form);
+    if (key[0]) httpd_resp_sendstr_chunk(req, s_stt_form);
+    send_wifi_section_pf(req, NULL);
+    httpd_resp_sendstr_chunk(req, s_tail);
+    httpd_resp_sendstr_chunk(req, NULL);
+    return ESP_OK;
+}
+
 /* ── Public API ──────────────────────────────────────────────────────────── */
 
 esp_err_t http_pf_config_start(const char *pair_code)
@@ -312,10 +383,12 @@ esp_err_t http_pf_config_start(const char *pair_code)
     static const httpd_uri_t u_get  = { "/",            HTTP_GET,  get_handler,              NULL };
     static const httpd_uri_t u_repr = { "/reprovision", HTTP_POST, post_reprovision_handler, NULL };
     static const httpd_uri_t u_wifi = { "/wifi",        HTTP_POST, post_wifi_handler,        NULL };
+    static const httpd_uri_t u_stt  = { "/stt_key",     HTTP_POST, post_stt_key_handler,     NULL };
 
     httpd_register_uri_handler(s_server, &u_get);
     httpd_register_uri_handler(s_server, &u_repr);
     httpd_register_uri_handler(s_server, &u_wifi);
+    httpd_register_uri_handler(s_server, &u_stt);
 
     ESP_LOGI(TAG, "Pairing info server started on port 80 (code=%s)", s_pair_code);
     return ESP_OK;

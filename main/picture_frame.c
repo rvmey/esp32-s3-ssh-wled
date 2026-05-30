@@ -63,6 +63,8 @@
 
 #if CONFIG_HARDWARE_CORE2
 /* SoftAP provisioning for Core2 (classic ESP32 — no USB-JTAG Improv) */
+#include "core2_audio.h"
+#include "core2_mic.h"
 #include "esp_wifi.h"
 #include "esp_netif.h"
 #include "esp_event.h"
@@ -3022,6 +3024,268 @@ static void core2_cycle_sd_power(void)
     core2_reassert_sd_power();
     vTaskDelay(pdMS_TO_TICKS(120));
 }
+
+/* ── Core2 voice query (Whisper STT → TRIGGERcmd Chat API) ──────────────── */
+
+static bool json_extract_str(const char *json, const char *key,
+                              char *out, size_t out_sz);   /* defined later */
+
+#define CORE2_STT_URL       "https://api.openai.com/v1/audio/transcriptions"
+#define CORE2_STT_KEY_MAX   256
+#define CORE2_TRANSCRIPT_MAX 512
+#define CORE2_STT_MAX_BODY  2048
+#define CORE2_STT_TIMEOUT_MS 30000
+#define NVS_KEY_STT         "stt_key"
+#define NVS_KEY_VOICE_CONV  "voice_conv"
+
+static char s_voice_conv_id[64] = {0};   /* conversation context across queries */
+
+static bool core2_stt_transcribe(const uint8_t *wav, size_t wav_len,
+                                 const char *api_key,
+                                 char *transcript_out)
+{
+    transcript_out[0] = '\0';
+
+    static const char BOUNDARY[]    = "----TCMDCore2Boundary8a4b1c";
+    static const char MODEL_PART[]  =
+        "------TCMDCore2Boundary8a4b1c\r\n"
+        "Content-Disposition: form-data; name=\"model\"\r\n\r\n"
+        "whisper-1\r\n";
+    static const char FILE_PART_HDR[] =
+        "------TCMDCore2Boundary8a4b1c\r\n"
+        "Content-Disposition: form-data; name=\"file\"; filename=\"audio.wav\"\r\n"
+        "Content-Type: audio/wav\r\n\r\n";
+    static const char FINAL_BOUNDARY[] =
+        "\r\n------TCMDCore2Boundary8a4b1c--\r\n";
+
+    size_t total_len = strlen(MODEL_PART) + strlen(FILE_PART_HDR)
+                     + wav_len + strlen(FINAL_BOUNDARY);
+
+    char bearer[CORE2_STT_KEY_MAX + 10];
+    snprintf(bearer, sizeof(bearer), "Bearer %s", api_key);
+
+    char content_type[80];
+    snprintf(content_type, sizeof(content_type),
+             "multipart/form-data; boundary=%s", BOUNDARY);
+
+    bool ok = false;
+    for (int attempt = 1; attempt <= 3 && !ok; attempt++) {
+        esp_http_client_config_t cfg = {
+            .url               = CORE2_STT_URL,
+            .method            = HTTP_METHOD_POST,
+            .timeout_ms        = CORE2_STT_TIMEOUT_MS,
+            .crt_bundle_attach = esp_crt_bundle_attach,
+            .buffer_size       = 4096,
+            .buffer_size_tx    = 4096,
+            .keep_alive_enable = false,
+        };
+        esp_http_client_handle_t client = esp_http_client_init(&cfg);
+        if (!client) break;
+
+        esp_http_client_set_header(client, "Authorization", bearer);
+        esp_http_client_set_header(client, "Content-Type", content_type);
+
+        if (esp_http_client_open(client, (int)total_len) != ESP_OK) {
+            esp_http_client_cleanup(client);
+            if (attempt < 3) vTaskDelay(pdMS_TO_TICKS(250));
+            continue;
+        }
+
+        int sent = 0;
+        bool write_ok = true;
+        int n;
+        n = esp_http_client_write(client, MODEL_PART, (int)strlen(MODEL_PART));
+        if (n > 0) sent += n; else write_ok = false;
+        n = esp_http_client_write(client, FILE_PART_HDR, (int)strlen(FILE_PART_HDR));
+        if (n > 0) sent += n; else write_ok = false;
+        n = esp_http_client_write(client, (const char *)wav, (int)wav_len);
+        if (n > 0) sent += n; else write_ok = false;
+        n = esp_http_client_write(client, FINAL_BOUNDARY, (int)strlen(FINAL_BOUNDARY));
+        if (n > 0) sent += n; else write_ok = false;
+
+        if (write_ok && sent == (int)total_len) {
+            int64_t cl = esp_http_client_fetch_headers(client);
+            int max_resp = CORE2_STT_MAX_BODY;
+            if (cl > 0 && cl < max_resp) max_resp = (int)cl;
+            char *resp = malloc(max_resp + 1);
+            if (resp) {
+                int total = 0;
+                while (total < max_resp) {
+                    n = esp_http_client_read(client, resp + total, max_resp - total);
+                    if (n <= 0) break;
+                    total += n;
+                }
+                resp[total] = '\0';
+                int status = esp_http_client_get_status_code(client);
+                ESP_LOGI(TAG, "STT HTTP %d: %.120s", status, resp);
+                if (status == 200) {
+                    ok = json_extract_str(resp, "text", transcript_out, CORE2_TRANSCRIPT_MAX);
+                }
+                free(resp);
+            }
+        }
+        esp_http_client_close(client);
+        esp_http_client_cleanup(client);
+        if (!ok && attempt < 3) vTaskDelay(pdMS_TO_TICKS(250));
+    }
+    return ok;
+}
+
+static int core2_https_post_json(const char *url, const char *token,
+                                 const char *json_body, char **resp_out)
+{
+    if (resp_out) *resp_out = NULL;
+    char bearer[HW_TOKEN_MAX_LEN + 10];
+    snprintf(bearer, sizeof(bearer), "Bearer %s", token);
+    int body_len = (int)strlen(json_body);
+
+    esp_http_client_config_t cfg = {
+        .url               = url,
+        .method            = HTTP_METHOD_POST,
+        .timeout_ms        = 20000,
+        .crt_bundle_attach = esp_crt_bundle_attach,
+    };
+    esp_http_client_handle_t client = esp_http_client_init(&cfg);
+    if (!client) return -1;
+
+    esp_http_client_set_header(client, "Authorization", bearer);
+    esp_http_client_set_header(client, "Content-Type", "application/json");
+    esp_http_client_set_header(client, "Accept", "application/json");
+
+    if (esp_http_client_open(client, body_len) != ESP_OK) {
+        esp_http_client_cleanup(client);
+        return -1;
+    }
+    esp_http_client_write(client, json_body, body_len);
+
+    int64_t cl = esp_http_client_fetch_headers(client);
+    int max_body = CORE2_STT_MAX_BODY;
+    if (cl > 0 && cl < max_body) max_body = (int)cl;
+
+    if (resp_out) {
+        char *buf = malloc(max_body + 1);
+        if (buf) {
+            int total = 0, n;
+            while (total < max_body) {
+                n = esp_http_client_read(client, buf + total, max_body - total);
+                if (n <= 0) break;
+                total += n;
+            }
+            buf[total] = '\0';
+            *resp_out = buf;
+        }
+    }
+    int status = esp_http_client_get_status_code(client);
+    esp_http_client_close(client);
+    esp_http_client_cleanup(client);
+    return status;
+}
+
+static void do_core2_voice_query(void)
+{
+    ESP_LOGI(TAG, "Voice query: starting");
+    screen_draw_text("Listening...");
+
+    /* Pause MP3 and hand GPIO 0 from speaker to microphone. */
+    bool was_playing = (s_mp3.active && !s_mp3.paused);
+    if (was_playing) s_mp3.paused = true;
+    core2_audio_deinit();
+    core2_mic_init();
+
+    uint8_t *wav     = NULL;
+    size_t   wav_len = core2_mic_record(&wav, 4000);
+
+    core2_mic_deinit();
+    core2_audio_init();
+    if (was_playing) s_mp3.paused = false;
+
+    if (wav_len == 0 || !wav) {
+        ESP_LOGW(TAG, "Voice query: no audio captured");
+        screen_draw_text("Voice: no audio\ncaptured");
+        s_pending_vibrate = true;
+        return;
+    }
+
+    screen_draw_text("Processing...");
+
+    char stt_key[CORE2_STT_KEY_MAX] = {0};
+    if (!nvs_read_str(NVS_KEY_STT, stt_key, sizeof(stt_key))) {
+        free(wav);
+        ESP_LOGW(TAG, "Voice query: no STT API key — visit device IP to configure");
+        screen_draw_text("Voice: no API key\nVisit device IP\nto configure");
+        s_pending_vibrate = true;
+        return;
+    }
+
+    char transcript[CORE2_TRANSCRIPT_MAX] = {0};
+    bool stt_ok = core2_stt_transcribe(wav, wav_len, stt_key, transcript);
+    free(wav);
+
+    if (!stt_ok || transcript[0] == '\0') {
+        ESP_LOGW(TAG, "Voice query: STT failed or empty");
+        screen_draw_text("Voice: not heard\nor STT failed");
+        s_pending_vibrate = true;
+        return;
+    }
+    ESP_LOGI(TAG, "Voice transcript: %s", transcript);
+
+    /* Show the transcript briefly before the command result appears. */
+    char msg[96];
+    snprintf(msg, sizeof(msg), "Heard:\n%.88s", transcript);
+    screen_draw_text(msg);
+
+    /* Build Chat API JSON body. */
+    char json_body[CORE2_TRANSCRIPT_MAX + 256];
+    if (s_voice_conv_id[0] && s_computer_id[0]) {
+        snprintf(json_body, sizeof(json_body),
+                 "{\"message\":\"%s\",\"conversationId\":\"%s\",\"computerName\":\"%s\"}",
+                 transcript, s_voice_conv_id, s_computer_id);
+    } else if (s_voice_conv_id[0]) {
+        snprintf(json_body, sizeof(json_body),
+                 "{\"message\":\"%s\",\"conversationId\":\"%s\"}",
+                 transcript, s_voice_conv_id);
+    } else if (s_computer_id[0]) {
+        snprintf(json_body, sizeof(json_body),
+                 "{\"message\":\"%s\",\"computerName\":\"%s\"}",
+                 transcript, s_computer_id);
+    } else {
+        snprintf(json_body, sizeof(json_body), "{\"message\":\"%s\"}", transcript);
+    }
+
+    char chat_url[128];
+    snprintf(chat_url, sizeof(chat_url), "%s/api/v1/chat/message", TCMD_BASE_URL);
+
+    char *resp   = NULL;
+    int   status = core2_https_post_json(chat_url, s_hw_token, json_body, &resp);
+    ESP_LOGI(TAG, "Chat API HTTP %d", status);
+
+    if (status == 200 && resp) {
+        char new_conv[64] = {0};
+        json_extract_str(resp, "conversationId", new_conv, sizeof(new_conv));
+        if (new_conv[0] && strcmp(new_conv, s_voice_conv_id) != 0) {
+            strncpy(s_voice_conv_id, new_conv, sizeof(s_voice_conv_id) - 1);
+            nvs_write_str(NVS_KEY_VOICE_CONV, s_voice_conv_id);
+        }
+        ESP_LOGI(TAG, "Voice query: chat API success");
+    } else {
+        ESP_LOGW(TAG, "Voice query: chat API returned HTTP %d", status);
+        screen_draw_text("Voice: chat API\nfailed");
+    }
+    if (resp) free(resp);
+    s_pending_vibrate = true;
+}
+
+/* ── AXP192 PEK (power key) short-press detection ───────────────────────── */
+
+static void core2_poll_pwr_key(void)
+{
+    uint8_t irq = 0;
+    if (core2_axp_read_reg(0x46, &irq) != ESP_OK) return;
+    if (!(irq & 0x08)) return;                    /* bit3 = PEK short press */
+    (void)core2_axp_write_reg(0x46, 0x08);        /* clear bit by writing 1 */
+    ESP_LOGI(TAG, "PWR key short press detected — starting voice query");
+    do_core2_voice_query();
+}
 #endif
 
 static int mp3_find_folder_trigger(const char *trigger)
@@ -4647,6 +4911,9 @@ void picture_frame_run(void)
     /* ── NVS: read hw_token and computer_id ─────────────────────────────── */
     bool have_token   = nvs_read_str(NVS_KEY_TOKEN,  s_hw_token,   sizeof(s_hw_token));
     bool have_comp_id = nvs_read_str(NVS_KEY_COMPID, s_computer_id, sizeof(s_computer_id));
+#if CONFIG_HARDWARE_CORE2
+    nvs_read_str(NVS_KEY_VOICE_CONV, s_voice_conv_id, sizeof(s_voice_conv_id));
+#endif
 
     {
         uint8_t shuffle = 0;
@@ -4954,6 +5221,7 @@ void picture_frame_run(void)
                     (void)core2_axp_write_reg(0x12, vib_reg & (uint8_t)~0x08); /* LDO3 off */
                 }
             }
+            core2_poll_pwr_key();   /* voice query on PWR short press */
 #endif
 
             vTaskDelay(pdMS_TO_TICKS(200));   /* poll every 200 ms */
