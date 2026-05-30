@@ -39,11 +39,15 @@ The last set color is saved to NVS and restored on reboot.
 
 | Press type | Behavior |
 |------------|----------|
-| Short press (< 2 s) | Calls the configured Short Bookmark URL (HTTP GET, no TLS cert check) |
-| Long press (≥ 2 s) | Calls the configured Long Bookmark URL (HTTP GET, no TLS cert check) |
+| Single click | Calls the Single-Click Bookmark URL (HTTP GET, no TLS cert check) |
+| Double click | Calls the Double-Click Bookmark URL |
+| Triple click | Calls the Triple-Click Bookmark URL |
+| Long press (≥ 2 s) | Calls the Long-Press Bookmark URL |
 
-Both Bookmark URLs let you trigger any HTTP endpoint — a home-automation scene,
+Each Bookmark URL can trigger any HTTP endpoint — a home-automation scene,
 a webhook, an IFTTT applet, etc. — directly from the physical button.
+Single/double/triple clicks are distinguished by a 350 ms window after the
+last tap; long press fires immediately while the button is still held.
 
 ---
 
@@ -71,7 +75,7 @@ The AtomS3 Lite uses **SoftAP provisioning** (no USB-JTAG Improv needed):
 1. On first boot, the device starts a Wi-Fi access point named **`TCMD-AtomS3-XXXXXX`**.
 2. Connect your phone or laptop to that network.
 3. Browse to **`http://192.168.4.1`** and fill in your Wi-Fi SSID, password, and
-   optionally a **Short Bookmark URL**, a **Long Bookmark URL**, and up to two secondary networks.
+   optionally up to four Bookmark URLs (single/double/triple click, long press), and up to two secondary networks.
 4. Click **Save & Connect** — the device restarts and joins your network.
 
 ---
@@ -81,7 +85,7 @@ The AtomS3 Lite uses **SoftAP provisioning** (no USB-JTAG Improv needed):
 Once connected, browse to the device's IP address (`http://<device-ip>/`) to:
 
 - See the TRIGGERcmd pair code (during initial pairing).
-- Update the Short and Long Bookmark URLs at any time.
+- Update the Single-Click, Double-Click, Triple-Click, and Long-Press Bookmark URLs at any time.
 - Add or change secondary Wi-Fi networks.
 - Re-provision the device to a different TRIGGERcmd account.
 
