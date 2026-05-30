@@ -1116,7 +1116,7 @@ typedef struct {
 static const asl_cmd_t s_asl_cmds[] = {
     {
         "color", "true",
-        "Change the LED color. Example: 'color red' or 'color #FF0000'",
+        "Change the LED color. Example: 'red' or '#FF0000'",
         "\xF0\x9F\x92\xA1" /* 💡 */
     },
     {

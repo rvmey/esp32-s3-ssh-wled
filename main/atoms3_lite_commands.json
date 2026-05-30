@@ -4,7 +4,7 @@
     "command": "color",
     "voice": "color",
     "allowParams": "true",
-    "mcpToolDescription": "Change the LED color. Example: 'color red' or 'color #FF0000'",
+    "mcpToolDescription": "Change the LED color. Example: 'red' or '#FF0000'",
     "icon": "💡"
   },
   {
