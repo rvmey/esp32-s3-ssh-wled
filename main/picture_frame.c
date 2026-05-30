@@ -1803,7 +1803,7 @@ static bool trigger_reserved(const char *trigger)
 {
     static const char *reserved[] = {
         "text", "color", "textcolor", "fontsize", "landscape", "portrait",
-        "jpeg", "save", "play", "stop", "next", "previous", "forward", "reverse", "volumeup",
+        "jpeg", "save", "play", "pause", "stop", "next", "previous", "forward", "reverse", "volumeup",
         "volumedown", "volumelevel", "shuffle", "repeattrack", "repeatplaylist",
         "pair", "btstatus", "btdisconnect", "btforget", "reboot",
         "mute"
@@ -3766,6 +3766,7 @@ static const pf_cmd_t s_pf_cmds[] = {
 
 static const pf_cmd_t s_pf_media_cmds[] = {
     { "play",        "play",        "false", "Resume paused MP3 playback.", "\xE2\x96\xB6\xEF\xB8\x8F" /* ▶️ */ },
+    { "pause",       "pause",       "false", "Toggle MP3 playback: plays if paused, pauses if playing.", "\xE2\x8F\xAF\xEF\xB8\x8F" /* ⏯️ */ },
     { "stop",        "stop",        "false", "Pause MP3 playback and keep the current position visible.", "\xE2\x8F\xB8\xEF\xB8\x8F" /* ⏸️ */ },
     { "next",        "next",        "false", "Skip to the next MP3 file in the current folder.", "\xE2\x8F\xA9" /* ⏩ */ },
     { "previous",    "previous",    "false", "Go to the previous MP3 file in the current folder.", "\xE2\x8F\xAA" /* ⏪ */ },
@@ -4152,6 +4153,49 @@ static void pf_event_handler(const char *event_name,
     } else if (strcmp(s_trigger, "play") == 0) {
         s_mp3_ui_override_allowed = true;
         if (s_mp3.active) {
+            s_mp3.paused = false;
+            s_mp3_resume_on_bt_reconnect = false;
+            s_mp3.last_tick = xTaskGetTickCount();
+#if CONFIG_BT_ENABLED && CONFIG_BT_A2DP_ENABLE
+            if (s_bt.connected) {
+                size_t bt_fill = bt_pcm_fill_bytes();
+                if (bt_fill >= BT_PCM_RESUME_PRIME_BYTES) {
+                    bt_media_start_if_needed();
+                    s_bt_media_prime_pending = false;
+                    s_bt_media_prime_deadline = 0;
+                    s_bt_media_prime_target_bytes = BT_PCM_START_PRIME_BYTES;
+                } else {
+                    s_bt_media_prime_pending = true;
+                    s_bt_media_prime_target_bytes = BT_PCM_RESUME_PRIME_BYTES;
+                    s_bt_media_prime_deadline = xTaskGetTickCount() +
+                                                pdMS_TO_TICKS(BT_PCM_RESUME_PRIME_TIMEOUT_MS);
+                }
+            } else {
+                s_bt_media_prime_pending = false;
+                s_bt_media_prime_deadline = 0;
+                s_bt_media_prime_target_bytes = BT_PCM_START_PRIME_BYTES;
+            }
+#endif
+            mp3_request_ui_refresh();
+        } else if (s_mp3_folder_count > 0) {
+            mp3_start_track(0, -1, false);
+        } else {
+            screen_draw_text("No MP3 folders\nfound on SD card");
+        }
+
+    } else if (strcmp(s_trigger, "pause") == 0) {
+        s_mp3_ui_override_allowed = true;
+        if (s_mp3.active && !s_mp3.paused) {
+            s_mp3.paused = true;
+            s_mp3_resume_on_bt_reconnect = false;
+#if CONFIG_BT_ENABLED && CONFIG_BT_A2DP_ENABLE
+            s_bt_media_prime_pending = false;
+            s_bt_media_prime_deadline = 0;
+            s_bt_media_prime_target_bytes = BT_PCM_START_PRIME_BYTES;
+            bt_media_stop_if_needed();
+#endif
+            mp3_request_ui_refresh();
+        } else if (s_mp3.active && s_mp3.paused) {
             s_mp3.paused = false;
             s_mp3_resume_on_bt_reconnect = false;
             s_mp3.last_tick = xTaskGetTickCount();

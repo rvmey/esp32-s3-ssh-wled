@@ -77,6 +77,13 @@
   "icon": "▶️"
  },
  {
+  "trigger": "pause",
+  "command": "pause",
+  "allowParams": "false",
+  "mcpToolDescription": "Toggle MP3 playback: plays if paused, pauses if playing.",
+  "icon": "⏯️"
+ },
+ {
   "trigger": "stop",
   "command": "stop",
   "allowParams": "false",
