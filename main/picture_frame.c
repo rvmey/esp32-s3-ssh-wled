@@ -3281,8 +3281,8 @@ static void core2_poll_pwr_key(void)
 {
     uint8_t irq = 0;
     if (core2_axp_read_reg(0x46, &irq) != ESP_OK) return;
-    if (!(irq & 0x08)) return;                    /* bit3 = PEK short press */
-    (void)core2_axp_write_reg(0x46, 0x08);        /* clear bit by writing 1 */
+    if (!(irq & 0x02)) return;                    /* bit1 = PEK short press */
+    (void)core2_axp_write_reg(0x46, 0x02);        /* clear bit by writing 1 */
     ESP_LOGI(TAG, "PWR key short press detected — starting voice query");
     do_core2_voice_query();
 }
