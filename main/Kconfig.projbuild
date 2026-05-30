@@ -22,6 +22,9 @@ menu "ESP32 SSH LED Configuration"
         config HARDWARE_TCMD_ATOM_ECHO
             bool "TRIGGERcmd ATOM Echo (M5Stack ATOM Echo, ESP32-PICO-D4)"
 
+        config HARDWARE_ATOMS3_LITE
+            bool "TRIGGERcmd AtomS3 Lite (M5Stack AtomS3 Lite, ESP32-S3, RGB LED + button)"
+
         config HARDWARE_CORE2
             bool "TRIGGERcmd Core2 Display (M5Stack Core2 for AWS, ILI9342C 320x240 SPI)"
     endchoice

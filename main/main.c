@@ -23,12 +23,14 @@
 #include "screen_control.h"
 #elif CONFIG_HARDWARE_TCMD_ATOM_ECHO
 #include "tcmd_atom_echo.h"
+#elif CONFIG_HARDWARE_ATOMS3_LITE
+#include "tcmd_atoms3_lite.h"
 #elif CONFIG_HARDWARE_CORE2
 #include "picture_frame.h"
 #include "screen_control.h"
 #endif
 
-#define APP_VERSION "2.0.264"
+#define APP_VERSION "2.0.265"
 const char g_firmware_version[] = APP_VERSION;
 
 static const char *TAG = "main";
@@ -110,6 +112,11 @@ void app_main(void)
     /* ATOM Echo manages its own WiFi / button / audio loop.
      * This call never returns. */
     tcmd_atom_echo_run();
+    return;
+#elif CONFIG_HARDWARE_ATOMS3_LITE
+    /* AtomS3 Lite manages its own WiFi / Socket.IO / button loop.
+     * This call never returns. */
+    tcmd_atoms3_lite_run();
     return;
 #elif CONFIG_HARDWARE_CORE2
     /* Core2 picture frame manages its own WiFi / Socket.IO loop.

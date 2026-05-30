@@ -1,0 +1,25 @@
+[
+  {
+    "trigger": "color",
+    "command": "color",
+    "voice": "color",
+    "allowParams": "true",
+    "mcpToolDescription": "Change the LED color. Example: 'color red' or 'color #FF0000'",
+    "icon": "💡"
+  },
+  {
+    "trigger": "off",
+    "command": "off",
+    "voice": "off",
+    "allowParams": "false",
+    "mcpToolDescription": "Turn the LED off.",
+    "icon": "🔌"
+  },
+  {
+    "trigger": "reboot",
+    "command": "reboot",
+    "allowParams": "false",
+    "mcpToolDescription": "Reboot the device.",
+    "icon": "🔁"
+  }
+]

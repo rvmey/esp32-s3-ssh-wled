@@ -1,0 +1,21 @@
+# Hardware variant: TRIGGERcmd AtomS3 Lite (M5Stack AtomS3 Lite — ESP32-S3)
+CONFIG_HARDWARE_ATOMS3_LITE=y
+
+# WebSocket transport buffer — must be large enough for the HTTP upgrade
+# response headers from triggercmd.com (default 1024 is too small)
+CONFIG_WS_BUFFER_SIZE=8192
+
+# Console: USB Serial/JTAG (ESP32-S3 built-in, no FTDI bridge needed)
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
+CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
+
+# TLS — full CA bundle (includes roots for triggercmd.com)
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_FULL=y
+# Allow cross-signed chain verification
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_CROSS_SIGNED_VERIFY=y
+
+# TLS no-verify mode for bookmark URL calls (user-supplied URLs may use
+# self-signed certs or short hostnames; no validation is intentional)
+CONFIG_ESP_TLS_INSECURE=y
+CONFIG_ESP_TLS_SKIP_SERVER_CERT_VERIFY=y

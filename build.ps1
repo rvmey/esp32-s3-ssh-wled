@@ -82,6 +82,15 @@ $variants = @(
         Target    = 'esp32'          # classic ESP32-PICO-D4, not ESP32-S3
     },
     [PSCustomObject]@{
+        Name          = 'atoms3_lite'
+        Config        = 'sdkconfig.atoms3_lite'
+        BuildDir      = 'build_atoms3_lite'
+        Chip          = 'esp32s3'
+        BootloaderBin = 'bootloader-esp32s3.bin'
+        PartitionBin  = 'partition-table-esp32s3.bin'
+        OutputBin     = 'esp32_atoms3_lite.bin'
+    },
+    [PSCustomObject]@{
         Name      = 'core2'
         Config    = 'sdkconfig.core2'
         BuildDir  = 'build_core2'
