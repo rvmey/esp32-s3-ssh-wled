@@ -39,10 +39,10 @@ The last set color is saved to NVS and restored on reboot.
 
 | Press type | Behavior |
 |------------|----------|
-| Short press (< 2 s) | Calls the configured Bookmark URL (HTTP GET, no TLS cert check) |
-| Long press (≥ 2 s) | Clears pairing data and reboots to re-pair with TRIGGERcmd |
+| Short press (< 2 s) | Calls the configured Short Bookmark URL (HTTP GET, no TLS cert check) |
+| Long press (≥ 2 s) | Calls the configured Long Bookmark URL (HTTP GET, no TLS cert check) |
 
-The Bookmark URL lets you trigger any HTTP endpoint — a home-automation scene,
+Both Bookmark URLs let you trigger any HTTP endpoint — a home-automation scene,
 a webhook, an IFTTT applet, etc. — directly from the physical button.
 
 ---
@@ -60,7 +60,6 @@ a webhook, an IFTTT applet, etc. — directly from the physical button.
 | White flash | Bookmark URL being called |
 | Green flash | Bookmark URL call succeeded |
 | Red flash | Bookmark URL call failed |
-| Orange | Re-pairing (long press) |
 | Solid red | Fatal error (Wi-Fi failed) |
 
 ---
@@ -72,7 +71,7 @@ The AtomS3 Lite uses **SoftAP provisioning** (no USB-JTAG Improv needed):
 1. On first boot, the device starts a Wi-Fi access point named **`TCMD-AtomS3-XXXXXX`**.
 2. Connect your phone or laptop to that network.
 3. Browse to **`http://192.168.4.1`** and fill in your Wi-Fi SSID, password, and
-   optionally a **Bookmark URL** and up to two secondary networks.
+   optionally a **Short Bookmark URL**, a **Long Bookmark URL**, and up to two secondary networks.
 4. Click **Save & Connect** — the device restarts and joins your network.
 
 ---
@@ -82,7 +81,7 @@ The AtomS3 Lite uses **SoftAP provisioning** (no USB-JTAG Improv needed):
 Once connected, browse to the device's IP address (`http://<device-ip>/`) to:
 
 - See the TRIGGERcmd pair code (during initial pairing).
-- Update the Bookmark URL at any time.
+- Update the Short and Long Bookmark URLs at any time.
 - Add or change secondary Wi-Fi networks.
 - Re-provision the device to a different TRIGGERcmd account.
 

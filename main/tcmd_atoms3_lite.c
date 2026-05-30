@@ -23,7 +23,8 @@
  * NVS namespace: "asl_cfg"
  *   hw_token    — TRIGGERcmd user JWT (512 bytes max)
  *   computer_id — device identifier (32 bytes max)
- *   bookmark    — Short Bookmark URL called on button press (256 bytes max)
+ *   bookmark    — Short Bookmark URL called on short press (256 bytes max)
+ *   bookmark2   — Long Bookmark URL called on long press  (256 bytes max)
  *   led_r/g/b   — Last set LED color, restored on boot
  */
 
@@ -65,7 +66,8 @@ extern const char g_firmware_version[];
 #define NVS_NS           "asl_cfg"
 #define NVS_KEY_TOKEN    "hw_token"
 #define NVS_KEY_COMPID   "computer_id"
-#define NVS_KEY_BOOKMARK "bookmark"
+#define NVS_KEY_BOOKMARK  "bookmark"
+#define NVS_KEY_BOOKMARK2 "bookmark2"
 #define NVS_KEY_LED_R    "led_r"
 #define NVS_KEY_LED_G    "led_g"
 #define NVS_KEY_LED_B    "led_b"
@@ -88,7 +90,8 @@ extern const char g_firmware_version[];
 
 static char s_hw_token[HW_TOKEN_MAX]         = {0};
 static char s_computer_id[COMPUTER_ID_MAX]   = {0};
-static char s_bookmark_url[BOOKMARK_MAX]     = {0};
+static char s_bookmark_url[BOOKMARK_MAX]      = {0};
+static char s_bookmark_url2[BOOKMARK_MAX]     = {0};
 
 /* Set by Socket.IO callback, consumed by main loop */
 static volatile bool s_pending_color = false;
@@ -522,19 +525,19 @@ static int https_post_form(const char *url, const char *token,
     return status;
 }
 
-/* GET to bookmark URL — no certificate validation, fire-and-forget. */
-static void call_bookmark_url(void)
+/* GET to a bookmark URL — no certificate validation, fire-and-forget. */
+static void call_url(const char *url)
 {
-    if (!s_bookmark_url[0]) {
+    if (!url || !url[0]) {
         ESP_LOGI(TAG, "button pressed — no bookmark URL configured");
         return;
     }
 
-    ESP_LOGI(TAG, "calling bookmark URL: %s", s_bookmark_url);
+    ESP_LOGI(TAG, "calling bookmark URL: %s", url);
     atoms3_led_set(255, 255, 255);  /* white flash while calling */
 
     esp_http_client_config_t cfg = {
-        .url        = s_bookmark_url,
+        .url        = url,
         .method     = HTTP_METHOD_GET,
         .timeout_ms = 10000,
         /* Intentionally no crt_bundle_attach: skip TLS certificate validation
@@ -674,6 +677,17 @@ static esp_err_t cfg_get_handler(httpd_req_t *req)
     httpd_resp_sendstr_chunk(req,
         "' placeholder='https://example.com/...'>"
         "<button type='submit'>Save URL</button>"
+        "</form>"
+        "<hr>"
+        "<h2>Long Bookmark URL</h2>"
+        "<p>URL called (HTTP GET, no cert check) when the button is long-pressed (&ge; 2 s).</p>"
+        "<form method='POST' action='/bookmark2'>"
+        "<label>URL</label>"
+        "<input type='url' name='url' value='");
+    send_escaped(req, s_bookmark_url2);
+    httpd_resp_sendstr_chunk(req,
+        "' placeholder='https://example.com/...'>"
+        "<button type='submit'>Save URL</button>"
         "</form>");
 
     /* ── Secondary WiFi section ───────────────────────────────────────── */
@@ -737,6 +751,38 @@ static esp_err_t cfg_bookmark_handler(httpd_req_t *req)
     strncpy(s_bookmark_url, url, sizeof(s_bookmark_url) - 1);
     nvs_write_str(NVS_KEY_BOOKMARK, s_bookmark_url);
     ESP_LOGI(TAG, "bookmark URL saved: %s", s_bookmark_url);
+
+    /* Redirect back to main page */
+    httpd_resp_set_status(req, "303 See Other");
+    httpd_resp_set_hdr(req, "Location", "/");
+    httpd_resp_send(req, NULL, 0);
+    return ESP_OK;
+}
+
+static esp_err_t cfg_bookmark2_handler(httpd_req_t *req)
+{
+    int len = req->content_len;
+    if (len <= 0 || len >= 600) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, NULL);
+        return ESP_OK;
+    }
+    char *body = calloc(len + 1, 1);
+    if (!body) { httpd_resp_send_500(req); return ESP_OK; }
+    int got = 0;
+    while (got < len) {
+        int n = httpd_req_recv(req, body + got, len - got);
+        if (n <= 0) { free(body); httpd_resp_send_500(req); return ESP_OK; }
+        got += n;
+    }
+    body[got] = '\0';
+
+    char url[BOOKMARK_MAX] = {0};
+    form_get_field(body, "url", url, sizeof(url));
+    free(body);
+
+    strncpy(s_bookmark_url2, url, sizeof(s_bookmark_url2) - 1);
+    nvs_write_str(NVS_KEY_BOOKMARK2, s_bookmark_url2);
+    ESP_LOGI(TAG, "bookmark2 URL saved: %s", s_bookmark_url2);
 
     /* Redirect back to main page */
     httpd_resp_set_status(req, "303 See Other");
@@ -833,13 +879,15 @@ static void start_config_server(void)
         return;
     }
 
-    static const httpd_uri_t u_get  = { "/",            HTTP_GET,  cfg_get_handler,          NULL };
-    static const httpd_uri_t u_bkmk = { "/bookmark",    HTTP_POST, cfg_bookmark_handler,     NULL };
-    static const httpd_uri_t u_wifi = { "/wifi",        HTTP_POST, cfg_wifi_handler,         NULL };
-    static const httpd_uri_t u_repr = { "/reprovision", HTTP_POST, cfg_reprovision_handler,  NULL };
+    static const httpd_uri_t u_get   = { "/",            HTTP_GET,  cfg_get_handler,           NULL };
+    static const httpd_uri_t u_bkmk  = { "/bookmark",    HTTP_POST, cfg_bookmark_handler,      NULL };
+    static const httpd_uri_t u_bkmk2 = { "/bookmark2",   HTTP_POST, cfg_bookmark2_handler,     NULL };
+    static const httpd_uri_t u_wifi  = { "/wifi",        HTTP_POST, cfg_wifi_handler,          NULL };
+    static const httpd_uri_t u_repr  = { "/reprovision", HTTP_POST, cfg_reprovision_handler,   NULL };
 
     httpd_register_uri_handler(s_cfg_server, &u_get);
     httpd_register_uri_handler(s_cfg_server, &u_bkmk);
+    httpd_register_uri_handler(s_cfg_server, &u_bkmk2);
     httpd_register_uri_handler(s_cfg_server, &u_wifi);
     httpd_register_uri_handler(s_cfg_server, &u_repr);
 
@@ -885,6 +933,10 @@ static const char s_prov_html[] =
     "<input name='bookmark' type='url' placeholder='https://...'>"
     "<p style='color:#64748b;font-size:.8rem;margin:.25rem 0 0'>"
     "Called (no cert check) when you short-press the button.</p>"
+    "<label>Long Bookmark URL</label>"
+    "<input name='bookmark2' type='url' placeholder='https://...'>"
+    "<p style='color:#64748b;font-size:.8rem;margin:.25rem 0 0'>"
+    "Called (no cert check) when you long-press the button (&ge; 2 s).</p>"
     "<button type='submit'>Save &amp; Connect</button>"
     "</form></div></body></html>";
 
@@ -912,15 +964,17 @@ static esp_err_t prov_save_handler(httpd_req_t *req)
     char ssid[64]  = {0}, pass[64]  = {0};
     char ssid2[64] = {0}, pass2[64] = {0};
     char ssid3[64] = {0}, pass3[64] = {0};
-    char bookmark[BOOKMARK_MAX] = {0};
+    char bookmark[BOOKMARK_MAX]  = {0};
+    char bookmark2[BOOKMARK_MAX] = {0};
 
-    form_get_field(body, "ssid",     ssid,     sizeof(ssid));
-    form_get_field(body, "pass",     pass,     sizeof(pass));
-    form_get_field(body, "ssid2",    ssid2,    sizeof(ssid2));
-    form_get_field(body, "pass2",    pass2,    sizeof(pass2));
-    form_get_field(body, "ssid3",    ssid3,    sizeof(ssid3));
-    form_get_field(body, "pass3",    pass3,    sizeof(pass3));
-    form_get_field(body, "bookmark", bookmark, sizeof(bookmark));
+    form_get_field(body, "ssid",      ssid,      sizeof(ssid));
+    form_get_field(body, "pass",      pass,      sizeof(pass));
+    form_get_field(body, "ssid2",     ssid2,     sizeof(ssid2));
+    form_get_field(body, "pass2",     pass2,     sizeof(pass2));
+    form_get_field(body, "ssid3",     ssid3,     sizeof(ssid3));
+    form_get_field(body, "pass3",     pass3,     sizeof(pass3));
+    form_get_field(body, "bookmark",  bookmark,  sizeof(bookmark));
+    form_get_field(body, "bookmark2", bookmark2, sizeof(bookmark2));
 
     httpd_resp_set_type(req, "text/html");
     httpd_resp_send(req, s_prov_saved_html, HTTPD_RESP_USE_STRLEN);
@@ -928,7 +982,8 @@ static esp_err_t prov_save_handler(httpd_req_t *req)
     if (ssid[0]) wifi_save_credentials(ssid, pass);
     wifi_save_credentials2(ssid2, pass2);
     wifi_save_credentials3(ssid3, pass3);
-    if (bookmark[0]) nvs_write_str(NVS_KEY_BOOKMARK, bookmark);
+    if (bookmark[0])  nvs_write_str(NVS_KEY_BOOKMARK,  bookmark);
+    if (bookmark2[0]) nvs_write_str(NVS_KEY_BOOKMARK2, bookmark2);
 
     s_prov_done = true;
     return ESP_OK;
@@ -1349,7 +1404,8 @@ void tcmd_atoms3_lite_run(void)
     /* ── Read NVS state ───────────────────────────────────────────────────── */
     bool have_token   = nvs_read_str(NVS_KEY_TOKEN,  s_hw_token,    sizeof(s_hw_token));
     bool have_comp_id = nvs_read_str(NVS_KEY_COMPID, s_computer_id, sizeof(s_computer_id));
-    nvs_read_str(NVS_KEY_BOOKMARK, s_bookmark_url, sizeof(s_bookmark_url));
+    nvs_read_str(NVS_KEY_BOOKMARK,  s_bookmark_url,  sizeof(s_bookmark_url));
+    nvs_read_str(NVS_KEY_BOOKMARK2, s_bookmark_url2, sizeof(s_bookmark_url2));
 
     /* ── Pair code flow ───────────────────────────────────────────────────── */
     if (!have_token) {
@@ -1386,7 +1442,7 @@ void tcmd_atoms3_lite_run(void)
     }
 
     /* ── Main event loop ──────────────────────────────────────────────────── */
-    ESP_LOGI(TAG, "ready — button = call bookmark URL");
+    ESP_LOGI(TAG, "ready — short press = bookmark URL, long press = bookmark2 URL");
 
     TickType_t last_ping_tick = xTaskGetTickCount();
 
@@ -1458,16 +1514,9 @@ void tcmd_atoms3_lite_run(void)
         /* Button handling */
         btn_press_t btn = poll_button();
         if (btn == BTN_SHORT) {
-            call_bookmark_url();
+            call_url(s_bookmark_url);
         } else if (btn == BTN_LONG) {
-            /* Long press: re-pair (clear token + computer_id, restart) */
-            ESP_LOGI(TAG, "long press — clearing pairing data and rebooting");
-            atoms3_led_set(100, 40, 0);  /* orange: re-pairing */
-            socketio_disconnect();
-            nvs_erase_key_local(NVS_KEY_TOKEN);
-            nvs_erase_key_local(NVS_KEY_COMPID);
-            vTaskDelay(pdMS_TO_TICKS(500));
-            esp_restart();
+            call_url(s_bookmark_url2);
         }
 
         vTaskDelay(pdMS_TO_TICKS(20));
