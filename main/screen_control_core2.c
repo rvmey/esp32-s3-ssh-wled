@@ -539,7 +539,7 @@ esp_err_t screen_init(void)
         axp_write(0x30, (reg30 & 0x04) | 0x02); /* disable VBUS current limit */
     }
     axp_write(0x95, 0x84);              /* GPIO4 function enable (Core2 LCD RST) */
-    axp_write(0x28, 0xF0);              /* LDO2 = 3.3V                           */
+    axp_write(0x28, 0xF2);              /* LDO2 = 3.3V, LDO3 = 2.0V (vibration) */
     axp_write(0x27, 0x67);              /* DC3 backlight rail nominal setting     */
     axp_read_modify_write(0x92, 0x07, 0x00); /* GPIO1 open-drain style (Core2/Tough) */
     axp_read_modify_write(0x12, 0x0E, 0x06); /* ON: DC3+LDO2, OFF: LDO3 (vibration)  */

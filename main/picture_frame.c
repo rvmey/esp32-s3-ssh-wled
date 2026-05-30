@@ -361,6 +361,7 @@ static char s_computer_id[COMPUTER_ID_MAX_LEN] __attribute__((unused)) = {0};
 /* Pending run/save — set by the WS event task, consumed by the main loop */
 static char          s_pending_run_id[33] __attribute__((unused)) = {0};
 static volatile bool s_pending_run        = false;
+static volatile bool s_pending_vibrate    __attribute__((unused)) = false;
 static int           s_pending_run_tries  __attribute__((unused)) = 0;
 static TickType_t    s_pending_run_retry_after __attribute__((unused)) = 0;
 
@@ -4324,6 +4325,9 @@ static void pf_event_handler(const char *event_name,
         }
     }
 
+    /* Signal the main loop to pulse the vibration motor (Core2 only). */
+    s_pending_vibrate = true;
+
     /* Queue run/save to the main loop — do NOT call https_post_form here.
      * This callback runs in the esp_websocket_client internal task; blocking
      * it with an HTTP request prevents ping/pong processing and causes the
@@ -4894,6 +4898,19 @@ void picture_frame_run(void)
                     }
                 }
             }
+
+#if CONFIG_HARDWARE_CORE2
+            if (s_pending_vibrate) {
+                s_pending_vibrate = false;
+                uint8_t vib_reg = 0;
+                if (core2_axp_read_reg(0x12, &vib_reg) == ESP_OK) {
+                    (void)core2_axp_write_reg(0x12, vib_reg | 0x08);  /* LDO3 on */
+                    vTaskDelay(pdMS_TO_TICKS(80));
+                    (void)core2_axp_read_reg(0x12, &vib_reg);
+                    (void)core2_axp_write_reg(0x12, vib_reg & (uint8_t)~0x08); /* LDO3 off */
+                }
+            }
+#endif
 
             vTaskDelay(pdMS_TO_TICKS(200));   /* poll every 200 ms */
 
