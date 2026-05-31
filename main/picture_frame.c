@@ -4913,6 +4913,10 @@ void picture_frame_run(void)
     bool have_comp_id = nvs_read_str(NVS_KEY_COMPID, s_computer_id, sizeof(s_computer_id));
 #if CONFIG_HARDWARE_CORE2
     nvs_read_str(NVS_KEY_VOICE_CONV, s_voice_conv_id, sizeof(s_voice_conv_id));
+    /* Start the config HTTP server so the STT API key (and WiFi networks) can
+     * be configured at http://<device-ip>/ even when the device is already
+     * paired.  The "pair code" section shows "-----" when not actively pairing. */
+    http_pf_config_start(NULL);
 #endif
 
     {
