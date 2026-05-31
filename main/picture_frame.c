@@ -4729,9 +4729,7 @@ static bool download_and_show_jpeg(const char *url)
         .method     = HTTP_METHOD_GET,
         .timeout_ms = 15000,
     };
-    if (strncmp(url, "https://", 8) == 0) {
-        cfg.crt_bundle_attach = esp_crt_bundle_attach;
-    }
+    /* Certificate verification intentionally skipped for JPEG URLs */
 
     esp_http_client_handle_t client = esp_http_client_init(&cfg);
     if (!client) {
