@@ -15,6 +15,8 @@ extern "C" {
 #include "esp_mac.h"
 #include "esp_log.h"
 #include "wifi_manager.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 }
 
 #include "sendspin/client.h"
@@ -26,8 +28,14 @@ static const char *TAG = "sendspin";
 
 /* ── Listener: discard incoming audio frames ─────────────────────────── */
 struct DiscardPlayer : PlayerRoleListener {
-    size_t on_audio_write(uint8_t *data, size_t length, uint32_t /*timeout_ms*/) override {
+    size_t on_audio_write(uint8_t *data, size_t length, uint32_t timeout_ms) override {
         (void)data;
+        /* Simulate a real output by sleeping for timeout_ms.  Without this the
+         * player task (priority 18) spins in a tight loop, starving FreeRTOS
+         * and triggering the interrupt watchdog. */
+        uint32_t delay_ms = timeout_ms > 0 ? timeout_ms : 10;
+        if (delay_ms > 100) delay_ms = 100;
+        vTaskDelay(pdMS_TO_TICKS(delay_ms));
         return length;
     }
 };
@@ -74,6 +82,7 @@ extern "C" void sendspin_client_start(void)
         {SendspinCodecFormat::PCM, 2, 44100, 16},
         {SendspinCodecFormat::PCM, 2, 48000, 16},
     };
+    pcfg.priority = 5;  /* low priority: discard player needs no real-time deadline */
     auto &player = s_client->add_player(std::move(pcfg));
     player.set_listener(s_player_listener);
     s_client->set_network_provider(s_net_provider);
