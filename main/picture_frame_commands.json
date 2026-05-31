@@ -70,6 +70,13 @@
   "icon": "📷"
  },
  {
+  "trigger": "folders",
+  "command": "folders",
+  "allowParams": "false",
+  "mcpToolDescription": "List the folders on the SD card.",
+  "icon": "📂"
+ },
+ {
   "trigger": "reboot",
   "command": "reboot",
   "allowParams": "false",

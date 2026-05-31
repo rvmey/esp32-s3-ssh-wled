@@ -4039,6 +4039,7 @@ static const pf_cmd_t s_pf_cmds[] = {
     { "jpeg",      "jpeg",      "true",  "Display a JPEG image. Use loremflickr.com by default. Example: 'https://loremflickr.com/320/240/dog'", "\xF0\x9F\x96\xBC\xEF\xB8\x8F" /* 🖼️ */ },
     { "save",      "save",      "false", "Save the screen settings to non-volatile memory. Example: 'save'", "\xF0\x9F\x92\xBE" /* 💾 */ },
     { "savepic",   "savepic",   "false", "Save the currently displayed JPEG to the SD card in the 'pictures' folder.", "\xF0\x9F\x93\xB7" /* 📷 */ },
+    { "folders",   "folders",   "false", "List the folders on the SD card.", "\xF0\x9F\x93\x82" /* 📂 */ },
     { "reboot",    "reboot",    "false", "Reboot the device.", "\xF0\x9F\x94\x81" /* 🔁 */ },
 };
 #define PF_CMD_COUNT  (sizeof(s_pf_cmds) / sizeof(s_pf_cmds[0]))
@@ -4451,6 +4452,41 @@ static void pf_event_handler(const char *event_name,
                              written, s_jpeg_cache_len, fpath);
                     screen_draw_text("Save failed");
                 }
+            }
+        }
+
+    } else if (strcmp(s_trigger, "folders") == 0) {
+        if (!mount_sd_card_if_needed()) {
+            screen_draw_text("No SD card");
+        } else {
+            DIR *d = opendir(MP3_ROOT_PATH);
+            if (!d) {
+                screen_draw_text("No SD card");
+            } else {
+                char msg[256] = "Folders:";
+                int msg_len = (int)strlen(msg);
+                int count = 0;
+                struct dirent *e;
+                while ((e = readdir(d)) != NULL) {
+                    if (e->d_name[0] == '.') continue;
+                    char fpath[MP3_MAX_PATH_LEN];
+                    int max_name = (int)sizeof(fpath) - (int)strlen(MP3_ROOT_PATH) - 2;
+                    if (max_name <= 0) continue;
+                    snprintf(fpath, sizeof(fpath), "%s/%.*s", MP3_ROOT_PATH, max_name, e->d_name);
+                    struct stat st;
+                    if (stat(fpath, &st) != 0 || !S_ISDIR(st.st_mode)) continue;
+                    int nlen = (int)strlen(e->d_name);
+                    if (msg_len + 1 + nlen < (int)sizeof(msg) - 1) {
+                        msg[msg_len++] = '\n';
+                        memcpy(msg + msg_len, e->d_name, (size_t)nlen);
+                        msg_len += nlen;
+                        msg[msg_len] = '\0';
+                    }
+                    count++;
+                }
+                closedir(d);
+                ESP_LOGI(TAG, "folders: %d folder(s) on SD", count);
+                screen_draw_text(count > 0 ? msg : "No folders\non SD card");
             }
         }
 
