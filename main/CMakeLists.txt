@@ -6,7 +6,8 @@ elseif(CONFIG_HARDWARE_PICTURE_FRAME)
         "screen_control.c"
         "picture_frame.c"
         "socketio.c"
-        "http_pf_config.c")
+        "http_pf_config.c"
+        "sendspin_client.cpp")
 elseif(CONFIG_HARDWARE_BIKE_TRACKER)
     set(VARIANT_SRCS
         "bike_tracker.c"
@@ -33,7 +34,8 @@ elseif(CONFIG_HARDWARE_CORE2)
         "core2_mic.c"
         "picture_frame.c"
         "socketio.c"
-        "http_pf_config.c")
+        "http_pf_config.c"
+        "sendspin_client.cpp")
 else()
     set(VARIANT_SRCS "led_control.c")
 endif()

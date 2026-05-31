@@ -380,10 +380,10 @@ esp_err_t http_pf_config_start(const char *pair_code)
         return err;
     }
 
-    static const httpd_uri_t u_get  = { "/",            HTTP_GET,  get_handler,              NULL };
-    static const httpd_uri_t u_repr = { "/reprovision", HTTP_POST, post_reprovision_handler, NULL };
-    static const httpd_uri_t u_wifi = { "/wifi",        HTTP_POST, post_wifi_handler,        NULL };
-    static const httpd_uri_t u_stt  = { "/stt_key",     HTTP_POST, post_stt_key_handler,     NULL };
+    static const httpd_uri_t u_get  = { .uri = "/",            .method = HTTP_GET,  .handler = get_handler,              .user_ctx = NULL };
+    static const httpd_uri_t u_repr = { .uri = "/reprovision", .method = HTTP_POST, .handler = post_reprovision_handler, .user_ctx = NULL };
+    static const httpd_uri_t u_wifi = { .uri = "/wifi",        .method = HTTP_POST, .handler = post_wifi_handler,        .user_ctx = NULL };
+    static const httpd_uri_t u_stt  = { .uri = "/stt_key",     .method = HTTP_POST, .handler = post_stt_key_handler,     .user_ctx = NULL };
 
     httpd_register_uri_handler(s_server, &u_get);
     httpd_register_uri_handler(s_server, &u_repr);
