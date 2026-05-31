@@ -31,6 +31,7 @@
 #include <time.h>
 #include <dirent.h>
 #include <sys/stat.h>
+#include <math.h>
 #include "esp_log.h"
 #include "esp_err.h"
 #include "esp_system.h"
@@ -257,6 +258,7 @@ static void pf_softap_provision(void)
     esp_restart();
 }
 #endif /* CONFIG_HARDWARE_CORE2 */
+#include "core2_leds.h"
 #include "socketio.h"
 #include "http_pf_config.h"
 #include "triggercmd_ca.h"   /* embedded Go Daddy Root G2 cert for triggercmd.com */
@@ -297,6 +299,7 @@ typedef struct {
     bool       shuffle;
     bool       repeat_track;
     bool       repeat_playlist;
+    bool       visualizer;
     int        volume;            /* 0..100 */
     bool       muted;            /* toggled by "mute" command; not persisted */
     int        folder_idx;        /* index into s_mp3_folders */
@@ -347,6 +350,7 @@ static const char *tcmd_display_host(void)
 #define NVS_KEY_SHUFFLE "mp3_shuffle"
 #define NVS_KEY_REPEAT_TRACK "mp3_rpt_trk"
 #define NVS_KEY_REPEAT_PLAYLIST "mp3_rpt_list"
+#define NVS_KEY_VISUALIZER      "mp3_viz"
 #define NVS_KEY_VOLUME  "mp3_volume"
 #define NVS_KEY_MP3_MODE "mp3_mode"
 #define NVS_KEY_BT_BDA  "bt_bda"
@@ -419,6 +423,77 @@ static TickType_t s_mp3_next_mount_retry __attribute__((unused)) = 0;
 static bool s_mp3_autostart = false;
 static bool s_sd_mount_warned __attribute__((unused)) = false;
 static volatile int32_t s_mp3_seek_target_ms = -1;
+
+/* ── Audio visualizer — Goertzel per-band energy → Core2 side LEDs ─────── */
+#if CONFIG_HARDWARE_CORE2
+
+#define VIZ_BANDS      10
+#define VIZ_BLOCK      256   /* samples per analysis window */
+
+static const float s_viz_freqs[VIZ_BANDS] = {
+    60.0f, 120.0f, 250.0f, 500.0f, 1000.0f,
+    2000.0f, 4000.0f, 8000.0f, 12000.0f, 16000.0f
+};
+
+typedef struct { float coeff; float peak; } viz_band_t;
+static viz_band_t s_viz_band[VIZ_BANDS];
+static float      s_viz_buf[VIZ_BLOCK];
+static int        s_viz_buf_pos = 0;
+static int        s_viz_last_fs = 0;
+
+static void viz_init_for_rate(int fs)
+{
+    s_viz_last_fs = fs;
+    for (int i = 0; i < VIZ_BANDS; i++) {
+        float w = 2.0f * (float)M_PI * s_viz_freqs[i] / (float)fs;
+        s_viz_band[i].coeff = 2.0f * cosf(w);
+        s_viz_band[i].peak  = 0.0f;
+    }
+    s_viz_buf_pos = 0;
+}
+
+static void viz_run_block(void)
+{
+    float levels[VIZ_BANDS];
+    for (int b = 0; b < VIZ_BANDS; b++) {
+        float coeff = s_viz_band[b].coeff;
+        float s1 = 0.0f, s2 = 0.0f;
+        for (int n = 0; n < VIZ_BLOCK; n++) {
+            float s = s_viz_buf[n] + coeff * s1 - s2;
+            s2 = s1;
+            s1 = s;
+        }
+        float power = s1 * s1 + s2 * s2 - coeff * s1 * s2;
+        float mag   = sqrtf(power > 0.0f ? power : 0.0f) * (2.0f / (float)VIZ_BLOCK);
+        if (mag > s_viz_band[b].peak) {
+            s_viz_band[b].peak = mag;
+        } else {
+            s_viz_band[b].peak *= 0.88f;
+        }
+        levels[b] = s_viz_band[b].peak * 5.0f;
+        if (levels[b] > 1.0f) levels[b] = 1.0f;
+    }
+    core2_leds_set_bands(levels, VIZ_BANDS);
+}
+
+static void viz_feed(const short *pcm, int total_samps, int channels, int fs)
+{
+    if (!core2_leds_initialized()) return;
+    if (fs != s_viz_last_fs || s_viz_last_fs == 0) viz_init_for_rate(fs);
+    int mono_count = total_samps / channels;
+    for (int i = 0; i < mono_count; i++) {
+        float mono = (channels == 2)
+            ? ((float)pcm[i * 2] + (float)pcm[i * 2 + 1]) * (0.5f / 32768.0f)
+            : (float)pcm[i] / 32768.0f;
+        s_viz_buf[s_viz_buf_pos++] = mono;
+        if (s_viz_buf_pos >= VIZ_BLOCK) {
+            viz_run_block();
+            s_viz_buf_pos = 0;
+        }
+    }
+}
+
+#endif /* CONFIG_HARDWARE_CORE2 (visualizer) */
 
 static bool nvs_read_str(const char *key, char *out, size_t out_sz);
 static esp_err_t nvs_write_str(const char *key, const char *val);
@@ -2005,11 +2080,12 @@ static bool mp3_queue_seek_relative(int32_t delta_ms, const char *reason)
 static void mp3_log_mode_status(const char *reason)
 {
     ESP_LOGI(TAG,
-             "mp3: %s -> shuffle=%s repeattrack=%s repeatplaylist=%s",
+             "mp3: %s -> shuffle=%s repeattrack=%s repeatplaylist=%s visualizer=%s",
              reason ? reason : "mode update",
              s_mp3.shuffle ? "on" : "off",
              s_mp3.repeat_track ? "on" : "off",
-             s_mp3.repeat_playlist ? "on" : "off");
+             s_mp3.repeat_playlist ? "on" : "off",
+             s_mp3.visualizer ? "on" : "off");
 }
 
 #ifndef MP3_INPUT_BUF_BYTES
@@ -2082,6 +2158,9 @@ static void mp3_player_task(void *arg)
             bytes_left = 0;
             read_ptr = inbuf;
             speaker_last_rate = 0;
+#if CONFIG_HARDWARE_CORE2
+            if (s_mp3.visualizer) { s_viz_buf_pos = 0; core2_leds_off(); }
+#endif
 #if CONFIG_BT_ENABLED && CONFIG_BT_A2DP_ENABLE
             s_bt_media_prime_pending = false;
             s_bt_media_prime_deadline = 0;
@@ -2114,6 +2193,9 @@ static void mp3_player_task(void *arg)
         }
 
         if (s_mp3.paused) {
+#if CONFIG_HARDWARE_CORE2
+            if (s_mp3.visualizer) { s_viz_buf_pos = 0; core2_leds_off(); }
+#endif
             int32_t paused_seek_target = s_mp3_seek_target_ms;
             if (paused_seek_target >= 0) {
                 s_mp3_seek_target_ms = -1;
@@ -2535,6 +2617,11 @@ static void mp3_player_task(void *arg)
                 speaker_last_rate = (uint32_t)fi.samprate;
             }
             core2_audio_write_pcm(pcm, (size_t)fi.outputSamps, fi.nChans, s_mp3.muted ? 0 : s_mp3.volume);
+        }
+
+        /* Visualizer: drive side LEDs with per-band frequency energy */
+        if (s_mp3.visualizer && s_mp3.active && !s_mp3.paused) {
+            viz_feed(pcm, fi.outputSamps, fi.nChans, fi.samprate);
         }
 
         /* Position tracking and periodic UI refresh (Core2 path) */
@@ -4717,6 +4804,25 @@ static void pf_event_handler(const char *event_name,
         mp3_log_mode_status("repeatplaylist command");
         if (s_mp3.active) mp3_request_ui_refresh();
 
+    } else if (strcmp(s_trigger, "visualizer") == 0) {
+#if CONFIG_HARDWARE_CORE2
+        s_mp3_ui_override_allowed = true;
+        char mode[16] = {0};
+        strncpy(mode, s_params, sizeof(mode) - 1);
+        for (size_t i = 0; mode[i]; i++) mode[i] = (char)tolower((unsigned char)mode[i]);
+        if (strcmp(mode, "on") == 0) {
+            s_mp3.visualizer = true;
+        } else if (strcmp(mode, "off") == 0) {
+            s_mp3.visualizer = false;
+        } else {
+            s_mp3.visualizer = !s_mp3.visualizer;
+        }
+        nvs_write_u8(NVS_KEY_VISUALIZER, s_mp3.visualizer ? 1 : 0);
+        if (!s_mp3.visualizer) core2_leds_off();
+        mp3_log_mode_status("visualizer command");
+        if (s_mp3.active) mp3_request_ui_refresh();
+#endif
+
     } else if (strcmp(s_trigger, "pair") == 0) {
         bt_cmd_pair_start();
 
@@ -5116,6 +5222,12 @@ void picture_frame_run(void)
         if (nvs_read_u8(NVS_KEY_VOLUME, &volume)) {
             s_mp3.volume = (int)volume;
         }
+#if CONFIG_HARDWARE_CORE2
+        uint8_t visualizer = 0;
+        if (nvs_read_u8(NVS_KEY_VISUALIZER, &visualizer)) {
+            s_mp3.visualizer = (visualizer != 0);
+        }
+#endif
     }
     /* Defer SD mount/index work until the main loop so boot UI is responsive. */
     s_mp3_next_mount_retry = xTaskGetTickCount();
@@ -5250,6 +5362,10 @@ void picture_frame_run(void)
 
         vTaskDelay(pdMS_TO_TICKS(1500));
     }
+
+#if CONFIG_HARDWARE_CORE2
+    core2_leds_init();
+#endif
 
     rebuild_mp3_folder_index();
 

@@ -175,6 +175,13 @@
   "icon": "🔁"
  },
  {
+  "trigger": "visualizer",
+  "command": "visualizer",
+  "allowParams": "true",
+  "mcpToolDescription": "Enable or disable the LED audio visualizer on the sides of the device. When on, the LEDs show FFT frequency levels while music plays. Example: 'on' or 'off'",
+  "icon": "🌈"
+ },
+ {
   "trigger": "pair",
   "command": "pair",
   "allowParams": "true",
