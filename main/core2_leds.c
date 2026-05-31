@@ -3,6 +3,8 @@
 #include <math.h>
 #include "led_strip.h"
 #include "esp_log.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 
 static const char *TAG = "c2leds";
 
@@ -30,6 +32,17 @@ void core2_leds_init(void)
         s_strip = NULL;
         return;
     }
+
+    /* Brief boot flash — all white for 300 ms — confirms wiring before first use. */
+    for (int i = 0; i < CORE2_LED_COUNT; i++) {
+        led_strip_set_pixel(s_strip, (uint32_t)i, 30, 30, 30);
+    }
+    err = led_strip_refresh(s_strip);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "boot flash refresh failed: %s", esp_err_to_name(err));
+    }
+    vTaskDelay(pdMS_TO_TICKS(300));
+
     led_strip_clear(s_strip);
     led_strip_refresh(s_strip);
     ESP_LOGI(TAG, "WS2812 x%d initialised on GPIO %d", CORE2_LED_COUNT, CORE2_LED_GPIO);
@@ -70,7 +83,10 @@ void core2_leds_set_bands(const float *levels, int count)
         band_to_rgb(i, lv, &r, &g, &b);
         led_strip_set_pixel(s_strip, (uint32_t)i, r, g, b);
     }
-    led_strip_refresh(s_strip);
+    esp_err_t err = led_strip_refresh(s_strip);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "refresh failed: %s", esp_err_to_name(err));
+    }
 }
 
 void core2_leds_off(void)

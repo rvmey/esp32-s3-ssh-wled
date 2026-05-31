@@ -440,16 +440,19 @@ static viz_band_t s_viz_band[VIZ_BANDS];
 static float      s_viz_buf[VIZ_BLOCK];
 static int        s_viz_buf_pos = 0;
 static int        s_viz_last_fs = 0;
+static uint32_t   s_viz_block_count = 0;
 
 static void viz_init_for_rate(int fs)
 {
     s_viz_last_fs = fs;
+    s_viz_block_count = 0;
     for (int i = 0; i < VIZ_BANDS; i++) {
         float w = 2.0f * (float)M_PI * s_viz_freqs[i] / (float)fs;
         s_viz_band[i].coeff = 2.0f * cosf(w);
         s_viz_band[i].peak  = 0.0f;
     }
     s_viz_buf_pos = 0;
+    ESP_LOGI("viz", "init fs=%d bands=%d block=%d", fs, VIZ_BANDS, VIZ_BLOCK);
 }
 
 static void viz_run_block(void)
@@ -473,6 +476,22 @@ static void viz_run_block(void)
         levels[b] = s_viz_band[b].peak * 5.0f;
         if (levels[b] > 1.0f) levels[b] = 1.0f;
     }
+
+    s_viz_block_count++;
+    if (s_viz_block_count <= 3 || (s_viz_block_count % 150) == 0) {
+        float mx = 0.0f;
+        for (int b = 0; b < VIZ_BANDS; b++) if (levels[b] > mx) mx = levels[b];
+        ESP_LOGI("viz", "block=%lu leds_ok=%d max_level=%.3f "
+                 "[%.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f]",
+                 (unsigned long)s_viz_block_count,
+                 (int)core2_leds_initialized(),
+                 (double)mx,
+                 (double)levels[0], (double)levels[1], (double)levels[2],
+                 (double)levels[3], (double)levels[4], (double)levels[5],
+                 (double)levels[6], (double)levels[7], (double)levels[8],
+                 (double)levels[9]);
+    }
+
     core2_leds_set_bands(levels, VIZ_BANDS);
 }
 
