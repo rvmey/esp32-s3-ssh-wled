@@ -52,7 +52,7 @@
   "trigger": "jpeg",
   "command": "jpeg",
   "allowParams": "true",
-  "mcpToolDescription": "Display a JPEG image. Use loremflickr.com by default. Example: 'https://loremflickr.com/320/240/dog'",
+  "mcpToolDescription": "Display a JPEG picture. Use loremflickr.com by default. If multiple words (EXample: cat_and_dog), use an underscores. Example: 'https://loremflickr.com/320/240/twin_towers'",
   "icon": "🖼️"
  },
 {
