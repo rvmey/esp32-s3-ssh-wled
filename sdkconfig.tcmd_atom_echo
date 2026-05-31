@@ -23,3 +23,7 @@ CONFIG_PARTITION_TABLE_OFFSET=0x8000
 # Increase heap for TLS + HTTP client buffers
 CONFIG_MBEDTLS_SSL_IN_CONTENT_LEN=16384
 CONFIG_MBEDTLS_SSL_OUT_CONTENT_LEN=4096
+
+# Software ECC (ECDHE key exchange) on ESP32-PICO takes 5-8 s with no yield.
+# Raise the task WDT timeout so IDLE0 missing that window is not flagged.
+CONFIG_ESP_TASK_WDT_TIMEOUT_S=15
