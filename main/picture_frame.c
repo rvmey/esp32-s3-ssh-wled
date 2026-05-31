@@ -4038,6 +4038,7 @@ static const pf_cmd_t s_pf_cmds[] = {
     { "portrait",  "portrait",  "false", "Set the display to portrait orientation.",                         "\xE2\x86\x95\xEF\xB8\x8F" /* ↕️ */ },
     { "jpeg",      "jpeg",      "true",  "Display a JPEG image. Use loremflickr.com by default. Example: 'https://loremflickr.com/320/240/dog'", "\xF0\x9F\x96\xBC\xEF\xB8\x8F" /* 🖼️ */ },
     { "save",      "save",      "false", "Save the screen settings to non-volatile memory. Example: 'save'", "\xF0\x9F\x92\xBE" /* 💾 */ },
+    { "savepic",   "savepic",   "false", "Save the currently displayed JPEG to the SD card in the 'pictures' folder.", "\xF0\x9F\x93\xB7" /* 📷 */ },
     { "reboot",    "reboot",    "false", "Reboot the device.", "\xF0\x9F\x94\x81" /* 🔁 */ },
 };
 #define PF_CMD_COUNT  (sizeof(s_pf_cmds) / sizeof(s_pf_cmds[0]))
@@ -4420,6 +4421,37 @@ static void pf_event_handler(const char *event_name,
             ESP_LOGE(TAG, "save: failed to persist display state: %s", esp_err_to_name(err));
         } else {
             ESP_LOGI(TAG, "save: display state persisted");
+        }
+
+    } else if (strcmp(s_trigger, "savepic") == 0) {
+        if (!s_jpeg_cache || s_jpeg_cache_len <= 0) {
+            screen_draw_text("No image\nto save");
+        } else if (!mount_sd_card_if_needed()) {
+            screen_draw_text("No SD card");
+        } else {
+            const char *pics_dir = MP3_ROOT_PATH "/pictures";
+            mkdir(pics_dir, 0755);
+            char fpath[128];
+            time_t now = time(NULL);
+            snprintf(fpath, sizeof(fpath), "%s/pic_%ld.jpg", pics_dir, (long)now);
+            FILE *f = fopen(fpath, "wb");
+            if (!f) {
+                ESP_LOGE(TAG, "savepic: cannot create %s", fpath);
+                screen_draw_text("Save failed");
+            } else {
+                size_t written = fwrite(s_jpeg_cache, 1, (size_t)s_jpeg_cache_len, f);
+                fclose(f);
+                if (written == (size_t)s_jpeg_cache_len) {
+                    char msg[64];
+                    snprintf(msg, sizeof(msg), "Saved!\npic_%ld.jpg", (long)now);
+                    ESP_LOGI(TAG, "savepic: %s (%d bytes)", fpath, s_jpeg_cache_len);
+                    screen_draw_text(msg);
+                } else {
+                    ESP_LOGE(TAG, "savepic: wrote %zu/%d bytes to %s",
+                             written, s_jpeg_cache_len, fpath);
+                    screen_draw_text("Save failed");
+                }
+            }
         }
 
     } else if (strcmp(s_trigger, "reboot") == 0) {

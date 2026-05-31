@@ -63,6 +63,13 @@
   "icon": "💾"
  },
  {
+  "trigger": "savepic",
+  "command": "savepic",
+  "allowParams": "false",
+  "mcpToolDescription": "Save the currently displayed JPEG to the SD card in the 'pictures' folder.",
+  "icon": "📷"
+ },
+ {
   "trigger": "reboot",
   "command": "reboot",
   "allowParams": "false",
