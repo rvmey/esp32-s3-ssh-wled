@@ -6,6 +6,9 @@
 
 esp_err_t core2_audio_init(void);
 void core2_audio_deinit(void);
+/* Pause/resume — keep DMA descriptors alive; use around mic recording. */
+void core2_audio_pause(void);
+void core2_audio_resume(void);
 void core2_audio_set_sample_rate(uint32_t sample_rate_hz);
 
 /* sample_count is the total number of samples in input buffer, not frames. */

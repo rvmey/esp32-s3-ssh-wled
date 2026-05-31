@@ -4,9 +4,11 @@
 #include "driver/i2s_std.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
+#include "esp_rom_gpio.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
+#include "soc/gpio_sig_map.h"   /* I2S1O_WS_OUT_IDX */
 
 #define CORE2_I2S_PORT      I2S_NUM_1
 #define CORE2_I2S_BCLK_GPIO 12
@@ -215,6 +217,42 @@ void core2_audio_deinit(void)
         s_ring_buf = NULL;
         s_ring_capacity = 0;
     }
+}
+
+void core2_audio_pause(void)
+{
+    /* Stop writer task and disable the I2S channel WITHOUT destroying the DMA
+     * descriptor chain.  GPIO routing is left to the caller to change (mic init
+     * will overwrite GPIO 0; core2_audio_resume restores it). */
+    if (!s_tx_chan) return;
+    s_writer_running = false;
+    if (s_writer_task) {
+        xTaskNotifyGive(s_writer_task);
+        while (s_writer_task) {
+            vTaskDelay(pdMS_TO_TICKS(1));
+        }
+    }
+    if (xSemaphoreTake(s_ring_mutex, portMAX_DELAY) == pdTRUE) {
+        core2_audio_reset_ring_locked();
+        xSemaphoreGive(s_ring_mutex);
+    }
+    i2s_channel_disable(s_tx_chan);
+}
+
+void core2_audio_resume(void)
+{
+    /* Reconnect GPIO 0 to I2S_NUM_1 WS output (mic use claimed it for I2S_NUM_0
+     * CLK), then re-enable the channel and restart the writer task. */
+    if (!s_tx_chan) {
+        /* Channel was fully destroyed before pause — fall back to full init. */
+        core2_audio_init();
+        return;
+    }
+    /* Restore GPIO 0 → I2S1 WS output signal (index 76 on ESP32). */
+    esp_rom_gpio_connect_out_signal(CORE2_I2S_WS_GPIO, I2S1O_WS_OUT_IDX, false, false);
+    i2s_channel_enable(s_tx_chan);
+    core2_audio_start_writer_task();
+    ESP_LOGI(TAG, "audio resumed (GPIO%d restored to I2S1 WS)", CORE2_I2S_WS_GPIO);
 }
 
 void core2_audio_set_sample_rate(uint32_t sample_rate_hz)

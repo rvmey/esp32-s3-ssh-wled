@@ -3186,17 +3186,19 @@ static void do_core2_voice_query(void)
     ESP_LOGI(TAG, "Voice query: starting");
     screen_draw_text("Listening...");
 
-    /* Pause MP3 and hand GPIO 0 from speaker to microphone. */
+    /* Pause MP3 and hand GPIO 0 from speaker to microphone.
+     * Use pause/resume (not deinit/init) to keep the I2S DMA descriptor chain
+     * intact — recreating it mid-flight causes an interrupt WDT on CPU0. */
     bool was_playing = (s_mp3.active && !s_mp3.paused);
     if (was_playing) s_mp3.paused = true;
-    core2_audio_deinit();
+    core2_audio_pause();
     core2_mic_init();
 
     uint8_t *wav     = NULL;
     size_t   wav_len = core2_mic_record(&wav, 4000);
 
     core2_mic_deinit();
-    core2_audio_init();
+    core2_audio_resume();
     if (was_playing) s_mp3.paused = false;
 
     if (wav_len == 0 || !wav) {
