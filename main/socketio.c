@@ -21,9 +21,7 @@
 #include "esp_log.h"
 #include "esp_system.h"
 #include "esp_websocket_client.h"
-#include "mbedtls/error.h"
-#include "mbedtls/x509.h"
-#include "mbedtls/x509_crt.h"
+
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
 #include "esp_heap_caps.h"
@@ -176,40 +174,6 @@ static void ws_event_handler(void *arg, esp_event_base_t base,
 
     case WEBSOCKET_EVENT_ERROR:
         ESP_LOGE(TAG, "WS error");
-        /* TEMP DIAG: dump full TLS error details */
-        if (d) {
-            ESP_LOGE(TAG, "WS error detail: error_type=%d tls_last_err=0x%x tls_stack_err=0x%x verify_flags=0x%x sock_errno=%d",
-                     (int)d->error_handle.error_type,
-                     (unsigned)d->error_handle.esp_tls_last_esp_err,
-                     (unsigned)d->error_handle.esp_tls_stack_err,
-                     (unsigned)d->error_handle.esp_tls_cert_verify_flags,
-                     d->error_handle.esp_transport_sock_errno);
-
-            if (d->error_handle.esp_tls_cert_verify_flags) {
-                int flags = d->error_handle.esp_tls_cert_verify_flags;
-                char verify_info[512];
-                mbedtls_x509_crt_verify_info(verify_info, sizeof(verify_info), "  ! ", flags);
-                ESP_LOGE(TAG, "verify info:\n%s", verify_info);
-                if (flags & MBEDTLS_X509_BADCERT_EXPIRED) ESP_LOGE(TAG, "verify flag: MBEDTLS_X509_BADCERT_EXPIRED");
-                if (flags & MBEDTLS_X509_BADCERT_REVOKED) ESP_LOGE(TAG, "verify flag: MBEDTLS_X509_BADCERT_REVOKED");
-                if (flags & MBEDTLS_X509_BADCERT_CN_MISMATCH) ESP_LOGE(TAG, "verify flag: MBEDTLS_X509_BADCERT_CN_MISMATCH");
-                if (flags & MBEDTLS_X509_BADCERT_NOT_TRUSTED) ESP_LOGE(TAG, "verify flag: MBEDTLS_X509_BADCERT_NOT_TRUSTED");
-                if (flags & MBEDTLS_X509_BADCERT_FUTURE) ESP_LOGE(TAG, "verify flag: MBEDTLS_X509_BADCERT_FUTURE");
-                if (flags & MBEDTLS_X509_BADCRL_NOT_TRUSTED) ESP_LOGE(TAG, "verify flag: MBEDTLS_X509_BADCRL_NOT_TRUSTED");
-            }
-
-            if (d->error_handle.error_type == WEBSOCKET_ERROR_TYPE_TCP_TRANSPORT &&
-                d->error_handle.esp_tls_stack_err != 0) {
-                char mbedtls_err_buf[128];
-                int mbedtls_err = d->error_handle.esp_tls_stack_err;
-                if (mbedtls_err > 0) {
-                    mbedtls_err = -mbedtls_err;
-                }
-                mbedtls_strerror(mbedtls_err,
-                                 mbedtls_err_buf, sizeof(mbedtls_err_buf));
-                ESP_LOGE(TAG, "mbedtls error string: %s", mbedtls_err_buf);
-            }
-        }
         s_connected = false;
         break;
 
