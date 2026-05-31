@@ -3507,12 +3507,14 @@ static bool mount_sd_card_if_needed(void)
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "sd: mount failed at %s: %s", MP3_ROOT_PATH, esp_err_to_name(err));
         s_mp3_next_mount_retry = xTaskGetTickCount() + pdMS_TO_TICKS(30000);
-        if (!s_sd_mount_warned) {
-            pf_status_draw("SD card timeout\nDevice online\nMP3 unavailable");
-            s_sd_mount_warned = true;
-        }
         if (spi_locked) {
             screen_spi_unlock();
+            spi_locked = false;
+            screen_reinit_display();
+        }
+        if (!s_sd_mount_warned) {
+            pf_status_draw("No SD card\nDevice online\nMP3 unavailable");
+            s_sd_mount_warned = true;
         }
         return false;
     }
