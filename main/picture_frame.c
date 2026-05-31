@@ -4668,6 +4668,19 @@ static void pf_event_handler(const char *event_name,
  */
 #define JPEG_DL_MAX   (512 * 1024)   /* max JPEG download size */
 
+/* Captures the Location response header so the redirect loop can follow it.
+ * esp_http_client_get_header() only reads request headers, not response ones. */
+static esp_err_t jpeg_http_event(esp_http_client_event_t *evt)
+{
+    if (evt->event_id == HTTP_EVENT_ON_HEADER && evt->user_data &&
+        strcasecmp(evt->header_key, "Location") == 0) {
+        char *loc = (char *)evt->user_data;
+        strncpy(loc, evt->header_value, 511);
+        loc[511] = '\0';
+    }
+    return ESP_OK;
+}
+
 /*
  * Decode compressed JPEG bytes (buf, len) to RGB565 and blit to the screen.
  * Called both after a fresh download and when re-blitting on orientation change.
@@ -4732,10 +4745,13 @@ static bool download_and_show_jpeg(const char *url)
     int64_t cl = 0;
 
     for (int redir = 0; redir < 10; redir++) {
+        char loc_buf[512] = {0};
         esp_http_client_config_t cfg = {
-            .url        = effective_url,
-            .method     = HTTP_METHOD_GET,
-            .timeout_ms = 15000,
+            .url           = effective_url,
+            .method        = HTTP_METHOD_GET,
+            .timeout_ms    = 15000,
+            .event_handler = jpeg_http_event,
+            .user_data     = loc_buf,
         };
         /* Certificate verification intentionally skipped for JPEG URLs */
 
@@ -4758,17 +4774,13 @@ static bool download_and_show_jpeg(const char *url)
         int status = esp_http_client_get_status_code(client);
 
         if (status >= 300 && status < 400) {
-            char *location = NULL;
-            esp_http_client_get_header(client, "Location", &location);
-            if (location && location[0]) {
-                strncpy(effective_url, location, sizeof(effective_url) - 1);
-                effective_url[sizeof(effective_url) - 1] = '\0';
-                ESP_LOGI(TAG, "jpeg: redirect %d -> %s", status, effective_url);
-            }
             esp_http_client_close(client);
             esp_http_client_cleanup(client);
             client = NULL;
-            if (!location || !location[0]) break;
+            if (!loc_buf[0]) break;
+            strncpy(effective_url, loc_buf, sizeof(effective_url) - 1);
+            effective_url[sizeof(effective_url) - 1] = '\0';
+            ESP_LOGI(TAG, "jpeg: redirect %d -> %s", status, effective_url);
             continue;
         }
 
