@@ -3510,12 +3510,11 @@ static bool mount_sd_card_if_needed(void)
         if (spi_locked) {
             screen_spi_unlock();
             spi_locked = false;
-            screen_reinit_display();
+            screen_reinit_display();  /* core2_cycle_sd_power() cut LDO2; must reinit LCD */
         }
-        if (!s_sd_mount_warned) {
-            pf_status_draw("No SD card\nDevice online\nMP3 unavailable");
-            s_sd_mount_warned = true;
-        }
+        /* Always redraw after reinit — GRAM is wiped by the LDO2 power cycle. */
+        pf_status_draw("No SD card\nDevice online\nMP3 unavailable");
+        s_sd_mount_warned = true;
         return false;
     }
 
