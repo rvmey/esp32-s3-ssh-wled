@@ -96,6 +96,10 @@ extern "C" void sendspin_client_start(void)
         {SendspinCodecFormat::PCM, 2, 44100, 16},
         {SendspinCodecFormat::PCM, 2, 48000, 16},
     };
+    /* Default 1 MB ring buffer exhausts the Core2's PSRAM, starving the SPI
+     * DMA allocator used by the display driver.  16 KB is plenty for a discard
+     * player whose on_audio_write never accumulates a backlog. */
+    pcfg.audio_buffer_capacity = 16 * 1024;
     pcfg.priority = 5;  /* low priority: discard player has no real-time deadline */
     auto &player = s_client->add_player(std::move(pcfg));
     player.set_listener(s_player_listener);
