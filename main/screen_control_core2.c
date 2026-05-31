@@ -130,20 +130,23 @@ static inline void screen_full_redraw_yield(int row)
 static esp_err_t axp_write(uint8_t reg, uint8_t val)
 {
     uint8_t buf[2] = { reg, val };
+    /* portMAX_DELAY: BT A2DP + WiFi coexistence delays the I2C ISR 50+ ms;
+     * a finite timeout triggers i2c_hw_fsm_reset which deadlocks with the ISR
+     * on the driver spinlock → INT WDT crash (see touch_read_point comment). */
     return i2c_master_write_to_device(AXP_I2C_NUM, AXP_I2C_ADDR,
-                                      buf, 2, pdMS_TO_TICKS(50));
+                                      buf, 2, portMAX_DELAY);
 }
 static esp_err_t axp_read(uint8_t reg, uint8_t *val)
 {
     return i2c_master_write_read_device(
-        AXP_I2C_NUM, AXP_I2C_ADDR, &reg, 1, val, 1, pdMS_TO_TICKS(20));
+        AXP_I2C_NUM, AXP_I2C_ADDR, &reg, 1, val, 1, portMAX_DELAY);
 }
 
 static esp_err_t axp_read_modify_write(uint8_t reg, uint8_t mask, uint8_t set)
 {
     uint8_t val = 0;
     i2c_master_write_read_device(AXP_I2C_NUM, AXP_I2C_ADDR,
-                                 &reg, 1, &val, 1, pdMS_TO_TICKS(50));
+                                 &reg, 1, &val, 1, portMAX_DELAY);
     val = (val & ~mask) | (set & mask);
     return axp_write(reg, val);
 }
@@ -647,7 +650,7 @@ esp_err_t screen_init(void)
     uint8_t reg_00 = 0x00, dev_mode = 0;
     esp_err_t t_err = i2c_master_write_read_device(AXP_I2C_NUM, TOUCH_I2C_ADDR,
                                                     &reg_00, 1, &dev_mode, 1,
-                                                    pdMS_TO_TICKS(20));
+                                                    portMAX_DELAY);
     if (t_err == ESP_OK) {
         ESP_LOGI(TAG, "FT6336U touch ready (I2C addr=0x%02X)", TOUCH_I2C_ADDR);
         xTaskCreate(touch_poll_task, "touch_poll", 3072, NULL, 4, NULL);
