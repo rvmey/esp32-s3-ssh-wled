@@ -4724,34 +4724,67 @@ static bool download_and_show_jpeg(const char *url)
 {
     screen_draw_text("Loading image...");
 
-    esp_http_client_config_t cfg = {
-        .url        = url,
-        .method     = HTTP_METHOD_GET,
-        .timeout_ms = 15000,
-    };
-    /* Certificate verification intentionally skipped for JPEG URLs */
+    char effective_url[512];
+    strncpy(effective_url, url, sizeof(effective_url) - 1);
+    effective_url[sizeof(effective_url) - 1] = '\0';
 
-    esp_http_client_handle_t client = esp_http_client_init(&cfg);
+    esp_http_client_handle_t client = NULL;
+    int64_t cl = 0;
+
+    for (int redir = 0; redir < 10; redir++) {
+        esp_http_client_config_t cfg = {
+            .url        = effective_url,
+            .method     = HTTP_METHOD_GET,
+            .timeout_ms = 15000,
+        };
+        /* Certificate verification intentionally skipped for JPEG URLs */
+
+        client = esp_http_client_init(&cfg);
+        if (!client) {
+            ESP_LOGE(TAG, "jpeg: http_client_init failed");
+            screen_draw_text("Image load\nfailed");
+            return false;
+        }
+
+        esp_err_t ret = esp_http_client_open(client, 0);
+        if (ret != ESP_OK) {
+            ESP_LOGE(TAG, "jpeg: HTTP open failed: %s", esp_err_to_name(ret));
+            esp_http_client_cleanup(client);
+            screen_draw_text("Image load\nfailed");
+            return false;
+        }
+
+        cl = esp_http_client_fetch_headers(client);
+        int status = esp_http_client_get_status_code(client);
+
+        if (status >= 300 && status < 400) {
+            char *location = NULL;
+            esp_http_client_get_header(client, "Location", &location);
+            if (location && location[0]) {
+                strncpy(effective_url, location, sizeof(effective_url) - 1);
+                effective_url[sizeof(effective_url) - 1] = '\0';
+                ESP_LOGI(TAG, "jpeg: redirect %d -> %s", status, effective_url);
+            }
+            esp_http_client_close(client);
+            esp_http_client_cleanup(client);
+            client = NULL;
+            if (!location || !location[0]) break;
+            continue;
+        }
+
+        if (status < 200 || status >= 300) {
+            ESP_LOGE(TAG, "jpeg: HTTP %d for %s", status, effective_url);
+            esp_http_client_close(client);
+            esp_http_client_cleanup(client);
+            screen_draw_text("Image load\nfailed");
+            return false;
+        }
+
+        break; /* 2xx — proceed with download */
+    }
+
     if (!client) {
-        ESP_LOGE(TAG, "jpeg: http_client_init failed");
-        screen_draw_text("Image load\nfailed");
-        return false;
-    }
-
-    esp_err_t ret = esp_http_client_open(client, 0);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "jpeg: HTTP open failed: %s", esp_err_to_name(ret));
-        esp_http_client_cleanup(client);
-        screen_draw_text("Image load\nfailed");
-        return false;
-    }
-
-    int64_t cl = esp_http_client_fetch_headers(client);
-    int status = esp_http_client_get_status_code(client);
-    if (status < 200 || status >= 300) {
-        ESP_LOGE(TAG, "jpeg: HTTP %d for %s", status, url);
-        esp_http_client_close(client);
-        esp_http_client_cleanup(client);
+        ESP_LOGE(TAG, "jpeg: too many redirects");
         screen_draw_text("Image load\nfailed");
         return false;
     }
