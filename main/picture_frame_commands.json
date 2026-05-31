@@ -52,7 +52,7 @@
   "trigger": "jpeg",
   "command": "jpeg",
   "allowParams": "true",
-  "mcpToolDescription": "Display a JPEG image. Example: 'jpeg https://example.com/image.jpg'",
+  "mcpToolDescription": "Display a JPEG image. Use loremflickr.com by default. Example: 'https://loremflickr.com/320/240/dog'",
   "icon": "🖼️"
  },
 {

@@ -4033,7 +4033,7 @@ static const pf_cmd_t s_pf_cmds[] = {
     { "fontsize",  "fontsize",  "true",  "Change the font size (1-4). Example: '3'",                     "\xF0\x9F\x94\xA1" /* 🔡 */ },
     { "landscape", "landscape", "false", "Set the display to landscape orientation.",                        "\xE2\x86\x94\xEF\xB8\x8F" /* ↔️ */ },
     { "portrait",  "portrait",  "false", "Set the display to portrait orientation.",                         "\xE2\x86\x95\xEF\xB8\x8F" /* ↕️ */ },
-    { "jpeg",      "jpeg",      "true",  "Display a JPEG image. Example: 'jpeg https://example.com/image.jpg'", "\xF0\x9F\x96\xBC\xEF\xB8\x8F" /* 🖼️ */ },
+    { "jpeg",      "jpeg",      "true",  "Display a JPEG image. Use loremflickr.com by default. Example: 'jpeg https://loremflickr.com/320/240/dog'", "\xF0\x9F\x96\xBC\xEF\xB8\x8F" /* 🖼️ */ },
     { "save",      "save",      "false", "Save the screen settings to non-volatile memory. Example: 'save'", "\xF0\x9F\x92\xBE" /* 💾 */ },
     { "reboot",    "reboot",    "false", "Reboot the device.", "\xF0\x9F\x94\x81" /* 🔁 */ },
 };
