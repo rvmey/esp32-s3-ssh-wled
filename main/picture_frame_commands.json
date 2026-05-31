@@ -52,7 +52,7 @@
   "trigger": "jpeg",
   "command": "jpeg",
   "allowParams": "true",
-  "mcpToolDescription": "Display a JPEG picture. Use loremflickr.com by default. If multiple words (EXample: cat_and_dog), use an underscores. Example: 'https://loremflickr.com/320/240/twin_towers'",
+  "mcpToolDescription": "Display a JPEG picture for the user when they say something like, 'Picture of a cat'. Use loremflickr.com by default. If multiple words (Example: cat_and_dog), use an underscores. The command parameter should always be a URL like this: 'https://loremflickr.com/320/240/cat_and_dog'",
   "icon": "🖼️"
  },
 {
