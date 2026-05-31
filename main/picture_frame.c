@@ -3186,102 +3186,103 @@ static void do_core2_voice_query(void)
     ESP_LOGI(TAG, "Voice query: starting");
     screen_draw_text("Listening...");
 
-    /* Pause MP3 and hand GPIO 0 from speaker to microphone.
-     * Use pause/resume (not deinit/init) to keep the I2S DMA descriptor chain
-     * intact — recreating it mid-flight causes an interrupt WDT on CPU0.
-     * Also suspend the mp3_play task so it does not compete with WiFi for CPU0
-     * during the long STT + Chat API HTTP calls that follow recording. */
-    bool was_playing = (s_mp3.active && !s_mp3.paused);
-    if (was_playing) s_mp3.paused = true;
+    /* Suspend the mp3 player task and pause I2S before recording.
+     * Both stay suspended/paused for the ENTIRE voice query — recording AND
+     * all HTTP calls (STT + Chat API) — so mp3_play and core2_i2s do not
+     * compete with the WiFi/TLS stack on CPU0, which would cause TLS failures
+     * and task WDT warnings.  Audio hardware and mp3 task are restored at the
+     * single exit point at the bottom after all network work is done. */
+    if (s_mp3.active && !s_mp3.paused) s_mp3.paused = true;
     if (s_mp3_task) vTaskSuspend(s_mp3_task);
     core2_audio_pause();
     core2_mic_init();
 
-    uint8_t *wav     = NULL;
+    uint8_t *wav    = NULL;
     size_t   wav_len = core2_mic_record(&wav, 4000);
-
     core2_mic_deinit();
-    core2_audio_resume();
-    if (s_mp3_task) vTaskResume(s_mp3_task);
-    if (was_playing) s_mp3.paused = false;
+    /* GPIO 0 is now free; I2S1 stays disabled; mp3 task stays suspended. */
+
+    /* ── All HTTP work happens here with audio fully quiescent ──────────── */
+
+    char stt_key[CORE2_STT_KEY_MAX] = {0};
+    char transcript[CORE2_TRANSCRIPT_MAX] = {0};
+    char *resp = NULL;
 
     if (wav_len == 0 || !wav) {
         ESP_LOGW(TAG, "Voice query: no audio captured");
         screen_draw_text("Voice: no audio\ncaptured");
-        s_pending_vibrate = true;
-        return;
+        goto voice_done;
     }
 
     screen_draw_text("Processing...");
 
-    char stt_key[CORE2_STT_KEY_MAX] = {0};
     if (!nvs_read_str(NVS_KEY_STT, stt_key, sizeof(stt_key))) {
-        free(wav);
-        ESP_LOGW(TAG, "Voice query: no STT API key — visit device IP to configure");
+        ESP_LOGW(TAG, "Voice query: no STT API key");
         screen_draw_text("Voice: no API key\nVisit device IP\nto configure");
-        s_pending_vibrate = true;
-        return;
+        goto voice_done;
     }
 
-    char transcript[CORE2_TRANSCRIPT_MAX] = {0};
-    bool stt_ok = core2_stt_transcribe(wav, wav_len, stt_key, transcript);
-    free(wav);
-
-    if (!stt_ok || transcript[0] == '\0') {
+    if (!core2_stt_transcribe(wav, wav_len, stt_key, transcript) || !transcript[0]) {
         ESP_LOGW(TAG, "Voice query: STT failed or empty");
         screen_draw_text("Voice: not heard\nor STT failed");
-        s_pending_vibrate = true;
-        return;
+        goto voice_done;
     }
     ESP_LOGI(TAG, "Voice transcript: %s", transcript);
 
-    /* Show the transcript briefly before the command result appears. */
-    char msg[96];
-    snprintf(msg, sizeof(msg), "Heard:\n%.88s", transcript);
-    screen_draw_text(msg);
-
-    /* Reconstruct the computer's display name from the WiFi MAC — the same
-     * formula used when the computer was registered on the TRIGGERcmd server. */
-    uint8_t mac[6] = {0};
-    esp_read_mac(mac, ESP_MAC_WIFI_STA);
-    char computer_name[32];
-    snprintf(computer_name, sizeof(computer_name),
-             "TCMDSCREEN-%02X%02X%02X%02X%02X%02X",
-             mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
-
-    /* Build Chat API JSON body. */
-    char json_body[CORE2_TRANSCRIPT_MAX + 256];
-    if (s_voice_conv_id[0]) {
-        snprintf(json_body, sizeof(json_body),
-                 "{\"message\":\"%s\",\"conversationId\":\"%s\",\"computerName\":\"%s\"}",
-                 transcript, s_voice_conv_id, computer_name);
-    } else {
-        snprintf(json_body, sizeof(json_body),
-                 "{\"message\":\"%s\",\"computerName\":\"%s\"}",
-                 transcript, computer_name);
+    {
+        char msg[96];
+        snprintf(msg, sizeof(msg), "Heard:\n%.88s", transcript);
+        screen_draw_text(msg);
     }
-    ESP_LOGI(TAG, "Chat API body: %s", json_body);
 
-    char chat_url[128];
-    snprintf(chat_url, sizeof(chat_url), "%s/api/v1/chat/message", TCMD_BASE_URL);
+    {
+        uint8_t mac[6] = {0};
+        esp_read_mac(mac, ESP_MAC_WIFI_STA);
+        char computer_name[32];
+        snprintf(computer_name, sizeof(computer_name),
+                 "TCMDSCREEN-%02X%02X%02X%02X%02X%02X",
+                 mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
 
-    char *resp   = NULL;
-    int   status = core2_https_post_json(chat_url, s_hw_token, json_body, &resp);
-    ESP_LOGI(TAG, "Chat API HTTP %d  resp: %.200s", status, resp ? resp : "(none)");
-
-    if (status == 200 && resp) {
-        char new_conv[64] = {0};
-        json_extract_str(resp, "conversationId", new_conv, sizeof(new_conv));
-        if (new_conv[0] && strcmp(new_conv, s_voice_conv_id) != 0) {
-            strncpy(s_voice_conv_id, new_conv, sizeof(s_voice_conv_id) - 1);
-            nvs_write_str(NVS_KEY_VOICE_CONV, s_voice_conv_id);
+        char json_body[CORE2_TRANSCRIPT_MAX + 256];
+        if (s_voice_conv_id[0]) {
+            snprintf(json_body, sizeof(json_body),
+                     "{\"message\":\"%s\",\"conversationId\":\"%s\",\"computerName\":\"%s\"}",
+                     transcript, s_voice_conv_id, computer_name);
+        } else {
+            snprintf(json_body, sizeof(json_body),
+                     "{\"message\":\"%s\",\"computerName\":\"%s\"}",
+                     transcript, computer_name);
         }
-        ESP_LOGI(TAG, "Voice query: chat API success");
-    } else {
-        ESP_LOGW(TAG, "Voice query: chat API returned HTTP %d", status);
-        screen_draw_text("Voice: chat API\nfailed");
+        ESP_LOGI(TAG, "Chat API body: %s", json_body);
+
+        char chat_url[128];
+        snprintf(chat_url, sizeof(chat_url), "%s/api/v1/chat/message", TCMD_BASE_URL);
+
+        int status = core2_https_post_json(chat_url, s_hw_token, json_body, &resp);
+        ESP_LOGI(TAG, "Chat API HTTP %d  resp: %.200s", status, resp ? resp : "(none)");
+
+        if (status == 200 && resp) {
+            char new_conv[64] = {0};
+            json_extract_str(resp, "conversationId", new_conv, sizeof(new_conv));
+            if (new_conv[0] && strcmp(new_conv, s_voice_conv_id) != 0) {
+                strncpy(s_voice_conv_id, new_conv, sizeof(s_voice_conv_id) - 1);
+                nvs_write_str(NVS_KEY_VOICE_CONV, s_voice_conv_id);
+            }
+            ESP_LOGI(TAG, "Voice query: chat API success");
+        } else {
+            ESP_LOGW(TAG, "Voice query: chat API returned HTTP %d", status);
+            screen_draw_text("Voice: chat API\nfailed");
+        }
     }
-    if (resp) free(resp);
+
+voice_done:
+    /* Restore audio hardware and mp3 player task AFTER all HTTP is done.
+     * Do NOT restore s_mp3.paused — the command that arrived via Socket.IO
+     * during the query has already set the correct audio state. */
+    if (wav) { free(wav); }
+    if (resp) { free(resp); }
+    core2_audio_resume();
+    if (s_mp3_task) vTaskResume(s_mp3_task);
     s_pending_vibrate = true;
 }
 
