@@ -549,7 +549,7 @@ esp_err_t screen_init(void)
      *   bit[3]=0     → long press shutdown DISABLED (device runs from USB)
      *   bits[1:0]=00 → PWROK delay 32 ms
      * Clear bit3 by read-modify-write so we don't clobber other fields. */
-    axp_read_modify_write(0x36, 0xF8, 0x70); /* short=512ms, long=2.5s, no shutdown */
+    axp_read_modify_write(0x36, 0xF8, 0x78); /* short=512ms, long=2.5s, shutdown on long press */
     axp_read_modify_write(0x43, 0x03, 0x02); /* IRQ Enable 4: PEK short press enable  */
     axp_read_modify_write(0x96, 0x02, 0x00); /* LCD reset low                          */
     vTaskDelay(pdMS_TO_TICKS(20));
