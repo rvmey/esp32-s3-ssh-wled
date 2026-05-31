@@ -3234,30 +3234,34 @@ static void do_core2_voice_query(void)
     snprintf(msg, sizeof(msg), "Heard:\n%.88s", transcript);
     screen_draw_text(msg);
 
+    /* Reconstruct the computer's display name from the WiFi MAC — the same
+     * formula used when the computer was registered on the TRIGGERcmd server. */
+    uint8_t mac[6] = {0};
+    esp_read_mac(mac, ESP_MAC_WIFI_STA);
+    char computer_name[32];
+    snprintf(computer_name, sizeof(computer_name),
+             "TCMDSCREEN-%02X%02X%02X%02X%02X%02X",
+             mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+
     /* Build Chat API JSON body. */
     char json_body[CORE2_TRANSCRIPT_MAX + 256];
-    if (s_voice_conv_id[0] && s_computer_id[0]) {
+    if (s_voice_conv_id[0]) {
         snprintf(json_body, sizeof(json_body),
                  "{\"message\":\"%s\",\"conversationId\":\"%s\",\"computerName\":\"%s\"}",
-                 transcript, s_voice_conv_id, s_computer_id);
-    } else if (s_voice_conv_id[0]) {
-        snprintf(json_body, sizeof(json_body),
-                 "{\"message\":\"%s\",\"conversationId\":\"%s\"}",
-                 transcript, s_voice_conv_id);
-    } else if (s_computer_id[0]) {
+                 transcript, s_voice_conv_id, computer_name);
+    } else {
         snprintf(json_body, sizeof(json_body),
                  "{\"message\":\"%s\",\"computerName\":\"%s\"}",
-                 transcript, s_computer_id);
-    } else {
-        snprintf(json_body, sizeof(json_body), "{\"message\":\"%s\"}", transcript);
+                 transcript, computer_name);
     }
+    ESP_LOGI(TAG, "Chat API body: %s", json_body);
 
     char chat_url[128];
     snprintf(chat_url, sizeof(chat_url), "%s/api/v1/chat/message", TCMD_BASE_URL);
 
     char *resp   = NULL;
     int   status = core2_https_post_json(chat_url, s_hw_token, json_body, &resp);
-    ESP_LOGI(TAG, "Chat API HTTP %d", status);
+    ESP_LOGI(TAG, "Chat API HTTP %d  resp: %.200s", status, resp ? resp : "(none)");
 
     if (status == 200 && resp) {
         char new_conv[64] = {0};
