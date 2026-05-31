@@ -154,13 +154,6 @@
   "icon": "🔁"
  },
  {
-  "trigger": "sendspin",
-  "command": "sendspin",
-  "allowParams": "true",
-  "mcpToolDescription": "Enable or disable the Sendspin synchronized audio streaming server. Example: 'on' or 'off'",
-  "icon": "🎵"
- },
- {
   "trigger": "pair",
   "command": "pair",
   "allowParams": "true",

@@ -46,7 +46,6 @@
 #include "wifi_manager.h"
 #include "improv_wifi.h"
 #include "screen_control.h"
-#include "sendspin_client.h"
 
 #if CONFIG_BT_ENABLED
 #include "esp_bt.h"
@@ -348,7 +347,6 @@ static const char *tcmd_display_host(void)
 #define NVS_KEY_SHUFFLE "mp3_shuffle"
 #define NVS_KEY_REPEAT_TRACK "mp3_rpt_trk"
 #define NVS_KEY_REPEAT_PLAYLIST "mp3_rpt_list"
-#define NVS_KEY_SENDSPIN "sendspin_en"
 #define NVS_KEY_VOLUME  "mp3_volume"
 #define NVS_KEY_MP3_MODE "mp3_mode"
 #define NVS_KEY_BT_BDA  "bt_bda"
@@ -412,9 +410,6 @@ static mp3_state_t   s_mp3 = {
     .last_tick = 0,
 };
 static volatile bool s_mp3_resume_on_bt_reconnect = false;
-static volatile bool s_sendspin_enabled       = false;
-static volatile bool s_sendspin_start_pending = false;
-static volatile bool s_sendspin_stop_pending  = false;
 static TickType_t s_mp3_last_ui_tick = 0;
 static volatile bool s_mp3_ui_pending = false;
 static bool          s_mp3_ui_override_allowed = true;
@@ -4059,7 +4054,6 @@ static const pf_cmd_t s_pf_media_cmds[] = {
     { "shuffle",     "shuffle",     "true",  "Enable or disable shuffle mode. Example: 'on' or 'off'", "\xF0\x9F\x94\x80" /* 🔀 */ },
     { "repeattrack", "repeattrack", "true",  "Enable or disable repeat-track mode. Example: 'on' or 'off'", "\xF0\x9F\x94\x82" /* 🔂 */ },
     { "repeatplaylist", "repeatplaylist", "true",  "Enable or disable repeat-playlist mode. Example: 'on' or 'off'", "\xF0\x9F\x94\x81" /* 🔁 */ },
-    { "sendspin",    "sendspin",    "true",  "Enable or disable the Sendspin synchronized audio streaming server. Example: 'on' or 'off'", "\xF0\x9F\x8E\xB5" /* 🎵 */ },
     { "pair",        "pair",        "true",  "Pair with a Bluetooth headset or speaker. Example: 'pair'", "\xF0\x9F\x8E\xA7" /* 🎧 */ },
     { "btstatus",    "btstatus",    "false", "Show Bluetooth audio connection status.", "\xF0\x9F\x93\xB6" /* 📶 */ },
     { "btdisconnect", "btdisconnect", "false", "Disconnect the current Bluetooth audio device.", "\xF0\x9F\x94\x8C" /* 🔌 */ },
@@ -4616,29 +4610,6 @@ static void pf_event_handler(const char *event_name,
         mp3_log_mode_status("repeatplaylist command");
         if (s_mp3.active) mp3_request_ui_refresh();
 
-    } else if (strcmp(s_trigger, "sendspin") == 0) {
-        char mode[16] = {0};
-        strncpy(mode, s_params, sizeof(mode) - 1);
-        for (size_t i = 0; mode[i]; i++) mode[i] = (char)tolower((unsigned char)mode[i]);
-        bool new_state;
-        if (strcmp(mode, "on") == 0) {
-            new_state = true;
-        } else if (strcmp(mode, "off") == 0) {
-            new_state = false;
-        } else {
-            new_state = !s_sendspin_enabled;
-        }
-        if (new_state != (bool)s_sendspin_enabled) {
-            s_sendspin_enabled = new_state;
-            nvs_write_u8(NVS_KEY_SENDSPIN, s_sendspin_enabled ? 1 : 0);
-            if (s_sendspin_enabled) {
-                s_sendspin_start_pending = true;
-            } else {
-                s_sendspin_stop_pending = true;
-            }
-        }
-        ESP_LOGI(TAG, "sendspin: %s", s_sendspin_enabled ? "on" : "off");
-
     } else if (strcmp(s_trigger, "pair") == 0) {
         bt_cmd_pair_start();
 
@@ -4976,11 +4947,6 @@ void picture_frame_run(void)
         if (nvs_read_u8(NVS_KEY_VOLUME, &volume)) {
             s_mp3.volume = (int)volume;
         }
-        uint8_t sendspin_en = 0;
-        if (nvs_read_u8(NVS_KEY_SENDSPIN, &sendspin_en) && sendspin_en) {
-            s_sendspin_enabled = true;
-            s_sendspin_start_pending = true;
-        }
     }
     /* Defer SD mount/index work until the main loop so boot UI is responsive. */
     s_mp3_next_mount_retry = xTaskGetTickCount();
@@ -5272,15 +5238,6 @@ void picture_frame_run(void)
             }
             core2_poll_pwr_key();   /* voice query on PWR short press */
 #endif
-
-            if (s_sendspin_start_pending) {
-                s_sendspin_start_pending = false;
-                sendspin_client_start();
-            }
-            if (s_sendspin_stop_pending) {
-                s_sendspin_stop_pending = false;
-                sendspin_client_stop();
-            }
 
             vTaskDelay(pdMS_TO_TICKS(200));   /* poll every 200 ms */
 
