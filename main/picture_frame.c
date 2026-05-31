@@ -2962,11 +2962,14 @@ static bool mp3_handle_track_end(void)
 static esp_err_t core2_axp_read_reg(uint8_t reg, uint8_t *out)
 {
     if (!out) return ESP_ERR_INVALID_ARG;
+    /* portMAX_DELAY: BT A2DP + WiFi coexistence can delay the I2C ISR 50+ ms.
+     * A finite timeout triggers i2c_hw_fsm_reset which deadlocks with the ISR
+     * on the driver spinlock → INT WDT crash (same fix applied in touch_read_point). */
     return i2c_master_write_read_device(CORE2_AXP_I2C_NUM,
                                         CORE2_AXP_I2C_ADDR,
                                         &reg, 1,
                                         out, 1,
-                                        pdMS_TO_TICKS(30));
+                                        portMAX_DELAY);
 }
 
 static esp_err_t core2_axp_write_reg(uint8_t reg, uint8_t val)
@@ -2975,7 +2978,7 @@ static esp_err_t core2_axp_write_reg(uint8_t reg, uint8_t val)
     return i2c_master_write_to_device(CORE2_AXP_I2C_NUM,
                                       CORE2_AXP_I2C_ADDR,
                                       buf, sizeof(buf),
-                                      pdMS_TO_TICKS(30));
+                                      portMAX_DELAY);
 }
 
 static void core2_reassert_sd_power(void)
