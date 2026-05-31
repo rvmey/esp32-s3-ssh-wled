@@ -4040,6 +4040,7 @@ static const pf_cmd_t s_pf_cmds[] = {
     { "save",      "save",      "false", "Save the screen settings to non-volatile memory. Example: 'save'", "\xF0\x9F\x92\xBE" /* 💾 */ },
     { "savepic",   "savepic",   "false", "Save the currently displayed JPEG to the SD card in the 'pictures' folder.", "\xF0\x9F\x93\xB7" /* 📷 */ },
     { "folders",   "folders",   "false", "List the folders on the SD card.", "\xF0\x9F\x93\x82" /* 📂 */ },
+    { "files",     "files",     "true",  "List files in a folder on the SD card. Example: 'music'", "\xF0\x9F\x93\x84" /* 📄 */ },
     { "reboot",    "reboot",    "false", "Reboot the device.", "\xF0\x9F\x94\x81" /* 🔁 */ },
 };
 #define PF_CMD_COUNT  (sizeof(s_pf_cmds) / sizeof(s_pf_cmds[0]))
@@ -4487,6 +4488,41 @@ static void pf_event_handler(const char *event_name,
                 closedir(d);
                 ESP_LOGI(TAG, "folders: %d folder(s) on SD", count);
                 screen_draw_text(count > 0 ? msg : "No folders\non SD card");
+            }
+        }
+
+    } else if (strcmp(s_trigger, "files") == 0) {
+        if (!s_params[0]) {
+            screen_draw_text("Usage: files\n<folder>");
+        } else if (!mount_sd_card_if_needed()) {
+            screen_draw_text("No SD card");
+        } else {
+            char dir_path[MP3_MAX_PATH_LEN];
+            int max_name = (int)sizeof(dir_path) - (int)strlen(MP3_ROOT_PATH) - 2;
+            snprintf(dir_path, sizeof(dir_path), "%s/%.*s",
+                     MP3_ROOT_PATH, max_name, s_params);
+            DIR *d = opendir(dir_path);
+            if (!d) {
+                screen_draw_text("Folder not\nfound");
+            } else {
+                char msg[256];
+                int msg_len = snprintf(msg, sizeof(msg), "%s:", s_params);
+                int count = 0;
+                struct dirent *e;
+                while ((e = readdir(d)) != NULL) {
+                    if (e->d_name[0] == '.') continue;
+                    int nlen = (int)strlen(e->d_name);
+                    if (msg_len + 1 + nlen < (int)sizeof(msg) - 1) {
+                        msg[msg_len++] = '\n';
+                        memcpy(msg + msg_len, e->d_name, (size_t)nlen);
+                        msg_len += nlen;
+                        msg[msg_len] = '\0';
+                    }
+                    count++;
+                }
+                closedir(d);
+                ESP_LOGI(TAG, "files: %d file(s) in %s", count, dir_path);
+                screen_draw_text(count > 0 ? msg : "Empty folder");
             }
         }
 

@@ -77,6 +77,13 @@
   "icon": "📂"
  },
  {
+  "trigger": "files",
+  "command": "files",
+  "allowParams": "true",
+  "mcpToolDescription": "List files in a folder on the SD card. Example: 'music'",
+  "icon": "📄"
+ },
+ {
   "trigger": "reboot",
   "command": "reboot",
   "allowParams": "false",
