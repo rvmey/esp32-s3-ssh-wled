@@ -4675,8 +4675,8 @@ static esp_err_t jpeg_http_event(esp_http_client_event_t *evt)
     if (evt->event_id == HTTP_EVENT_ON_HEADER && evt->user_data &&
         strcasecmp(evt->header_key, "Location") == 0) {
         char *loc = (char *)evt->user_data;
-        strncpy(loc, evt->header_value, 511);
-        loc[511] = '\0';
+        strncpy(loc, evt->header_value, 1023);
+        loc[1023] = '\0';
     }
     return ESP_OK;
 }
@@ -4737,7 +4737,7 @@ static bool download_and_show_jpeg(const char *url)
 {
     screen_draw_text("Loading image...");
 
-    char effective_url[512];
+    char effective_url[1024];
     strncpy(effective_url, url, sizeof(effective_url) - 1);
     effective_url[sizeof(effective_url) - 1] = '\0';
 
@@ -4745,7 +4745,7 @@ static bool download_and_show_jpeg(const char *url)
     int64_t cl = 0;
 
     for (int redir = 0; redir < 10; redir++) {
-        char loc_buf[512] = {0};
+        char loc_buf[1024] = {0};
         esp_http_client_config_t cfg = {
             .url           = effective_url,
             .method        = HTTP_METHOD_GET,
@@ -4778,8 +4778,27 @@ static bool download_and_show_jpeg(const char *url)
             esp_http_client_cleanup(client);
             client = NULL;
             if (!loc_buf[0]) break;
-            strncpy(effective_url, loc_buf, sizeof(effective_url) - 1);
-            effective_url[sizeof(effective_url) - 1] = '\0';
+            if (strncmp(loc_buf, "http://", 7) == 0 || strncmp(loc_buf, "https://", 8) == 0) {
+                strncpy(effective_url, loc_buf, sizeof(effective_url) - 1);
+                effective_url[sizeof(effective_url) - 1] = '\0';
+            } else {
+                /* Relative redirect — prepend scheme+host from current URL */
+                char origin[512] = {0};
+                const char *p = strstr(effective_url, "://");
+                if (p) {
+                    p += 3;
+                    const char *slash = strchr(p, '/');
+                    size_t origin_len = slash ? (size_t)(slash - effective_url) : strlen(effective_url);
+                    if (origin_len < sizeof(origin))
+                        memcpy(origin, effective_url, origin_len);
+                }
+                int path_max = (int)(sizeof(effective_url) - strlen(origin) - 2);
+                if (path_max < 0) path_max = 0;
+                snprintf(effective_url, sizeof(effective_url), "%s%s%.*s",
+                         origin,
+                         (loc_buf[0] == '/') ? "" : "/",
+                         path_max, loc_buf);
+            }
             ESP_LOGI(TAG, "jpeg: redirect %d -> %s", status, effective_url);
             continue;
         }
