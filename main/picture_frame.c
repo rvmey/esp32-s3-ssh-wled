@@ -5281,7 +5281,6 @@ void picture_frame_run(void)
                 s_sendspin_stop_pending = false;
                 sendspin_client_stop();
             }
-            sendspin_client_loop();
 
             vTaskDelay(pdMS_TO_TICKS(200));   /* poll every 200 ms */
 
