@@ -4168,6 +4168,7 @@ static const pf_cmd_t s_pf_media_cmds[] = {
     { "repeattrack", "repeattrack", "true",  "Enable or disable repeat-track mode. Example: 'on' or 'off'", "\xF0\x9F\x94\x82" /* 🔂 */ },
     { "repeatplaylist", "repeatplaylist", "true",  "Enable or disable repeat-playlist mode. Example: 'on' or 'off'", "\xF0\x9F\x94\x81" /* 🔁 */ },
     { "visualizer",  "visualizer",  "true",  "Enable or disable the LED audio visualizer on the sides of the device. When on, the LEDs show FFT frequency levels while music plays. Example: 'on' or 'off'", "\xF0\x9F\x8C\x88" /* 🌈 */ },
+    { "ledcolor",    "ledcolor",    "true",  "Set all side LEDs to a solid color. Examples: 'red', '#FF0000', 'off'", "\xF0\x9F\x92\xA1" /* 💡 */ },
     { "pair",        "pair",        "true",  "Pair with a Bluetooth headset or speaker. Example: 'pair'", "\xF0\x9F\x8E\xA7" /* 🎧 */ },
     { "btstatus",    "btstatus",    "false", "Show Bluetooth audio connection status.", "\xF0\x9F\x93\xB6" /* 📶 */ },
     { "btdisconnect", "btdisconnect", "false", "Disconnect the current Bluetooth audio device.", "\xF0\x9F\x94\x8C" /* 🔌 */ },
@@ -4842,6 +4843,20 @@ static void pf_event_handler(const char *event_name,
         if (!s_mp3.visualizer) core2_leds_off();
         mp3_log_mode_status("visualizer command");
         if (s_mp3.active) mp3_request_ui_refresh();
+#endif
+
+    } else if (strcmp(s_trigger, "ledcolor") == 0) {
+#if CONFIG_HARDWARE_CORE2
+        if (strcasecmp(s_params, "off") == 0 || strcmp(s_params, "0") == 0) {
+            core2_leds_off();
+        } else {
+            uint8_t r = 0, g = 0, b = 0;
+            if (parse_color(s_params, &r, &g, &b)) {
+                core2_leds_set_solid(r, g, b);
+            } else {
+                ESP_LOGW(TAG, "ledcolor: unrecognised '%s'", s_params);
+            }
+        }
 #endif
 
     } else if (strcmp(s_trigger, "pair") == 0) {

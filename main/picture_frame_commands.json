@@ -182,6 +182,13 @@
   "icon": "🌈"
  },
  {
+  "trigger": "ledcolor",
+  "command": "ledcolor",
+  "allowParams": "true",
+  "mcpToolDescription": "Set all side LEDs to a solid color. Examples: 'red', '#FF0000', 'off'",
+  "icon": "💡"
+ },
+ {
   "trigger": "pair",
   "command": "pair",
   "allowParams": "true",

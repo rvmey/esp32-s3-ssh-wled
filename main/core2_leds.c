@@ -71,6 +71,23 @@ static void band_to_rgb(int band, float level, uint8_t *r, uint8_t *g, uint8_t *
     *b = (uint8_t)(b1 * level * 200.0f);
 }
 
+void core2_leds_set_solid(uint8_t r, uint8_t g, uint8_t b)
+{
+    if (!s_strip) {
+        ESP_LOGE(TAG, "set_solid: strip not initialized");
+        return;
+    }
+    for (int i = 0; i < CORE2_LED_COUNT; i++) {
+        led_strip_set_pixel(s_strip, (uint32_t)i, r, g, b);
+    }
+    esp_err_t err = led_strip_refresh(s_strip);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "set_solid refresh failed: %s", esp_err_to_name(err));
+    } else {
+        ESP_LOGI(TAG, "set_solid rgb(%u,%u,%u) OK", r, g, b);
+    }
+}
+
 void core2_leds_set_bands(const float *levels, int count)
 {
     if (!s_strip) return;
