@@ -6,7 +6,7 @@ extern "C" {
 #endif
 
 #define CORE2_LED_COUNT  10
-#define CORE2_LED_GPIO   26
+#define CORE2_LED_GPIO   25
 
 void  core2_leds_init(void);
 bool  core2_leds_initialized(void);

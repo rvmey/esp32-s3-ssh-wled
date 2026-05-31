@@ -17,8 +17,8 @@ void core2_leds_init(void)
     led_strip_config_t strip_cfg = {
         .strip_gpio_num         = CORE2_LED_GPIO,
         .max_leds               = CORE2_LED_COUNT,
-        .led_model              = LED_MODEL_WS2812,
-        .color_component_format = LED_STRIP_COLOR_COMPONENT_FMT_GRB,
+        .led_model              = LED_MODEL_SK6812,        /* Core2 for AWS uses SK6812 (RGBW) */
+        .color_component_format = LED_STRIP_COLOR_COMPONENT_FMT_GRBW,
         .flags.invert_out       = false,
     };
     led_strip_rmt_config_t rmt_cfg = {
