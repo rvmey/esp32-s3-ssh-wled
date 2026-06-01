@@ -5202,6 +5202,10 @@ static void sd_apply_config_if_present(void)
 
     char ssid[64]        = {0};
     char password[128]   = {0};
+    char ssid2[64]       = {0};
+    char password2[128]  = {0};
+    char ssid3[64]       = {0};
+    char password3[128]  = {0};
     char openai_key[256] = {0};
 
     char line[384];
@@ -5233,6 +5237,14 @@ static void sd_apply_config_if_present(void)
             snprintf(ssid, sizeof(ssid), "%s", val);
         else if (strcmp(key, "password") == 0)
             snprintf(password, sizeof(password), "%s", val);
+        else if (strcmp(key, "ssid2") == 0)
+            snprintf(ssid2, sizeof(ssid2), "%s", val);
+        else if (strcmp(key, "password2") == 0)
+            snprintf(password2, sizeof(password2), "%s", val);
+        else if (strcmp(key, "ssid3") == 0)
+            snprintf(ssid3, sizeof(ssid3), "%s", val);
+        else if (strcmp(key, "password3") == 0)
+            snprintf(password3, sizeof(password3), "%s", val);
         else if (strcmp(key, "openai_key") == 0)
             snprintf(openai_key, sizeof(openai_key), "%s", val);
     }
@@ -5244,6 +5256,22 @@ static void sd_apply_config_if_present(void)
             ESP_LOGI(TAG, "sd config: saved WiFi SSID '%s'", ssid);
         else
             ESP_LOGE(TAG, "sd config: WiFi save failed: %s", esp_err_to_name(err));
+    }
+
+    if (ssid2[0]) {
+        esp_err_t err = wifi_save_credentials2(ssid2, password2);
+        if (err == ESP_OK)
+            ESP_LOGI(TAG, "sd config: saved WiFi SSID2 '%s'", ssid2);
+        else
+            ESP_LOGE(TAG, "sd config: WiFi2 save failed: %s", esp_err_to_name(err));
+    }
+
+    if (ssid3[0]) {
+        esp_err_t err = wifi_save_credentials3(ssid3, password3);
+        if (err == ESP_OK)
+            ESP_LOGI(TAG, "sd config: saved WiFi SSID3 '%s'", ssid3);
+        else
+            ESP_LOGE(TAG, "sd config: WiFi3 save failed: %s", esp_err_to_name(err));
     }
 
     if (openai_key[0]) {
