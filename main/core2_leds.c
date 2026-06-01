@@ -42,7 +42,7 @@ static esp_err_t led_flush(void)
         ESP_LOGE(TAG, "rmt_transmit: %s", esp_err_to_name(err));
         return err;
     }
-    return rmt_tx_wait_all_done(s_rmt_chan, pdMS_TO_TICKS(10));
+    return rmt_tx_wait_all_done(s_rmt_chan, pdMS_TO_TICKS(500));
 }
 
 void core2_leds_init(void)
@@ -53,8 +53,11 @@ void core2_leds_init(void)
         .gpio_num          = CORE2_LED_GPIO,
         .clk_src           = RMT_CLK_SRC_DEFAULT,
         .resolution_hz     = SK6812_RMT_RES_HZ,
-        .mem_block_symbols = 64,
-        .trans_queue_depth = 4,
+        /* Classic ESP32 has 512 RMT items total (8 × 64).  Allocate 512 to
+         * this channel so the entire 320-symbol SK6812 frame (10 LEDs × 32
+         * bits) fits in one shot with no ping-pong refill interrupts. */
+        .mem_block_symbols = 512,
+        .trans_queue_depth = 1,
     };
     esp_err_t err = rmt_new_tx_channel(&chan_cfg, &s_rmt_chan);
     if (err != ESP_OK) {
