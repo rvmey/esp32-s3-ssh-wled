@@ -5400,15 +5400,13 @@ void picture_frame_run(void)
     }
 
 #if CONFIG_HARDWARE_CORE2
-    /* SK6812 LED bar is powered by AXP192 LDO3.  Set voltage to 3.3V and
-     * enable before LED init, matching what the M5Core2 factory test does. */
+    /* AXP192 GPIO4 powers the SK6812 LED bar via a P-FET.
+     * Clearing bit 1 of reg 0x94 drives GPIO4 low, turning the FET on.
+     * Equivalent to M5Core2 library's Axp.SetLed(true). */
     {
-        uint8_t reg28 = 0xF2; /* safe default: LDO2=3.3V, LDO3=2.0V */
-        core2_axp_read_reg(0x28, &reg28);
-        core2_axp_write_reg(0x28, (reg28 & 0xF0) | 0x0F); /* LDO3 → 3.3V */
-        uint8_t reg12 = 0;
-        core2_axp_read_reg(0x12, &reg12);
-        core2_axp_write_reg(0x12, reg12 | 0x08);           /* LDO3 ON */
+        uint8_t reg94 = 0x02; /* safe default: bit 1 set = LED off */
+        core2_axp_read_reg(0x94, &reg94);
+        core2_axp_write_reg(0x94, reg94 & (uint8_t)~0x02); /* bit 1 clear → LED power ON */
     }
     core2_leds_init();
 #endif
@@ -5559,13 +5557,12 @@ void picture_frame_run(void)
 #if CONFIG_HARDWARE_CORE2
             if (s_pending_vibrate) {
                 s_pending_vibrate = false;
-                /* LDO3 is kept on permanently for the SK6812 LED bar, so the
-                 * motor pulse is only felt on first enable after boot. */
                 uint8_t vib_reg = 0;
                 if (core2_axp_read_reg(0x12, &vib_reg) == ESP_OK) {
                     (void)core2_axp_write_reg(0x12, vib_reg | 0x08);  /* LDO3 on */
                     vTaskDelay(pdMS_TO_TICKS(80));
-                    /* Do NOT turn LDO3 off — the LED bar needs it. */
+                    (void)core2_axp_read_reg(0x12, &vib_reg);
+                    (void)core2_axp_write_reg(0x12, vib_reg & (uint8_t)~0x08); /* LDO3 off */
                 }
             }
             core2_poll_pwr_key();   /* voice query on PWR short press */
