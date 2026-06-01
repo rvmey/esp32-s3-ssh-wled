@@ -392,7 +392,7 @@ static void apply_scroll_abs(int target)
     if (target > max_scroll) target = max_scroll;
     if (target == s_scroll_line) return;
     s_scroll_line = target;
-    screen_draw_text(s_text);
+    screen_draw_text(NULL);  /* redraw at new scroll position without resetting it */
 }
 
 /* ------------------------------------------------------------------ */
@@ -771,8 +771,8 @@ void screen_draw_text(const char *text)
     if (text) {
         strncpy(s_text, text, sizeof(s_text) - 1);
         s_text[sizeof(s_text) - 1] = '\0';
+        s_scroll_line = 0;  /* new text — start at top */
     }
-    s_scroll_line = 0;
 
     static char all_lines[ALL_LINES_MAX][TEXT_COLS_MAX + 1];
     static int  all_len[ALL_LINES_MAX];
