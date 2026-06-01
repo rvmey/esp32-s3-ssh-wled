@@ -366,7 +366,7 @@ esp_err_t socketio_send_vpost(const char *path,
         return ESP_ERR_INVALID_SIZE;
     }
 
-    ESP_LOGI(TAG, "Sending vpost: %.200s", msg);
+    ESP_LOGI(TAG, "Sending vpost: %s", path);
     int sent = esp_websocket_client_send_text(s_client, msg, n, pdMS_TO_TICKS(3000));
     return (sent >= 0) ? ESP_OK : ESP_FAIL;
 }
