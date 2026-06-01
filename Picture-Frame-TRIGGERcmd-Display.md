@@ -63,6 +63,44 @@ The Picture Frame receives the `jpeg` command over Socket.IO and immediately dow
 
 ---
 
+## SD card configuration
+
+On boot, the firmware checks for a file named **`config.txt`** in the root of
+the SD card.  If the file exists, any credentials it contains are written to
+NVS (overwriting previously stored values) before Wi-Fi connects.
+
+This is the easiest way to pre-provision a device without going through the
+SoftAP or BLE pairing flow.
+
+### File format
+
+Plain text, one `key=value` pair per line.  Blank lines and lines starting
+with `#` are ignored.  All keys are optional — include only what you need.
+
+```
+# Wi-Fi networks (up to three)
+ssid=MyNetwork
+password=mypassword
+ssid2=BackupNetwork
+password2=backuppass
+ssid3=ThirdNetwork
+password3=thirdpass
+
+# OpenAI API key (used for voice queries on Core2)
+openai_key=sk-proj-...
+```
+
+### Notes
+
+- The file is read every boot, so you can update credentials by editing the
+  file and rebooting — no re-flashing required.
+- If the SD card is absent or `config.txt` does not exist, boot continues
+  normally with whatever credentials are already in NVS.
+- Values overwrite NVS unconditionally, so removing a key from the file on a
+  subsequent boot does **not** clear the previously saved NVS value.
+
+---
+
 ## Hardware notes
 
 | Item | Detail |
@@ -126,6 +164,9 @@ USB-JTAG, not present on classic ESP32):
 2. Connect your phone or laptop to that network.
 3. Browse to **`http://192.168.4.1`** and fill in your Wi-Fi SSID and password.
 4. Click **Save & Connect** — the device restarts and joins your network.
+
+Alternatively, place a [`config.txt`](#sd-card-configuration) file on the SD
+card before first boot to skip the SoftAP flow entirely.
 
 ### Orientation notes
 
