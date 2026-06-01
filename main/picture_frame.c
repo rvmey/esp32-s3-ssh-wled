@@ -3293,6 +3293,10 @@ static int core2_https_post_json(const char *url, const char *token,
 static void do_core2_voice_query(void)
 {
     ESP_LOGI(TAG, "Voice query: starting");
+    if (s_mp3_saved_font_scale >= 0) {
+        screen_set_font_scale_silent(s_mp3_saved_font_scale);
+        s_mp3_saved_font_scale = -1;
+    }
     screen_draw_text("Listening...");
 
     /* Suspend the mp3 player task and pause I2S before recording.
