@@ -1307,7 +1307,7 @@ static void sync_commands(void)
 
     char list_url[192];
     snprintf(list_url, sizeof(list_url),
-             "%s/api/command/list?computer_id=%s", TCMD_BASE_URL, s_computer_id);
+             "%s/api/command/list?computer_id=%s&limit=200", TCMD_BASE_URL, s_computer_id);
 
     char *list_body = NULL;
     int list_len = https_get_auth(list_url, s_hw_token, &list_body);

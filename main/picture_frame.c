@@ -4353,7 +4353,7 @@ static void sync_all_commands(bool remove_stale_mp3)
 
     char list_url[192];
     snprintf(list_url, sizeof(list_url),
-             "%s/api/command/list?computer_id=%s",
+             "%s/api/command/list?computer_id=%s&limit=200",
              TCMD_BASE_URL, s_computer_id);
 
     char *list_body = NULL;
