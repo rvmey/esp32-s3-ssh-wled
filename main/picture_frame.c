@@ -5400,13 +5400,27 @@ void picture_frame_run(void)
     }
 
 #if CONFIG_HARDWARE_CORE2
-    /* AXP192 GPIO4 powers the SK6812 LED bar via a P-FET.
-     * Clearing bit 1 of reg 0x94 drives GPIO4 low, turning the FET on.
-     * Equivalent to M5Core2 library's Axp.SetLed(true). */
+    /* Log and configure AXP192 power rails for SK6812 LED bar.
+     * M5Core2 Axp.begin() enables EXTEN (bit 6, 5V boost) and LDO3.
+     * Our screen init leaves EXTEN and LDO3 in their boot defaults; enable
+     * both here so at least one of the possible LED power sources is on. */
     {
-        uint8_t reg94 = 0x02; /* safe default: bit 1 set = LED off */
+        uint8_t reg12 = 0, reg28 = 0, reg94 = 0;
+        core2_axp_read_reg(0x12, &reg12);
+        core2_axp_read_reg(0x28, &reg28);
         core2_axp_read_reg(0x94, &reg94);
-        core2_axp_write_reg(0x94, reg94 & (uint8_t)~0x02); /* bit 1 clear → LED power ON */
+        ESP_LOGI("pf", "AXP192 pre-LED: reg12=0x%02X reg28=0x%02X reg94=0x%02X",
+                 reg12, reg28, reg94);
+
+        /* Enable EXTEN (5V boost, bit 6) — powers LED bar on some Core2 revisions */
+        core2_axp_write_reg(0x12, reg12 | 0x40);
+
+        /* Also try GPIO4 / reg 0x94 approach */
+        core2_axp_write_reg(0x94, reg94 & (uint8_t)~0x02);
+
+        uint8_t reg12_after = 0;
+        core2_axp_read_reg(0x12, &reg12_after);
+        ESP_LOGI("pf", "AXP192 post-LED: reg12=0x%02X", reg12_after);
     }
     core2_leds_init();
 #endif
