@@ -5200,13 +5200,15 @@ static void sd_apply_config_if_present(void)
         return;
     }
 
-    char ssid[64]        = {0};
-    char password[128]   = {0};
-    char ssid2[64]       = {0};
-    char password2[128]  = {0};
-    char ssid3[64]       = {0};
-    char password3[128]  = {0};
+    char ssid[64]       = {0};
+    char password[128]  = {0};
+    char ssid2[64]      = {0};
+    char password2[128] = {0};
+    char ssid3[64]      = {0};
+    char password3[128] = {0};
+#if CONFIG_HARDWARE_CORE2
     char openai_key[256] = {0};
+#endif
 
     char line[384];
     while (fgets(line, sizeof(line), f)) {
@@ -5245,8 +5247,10 @@ static void sd_apply_config_if_present(void)
             snprintf(ssid3, sizeof(ssid3), "%s", val);
         else if (strcmp(key, "password3") == 0)
             snprintf(password3, sizeof(password3), "%s", val);
+#if CONFIG_HARDWARE_CORE2
         else if (strcmp(key, "openai_key") == 0)
             snprintf(openai_key, sizeof(openai_key), "%s", val);
+#endif
     }
     fclose(f);
 
@@ -5274,6 +5278,8 @@ static void sd_apply_config_if_present(void)
             ESP_LOGE(TAG, "sd config: WiFi3 save failed: %s", esp_err_to_name(err));
     }
 
+
+#if CONFIG_HARDWARE_CORE2
     if (openai_key[0]) {
         esp_err_t err = nvs_write_str(NVS_KEY_STT, openai_key);
         if (err == ESP_OK)
@@ -5281,6 +5287,7 @@ static void sd_apply_config_if_present(void)
         else
             ESP_LOGE(TAG, "sd config: OpenAI key save failed: %s", esp_err_to_name(err));
     }
+#endif
 }
 
 /* ── Main entry point ───────────────────────────────────────────────────── */

@@ -375,6 +375,13 @@ static bool text_pixel_is_fg(int logical_x, int logical_y,
     return (s_font8x16[gi][font_row] & (0x80u >> font_col)) != 0;
 }
 
+static bool text_is_scrollable(void)
+{
+    if (s_scroll_total == 0) return false;
+    int max_rows = lcd_h() / (16 * s_font_scale);
+    return s_scroll_total > max_rows;
+}
+
 static void apply_scroll_abs(int target)
 {
     if (s_scroll_total == 0) return;
@@ -490,11 +497,18 @@ static void touch_poll_task(void *arg)
                         (void)s_touch_handler(last_lx, last_ly, SCREEN_GESTURE_TAP);
                 } else {
                     screen_gesture_t g;
-                    if (abs_dx >= abs_dy)
+                    bool vertical;
+                    if (abs_dx >= abs_dy) {
                         g = (dx > 0) ? SCREEN_GESTURE_SWIPE_RIGHT : SCREEN_GESTURE_SWIPE_LEFT;
-                    else
+                        vertical = false;
+                    } else {
                         g = (dy > 0) ? SCREEN_GESTURE_SWIPE_DOWN : SCREEN_GESTURE_SWIPE_UP;
-                    (void)s_touch_handler(last_lx, last_ly, g);
+                        vertical = true;
+                    }
+                    /* When text overflows the screen, vertical swipes scroll the
+                     * content — don't also send them to the app touch handler. */
+                    if (!vertical || !text_is_scrollable())
+                        (void)s_touch_handler(last_lx, last_ly, g);
                 }
             }
             touching = false;
