@@ -81,7 +81,7 @@ extern const char g_firmware_version[];
 #define COMPUTER_MODEL   "TCMDATOMS3"
 
 #define HTTP_TIMEOUT_MS  20000
-#define MAX_BODY         4096
+#define MAX_BODY         65536
 
 #define HW_TOKEN_MAX     513   /* 512 payload + NUL */
 #define COMPUTER_ID_MAX   33   /* 32 payload + NUL  */

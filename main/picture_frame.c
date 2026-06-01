@@ -3765,7 +3765,7 @@ static int https_get_auth(const char *url, const char *token, char **body)
     }
 
     int64_t cl = esp_http_client_fetch_headers(client);
-    int max_body = 32768;   /* command list can exceed 2 KB with many commands */
+    int max_body = 65536;   /* command list: each record embeds full user object (~1.2 KB × 33+ cmds ≈ 40 KB) */
     if (cl > 0 && cl < max_body) max_body = (int)cl;
 
     char *buf = malloc(max_body + 1);
@@ -4364,12 +4364,6 @@ static void sync_all_commands(bool remove_stale_mp3)
         if (list_body) free(list_body);
         return;
     }
-
-    ESP_LOGI(TAG, "cmd sync: list_len=%d first100=%.100s", list_len, list_body);
-    ESP_LOGI(TAG, "cmd sync: last100=%.100s", list_body + (list_len > 100 ? list_len - 100 : 0));
-    ESP_LOGI(TAG, "cmd sync: has_ledcolor=%d has_repeatplaylist=%d",
-             strstr(list_body, "ledcolor") != NULL,
-             strstr(list_body, "repeatplaylist") != NULL);
 
     char cmd_url[192];
     snprintf(cmd_url, sizeof(cmd_url), "%s/api/command/save", TCMD_BASE_URL);
