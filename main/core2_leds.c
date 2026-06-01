@@ -28,8 +28,8 @@ static const char *TAG = "c2leds";
 #define SK6812_T1H_TICKS     8
 #define SK6812_T1L_TICKS     4
 
-/* Pixel buffer: GRBW order, 4 bytes per LED */
-static uint8_t s_pixels[CORE2_LED_COUNT * 4];
+/* Pixel buffer: GRB order, 3 bytes per LED (SK6812 on M5Core2 is 24-bit, no W) */
+static uint8_t s_pixels[CORE2_LED_COUNT * 3];
 
 static rmt_channel_handle_t s_rmt_chan = NULL;
 static rmt_encoder_handle_t s_encoder  = NULL;
@@ -115,10 +115,9 @@ void core2_leds_init(void)
 
     /* Boot flash: dim white for 300 ms — confirms wiring on each boot. */
     for (int i = 0; i < CORE2_LED_COUNT; i++) {
-        s_pixels[i * 4 + 0] = 30; /* G */
-        s_pixels[i * 4 + 1] = 30; /* R */
-        s_pixels[i * 4 + 2] = 30; /* B */
-        s_pixels[i * 4 + 3] =  0; /* W */
+        s_pixels[i * 3 + 0] = 30; /* G */
+        s_pixels[i * 3 + 1] = 30; /* R */
+        s_pixels[i * 3 + 2] = 30; /* B */
     }
     esp_err_t flash_err = led_flush();
     ESP_LOGI(TAG, "boot flash: %s  GPIO level after: %d",
@@ -162,10 +161,9 @@ void core2_leds_set_solid(uint8_t r, uint8_t g, uint8_t b)
         return;
     }
     for (int i = 0; i < CORE2_LED_COUNT; i++) {
-        s_pixels[i * 4 + 0] = g;
-        s_pixels[i * 4 + 1] = r;
-        s_pixels[i * 4 + 2] = b;
-        s_pixels[i * 4 + 3] = 0;
+        s_pixels[i * 3 + 0] = g;
+        s_pixels[i * 3 + 1] = r;
+        s_pixels[i * 3 + 2] = b;
     }
     esp_err_t err = led_flush();
     if (err == ESP_OK) {
@@ -184,10 +182,9 @@ void core2_leds_set_bands(const float *levels, int count)
         if (lv > 1.0f) lv = 1.0f;
         uint8_t r, g, b;
         band_to_rgb(i, lv, &r, &g, &b);
-        s_pixels[i * 4 + 0] = g;
-        s_pixels[i * 4 + 1] = r;
-        s_pixels[i * 4 + 2] = b;
-        s_pixels[i * 4 + 3] = 0;
+        s_pixels[i * 3 + 0] = g;
+        s_pixels[i * 3 + 1] = r;
+        s_pixels[i * 3 + 2] = b;
     }
     esp_err_t err = led_flush();
     if (err != ESP_OK) {
