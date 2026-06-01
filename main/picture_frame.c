@@ -4365,6 +4365,12 @@ static void sync_all_commands(bool remove_stale_mp3)
         return;
     }
 
+    ESP_LOGI(TAG, "cmd sync: list_len=%d first100=%.100s", list_len, list_body);
+    ESP_LOGI(TAG, "cmd sync: last100=%.100s", list_body + (list_len > 100 ? list_len - 100 : 0));
+    ESP_LOGI(TAG, "cmd sync: has_ledcolor=%d has_repeatplaylist=%d",
+             strstr(list_body, "ledcolor") != NULL,
+             strstr(list_body, "repeatplaylist") != NULL);
+
     char cmd_url[192];
     snprintf(cmd_url, sizeof(cmd_url), "%s/api/command/save", TCMD_BASE_URL);
 
