@@ -4,6 +4,8 @@
 #include <math.h>
 #include "driver/rmt_tx.h"
 #include "driver/rmt_encoder.h"
+#include "driver/gpio.h"
+#include "driver/rtc_io.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -48,6 +50,11 @@ static esp_err_t led_flush(void)
 void core2_leds_init(void)
 {
     memset(s_pixels, 0, sizeof(s_pixels));
+
+    /* GPIO 25 is also the DAC1/RTCIO pin on classic ESP32.  Release it from
+     * the RTC subsystem so the GPIO matrix can route RMT output to the pad. */
+    rtc_gpio_deinit((gpio_num_t)CORE2_LED_GPIO);
+    gpio_set_pull_mode((gpio_num_t)CORE2_LED_GPIO, GPIO_FLOATING);
 
     rmt_tx_channel_config_t chan_cfg = {
         .gpio_num          = CORE2_LED_GPIO,
