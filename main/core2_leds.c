@@ -6,6 +6,7 @@
 #include "driver/rmt_encoder.h"
 #include "driver/gpio.h"
 #include "driver/rtc_io.h"
+#include "esp_rom_gpio.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -14,20 +15,18 @@ static const char *TAG = "c2leds";
 
 /*
  * Direct RMT driver for SK6812 (GRBW, 32 bits/LED).
- * Uses the new IDF v5+/v6 rmt_tx API directly rather than the led_strip
- * component, which does not reliably drive classic ESP32 SK6812 strips.
  *
- * Timing at 10 MHz resolution (100 ns per tick):
- *   T0H = 300 ns  (3 ticks)   T0L = 900 ns  (9 ticks)
- *   T1H = 600 ns  (6 ticks)   T1L = 600 ns  (6 ticks)
- *   Reset > 80 μs — provided by idle low between transmissions.
+ * Timing at 10 MHz resolution (100 ns per tick).
+ * Using WS2812-compatible widened timing which most SK6812 clones accept:
+ *   T0H = 400 ns (4 ticks)   T0L = 800 ns (8 ticks)
+ *   T1H = 800 ns (8 ticks)   T1L = 400 ns (4 ticks)
+ * Reset: idle LOW between transmissions (always >> 80 μs at our call rate).
  */
-
 #define SK6812_RMT_RES_HZ    10000000U
-#define SK6812_T0H_TICKS     3
-#define SK6812_T0L_TICKS     9
-#define SK6812_T1H_TICKS     6
-#define SK6812_T1L_TICKS     6
+#define SK6812_T0H_TICKS     4
+#define SK6812_T0L_TICKS     8
+#define SK6812_T1H_TICKS     8
+#define SK6812_T1L_TICKS     4
 
 /* Pixel buffer: GRBW order, 4 bytes per LED */
 static uint8_t s_pixels[CORE2_LED_COUNT * 4];
@@ -44,25 +43,35 @@ static esp_err_t led_flush(void)
         ESP_LOGE(TAG, "rmt_transmit: %s", esp_err_to_name(err));
         return err;
     }
-    return rmt_tx_wait_all_done(s_rmt_chan, pdMS_TO_TICKS(500));
+    err = rmt_tx_wait_all_done(s_rmt_chan, pdMS_TO_TICKS(500));
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "rmt_tx_wait: %s", esp_err_to_name(err));
+    }
+    return err;
 }
 
 void core2_leds_init(void)
 {
     memset(s_pixels, 0, sizeof(s_pixels));
 
-    /* GPIO 25 is also the DAC1/RTCIO pin on classic ESP32.  Release it from
-     * the RTC subsystem so the GPIO matrix can route RMT output to the pad. */
+    /* GPIO 25 is also DAC1/RTCIO on classic ESP32.
+     * 1. Release from RTC subsystem (allows GPIO matrix to take over the pad)
+     * 2. Force GPIO matrix function on the pad
+     * 3. Drive LOW briefly to satisfy SK6812 reset requirement before RMT */
     rtc_gpio_deinit((gpio_num_t)CORE2_LED_GPIO);
-    gpio_set_pull_mode((gpio_num_t)CORE2_LED_GPIO, GPIO_FLOATING);
+    esp_rom_gpio_pad_select_gpio(CORE2_LED_GPIO);
+    gpio_set_direction((gpio_num_t)CORE2_LED_GPIO, GPIO_MODE_OUTPUT);
+    gpio_set_drive_capability((gpio_num_t)CORE2_LED_GPIO, GPIO_DRIVE_CAP_3);
+    gpio_set_level((gpio_num_t)CORE2_LED_GPIO, 0);
+    ESP_LOGI(TAG, "GPIO %d level before RMT: %d", CORE2_LED_GPIO,
+             gpio_get_level((gpio_num_t)CORE2_LED_GPIO));
+
+    vTaskDelay(pdMS_TO_TICKS(1));  /* >80 μs LOW for SK6812 reset */
 
     rmt_tx_channel_config_t chan_cfg = {
         .gpio_num          = CORE2_LED_GPIO,
         .clk_src           = RMT_CLK_SRC_DEFAULT,
         .resolution_hz     = SK6812_RMT_RES_HZ,
-        /* Classic ESP32 has 512 RMT items total (8 × 64).  Allocate 512 to
-         * this channel so the entire 320-symbol SK6812 frame (10 LEDs × 32
-         * bits) fits in one shot with no ping-pong refill interrupts. */
         .mem_block_symbols = 512,
         .trans_queue_depth = 1,
     };
@@ -101,19 +110,27 @@ void core2_leds_init(void)
         return;
     }
 
-    /* Boot flash: dim white for 300 ms to confirm wiring. */
+    ESP_LOGI(TAG, "GPIO %d level after rmt_enable: %d", CORE2_LED_GPIO,
+             gpio_get_level((gpio_num_t)CORE2_LED_GPIO));
+
+    /* Boot flash: dim white for 300 ms — confirms wiring on each boot. */
     for (int i = 0; i < CORE2_LED_COUNT; i++) {
         s_pixels[i * 4 + 0] = 30; /* G */
         s_pixels[i * 4 + 1] = 30; /* R */
         s_pixels[i * 4 + 2] = 30; /* B */
         s_pixels[i * 4 + 3] =  0; /* W */
     }
-    led_flush();
+    esp_err_t flash_err = led_flush();
+    ESP_LOGI(TAG, "boot flash: %s  GPIO level after: %d",
+             flash_err == ESP_OK ? "OK" : esp_err_to_name(flash_err),
+             gpio_get_level((gpio_num_t)CORE2_LED_GPIO));
+
     vTaskDelay(pdMS_TO_TICKS(300));
     memset(s_pixels, 0, sizeof(s_pixels));
     led_flush();
 
-    ESP_LOGI(TAG, "SK6812 x%d on GPIO %d (direct RMT)", CORE2_LED_COUNT, CORE2_LED_GPIO);
+    ESP_LOGI(TAG, "SK6812 x%d on GPIO %d (direct RMT, WS2812 timing)",
+             CORE2_LED_COUNT, CORE2_LED_GPIO);
 }
 
 bool core2_leds_initialized(void)
@@ -152,7 +169,8 @@ void core2_leds_set_solid(uint8_t r, uint8_t g, uint8_t b)
     }
     esp_err_t err = led_flush();
     if (err == ESP_OK) {
-        ESP_LOGI(TAG, "set_solid rgb(%u,%u,%u) OK", r, g, b);
+        ESP_LOGI(TAG, "set_solid rgb(%u,%u,%u) OK  GPIO level: %d",
+                 r, g, b, gpio_get_level((gpio_num_t)CORE2_LED_GPIO));
     }
 }
 
