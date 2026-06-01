@@ -5185,6 +5185,76 @@ static esp_err_t connect_and_subscribe(void)
     return ESP_OK;
 }
 
+/* ── SD card boot-time config ───────────────────────────────────────────── */
+
+/* Read /sdcard/config.txt (key=value lines) and write any found WiFi
+ * credentials or OpenAI key to NVS, overwriting previously stored values.
+ * Silently skips if the SD card is absent or the file does not exist. */
+static void sd_apply_config_if_present(void)
+{
+    if (!mount_sd_card_if_needed()) return;
+
+    FILE *f = fopen("/sdcard/config.txt", "r");
+    if (!f) {
+        ESP_LOGI(TAG, "sd config: no config.txt on SD card");
+        return;
+    }
+
+    char ssid[64]        = {0};
+    char password[128]   = {0};
+    char openai_key[256] = {0};
+
+    char line[384];
+    while (fgets(line, sizeof(line), f)) {
+        /* strip trailing newline / CR */
+        size_t ln = strlen(line);
+        while (ln > 0 && (line[ln - 1] == '\r' || line[ln - 1] == '\n'))
+            line[--ln] = '\0';
+
+        /* skip blank lines and # comments */
+        char *p = line;
+        while (*p == ' ' || *p == '\t') p++;
+        if (*p == '\0' || *p == '#') continue;
+
+        char *eq = strchr(p, '=');
+        if (!eq) continue;
+        *eq = '\0';
+        char *key = p;
+        char *val = eq + 1;
+
+        /* trim trailing whitespace from key */
+        char *ke = key + strlen(key) - 1;
+        while (ke >= key && (*ke == ' ' || *ke == '\t')) *ke-- = '\0';
+
+        /* trim leading whitespace from value */
+        while (*val == ' ' || *val == '\t') val++;
+
+        if (strcmp(key, "ssid") == 0)
+            snprintf(ssid, sizeof(ssid), "%s", val);
+        else if (strcmp(key, "password") == 0)
+            snprintf(password, sizeof(password), "%s", val);
+        else if (strcmp(key, "openai_key") == 0)
+            snprintf(openai_key, sizeof(openai_key), "%s", val);
+    }
+    fclose(f);
+
+    if (ssid[0]) {
+        esp_err_t err = wifi_save_credentials(ssid, password);
+        if (err == ESP_OK)
+            ESP_LOGI(TAG, "sd config: saved WiFi SSID '%s'", ssid);
+        else
+            ESP_LOGE(TAG, "sd config: WiFi save failed: %s", esp_err_to_name(err));
+    }
+
+    if (openai_key[0]) {
+        esp_err_t err = nvs_write_str(NVS_KEY_STT, openai_key);
+        if (err == ESP_OK)
+            ESP_LOGI(TAG, "sd config: saved OpenAI key");
+        else
+            ESP_LOGE(TAG, "sd config: OpenAI key save failed: %s", esp_err_to_name(err));
+    }
+}
+
 /* ── Main entry point ───────────────────────────────────────────────────── */
 
 void picture_frame_run(void)
@@ -5195,6 +5265,7 @@ void picture_frame_run(void)
     screen_set_touch_handler(pf_touch_handler);
     ESP_LOGI(TAG, "firmware version %s", g_firmware_version);
     mp3_ensure_task();
+    sd_apply_config_if_present();
 
     /* ── WiFi ────────────────────────────────────────────────────────────── */
     pf_status_draw("Waiting for WiFi...");
