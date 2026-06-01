@@ -4144,7 +4144,7 @@ static const pf_cmd_t s_pf_cmds[] = {
     { "landscape", "landscape", "false", "Set the display to landscape orientation.",                        "\xE2\x86\x94\xEF\xB8\x8F" /* ↔️ */ },
     { "portrait",  "portrait",  "false", "Set the display to portrait orientation.",                         "\xE2\x86\x95\xEF\xB8\x8F" /* ↕️ */ },
     { "jpeg",      "jpeg",      "true",  "Display a JPEG picture for the user when they say something like, 'Picture of a cat'. Use loremflickr.com by default. If multiple words (Example: cat_and_dog), use an underscores. The command parameter should always be a URL like this: 'https://loremflickr.com/320/240/cat_and_dog'", "\xF0\x9F\x96\xBC\xEF\xB8\x8F" /* 🖼️ */ },
-    { "save",      "save",      "false", "Save the screen settings to non-volatile memory. Example: 'save'", "\xF0\x9F\x92\xBE" /* 💾 */ },
+    { "save",      "save",      "false", "Save the screen settings to non-volatile memory.", "\xF0\x9F\x92\xBE" /* 💾 */ },
     { "savepic",   "savepic",   "false", "Save the currently displayed JPEG to the SD card in the 'pictures' folder.", "\xF0\x9F\x93\xB7" /* 📷 */ },
     { "folders",   "folders",   "false", "List the folders on the SD card.", "\xF0\x9F\x93\x82" /* 📂 */ },
     { "files",     "files",     "true",  "List files in a folder on the SD card. Example: 'music'", "\xF0\x9F\x93\x84" /* 📄 */ },
@@ -4847,6 +4847,7 @@ static void pf_event_handler(const char *event_name,
 
     } else if (strcmp(s_trigger, "ledcolor") == 0) {
 #if CONFIG_HARDWARE_CORE2
+        s_mp3.visualizer = false;
         if (strcasecmp(s_params, "off") == 0 || strcmp(s_params, "0") == 0) {
             core2_leds_off();
         } else {
