@@ -59,7 +59,7 @@
   "trigger": "save",
   "command": "save",
   "allowParams": "false",
-  "mcpToolDescription": "Save the screen settings to non-volatile memory. Example: 'save'",
+  "mcpToolDescription": "Save the screen settings to non-volatile memory.",
   "icon": "💾"
  },
  {
