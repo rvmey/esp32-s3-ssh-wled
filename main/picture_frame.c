@@ -1638,8 +1638,13 @@ static bool bt_init_if_needed(void)
             esp_avrc_psth_bit_mask_operation(ESP_AVRC_BIT_MASK_OP_SET, &psth_mask, ESP_AVRC_PT_CMD_STOP);
             esp_avrc_psth_bit_mask_operation(ESP_AVRC_BIT_MASK_OP_SET, &psth_mask, ESP_AVRC_PT_CMD_FORWARD);
             esp_avrc_psth_bit_mask_operation(ESP_AVRC_BIT_MASK_OP_SET, &psth_mask, ESP_AVRC_PT_CMD_BACKWARD);
-            esp_avrc_psth_bit_mask_operation(ESP_AVRC_BIT_MASK_OP_SET, &psth_mask, ESP_AVRC_PT_CMD_VENDOR);
-            esp_avrc_tg_set_psth_cmd_filter(ESP_AVRC_PSTH_FILTER_SUPPORTED_CMD, &psth_mask);
+            /* VENDOR (0x7E) is NOT in Bluedroid's allowed set — including it causes
+             * esp_avrc_tg_set_psth_cmd_filter to return ESP_ERR_NOT_SUPPORTED and
+             * leave the entire filter empty, silently dropping all passthrough cmds. */
+            esp_err_t psth_err = esp_avrc_tg_set_psth_cmd_filter(ESP_AVRC_PSTH_FILTER_SUPPORTED_CMD, &psth_mask);
+            if (psth_err != ESP_OK) {
+                ESP_LOGW(TAG, "bt: AVRCP psth filter set failed: %s", esp_err_to_name(psth_err));
+            }
             ESP_LOGI(TAG, "bt: AVRCP TG ready (earbud controls enabled)");
         }
     }
