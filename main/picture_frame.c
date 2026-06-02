@@ -1378,12 +1378,20 @@ static void bt_a2dp_cb(esp_a2d_cb_event_t event, esp_a2d_cb_param_t *param)
 #if CONFIG_BT_A2DP_ENABLE
 static void bt_avrc_tg_cb(esp_avrc_tg_cb_event_t event, esp_avrc_tg_cb_param_t *param)
 {
-    if (!param || event != ESP_AVRC_TG_PASSTHROUGH_CMD_EVT) return;
+    if (!param) return;
+
+    if (event == ESP_AVRC_TG_CONNECTION_STATE_EVT) {
+        ESP_LOGI(TAG, "avrc tg: %s",
+                 param->conn_stat.connected ? "connected" : "disconnected");
+        return;
+    }
+
+    if (event != ESP_AVRC_TG_PASSTHROUGH_CMD_EVT) return;
 
     uint8_t cmd   = param->psth_cmd.key_code;
     uint8_t state = param->psth_cmd.key_state;
 
-    ESP_LOGD(TAG, "avrc tg: cmd=0x%02X %s", cmd,
+    ESP_LOGI(TAG, "avrc tg: cmd=0x%02X %s", cmd,
              state == ESP_AVRC_PT_CMD_STATE_PRESSED ? "PRESSED" : "RELEASED");
 
     if (cmd == ESP_AVRC_PT_CMD_PLAY || cmd == ESP_AVRC_PT_CMD_PAUSE) {
