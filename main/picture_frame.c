@@ -3652,8 +3652,9 @@ static void do_core2_hfp_voice_query(void)
         goto hfp_voice_fallback;
     }
 
-    /* Wait for SCO to be established (up to 3 s) */
-    if (xSemaphoreTake(s_hfp_audio_sem, pdMS_TO_TICKS(3000)) != pdTRUE) {
+    /* Wait for SCO to be established (up to 8 s — SCO handshake from sniff mode
+     * can take several seconds; 3 s was too tight in practice). */
+    if (xSemaphoreTake(s_hfp_audio_sem, pdMS_TO_TICKS(8000)) != pdTRUE) {
         ESP_LOGW(TAG, "HFP voice: SCO connection timeout");
         screen_draw_text("HFP: SCO timeout");
         esp_hf_ag_audio_disconnect(s_hfp_peer_addr);
