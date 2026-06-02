@@ -147,6 +147,13 @@ void screen_spi_unlock(void);
 void screen_reinit_display(void);
 
 /**
+ * @brief Cut the display backlight power rail before entering deep sleep.
+ *        On Core2 this clears the AXP192 DC3 enable bit.  On other hardware
+ *        this is a no-op.  screen_init() restores the backlight on next boot.
+ */
+void screen_backlight_off(void);
+
+/**
  * @brief Register a logical-coordinate touch callback.
  *
  * The callback receives x/y in current logical orientation coordinates

@@ -689,6 +689,13 @@ void screen_off(void)
     screen_fill(0, 0, 0);
 }
 
+void screen_backlight_off(void)
+{
+    /* Cut the AXP192 DC3 rail (backlight power) before entering deep sleep.
+     * screen_init() re-enables it on the next boot via axp_read_modify_write. */
+    axp_read_modify_write(0x12, 0x02, 0x00);   /* DC3 off */
+}
+
 void screen_get_color(uint8_t *r, uint8_t *g, uint8_t *b)
 {
     *r = s_r;  *g = s_g;  *b = s_b;

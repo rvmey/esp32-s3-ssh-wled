@@ -66,6 +66,9 @@
 /* SoftAP provisioning for Core2 (classic ESP32 — no USB-JTAG Improv) */
 #include "core2_audio.h"
 #include "core2_mic.h"
+#include "mpu6886.h"
+#include "esp_sleep.h"
+#include "driver/rtc_io.h"
 #include "esp_wifi.h"
 #include "esp_netif.h"
 #include "esp_event.h"
@@ -363,6 +366,12 @@ static const char *tcmd_display_host(void)
 /* ── Module-level statics shared with event handler ────────────────────── */
 static char s_hw_token[HW_TOKEN_MAX_LEN]      __attribute__((unused)) = {0};
 static char s_computer_id[COMPUTER_ID_MAX_LEN] __attribute__((unused)) = {0};
+
+#if CONFIG_HARDWARE_CORE2
+/* Timestamp of last user activity; reset by touch and received commands.
+ * Used by the main loop to trigger deep sleep after CORE2_SLEEP_TIMEOUT_S. */
+static TickType_t s_last_activity_tick = 0;
+#endif
 
 /* Pending run/save — set by the WS event task, consumed by the main loop */
 static char          s_pending_run_id[33] __attribute__((unused)) = {0};
@@ -2876,6 +2885,9 @@ static void mp3_render_now_playing(void)
 static bool pf_touch_handler(int x, int y, screen_gesture_t gesture)
 {
     (void)x; (void)y;
+#if CONFIG_HARDWARE_CORE2
+    s_last_activity_tick = xTaskGetTickCount();
+#endif
     if (!s_mp3.active || !s_mp3_ui_override_allowed) return false;
 
     s_mp3_ui_override_allowed = true;
@@ -4452,6 +4464,10 @@ static void pf_event_handler(const char *event_name,
 
     if (strcmp(event_name, "message") != 0) return;
 
+#if CONFIG_HARDWARE_CORE2
+    s_last_activity_tick = xTaskGetTickCount();
+#endif
+
     static char s_trigger[64];
     static char s_id[32];
     static char s_params[256];
@@ -5302,6 +5318,18 @@ void picture_frame_run(void)
     mp3_ensure_task();
     sd_apply_config_if_present();
 
+#if CONFIG_HARDWARE_CORE2
+    {
+        bool imu_wakeup = (esp_sleep_get_wakeup_causes() & ESP_SLEEP_WAKEUP_EXT1) != 0;
+        mpu6886_init();
+        mpu6886_clear_interrupt();   /* deassert INT line regardless of wakeup cause */
+        if (imu_wakeup) {
+            ESP_LOGI(TAG, "Woke from deep sleep via IMU motion");
+        }
+        s_last_activity_tick = xTaskGetTickCount();
+    }
+#endif
+
     /* ── WiFi ────────────────────────────────────────────────────────────── */
     pf_status_draw("Waiting for WiFi...");
 
@@ -5691,6 +5719,24 @@ void picture_frame_run(void)
                 }
             }
             core2_poll_pwr_key();   /* voice query on PWR short press */
+
+#if CONFIG_CORE2_SLEEP_TIMEOUT_S > 0
+            if ((TickType_t)(xTaskGetTickCount() - s_last_activity_tick) >=
+                    pdMS_TO_TICKS((uint32_t)CONFIG_CORE2_SLEEP_TIMEOUT_S * 1000u)) {
+                ESP_LOGI(TAG, "Idle timeout (%d s) — entering deep sleep",
+                         CONFIG_CORE2_SLEEP_TIMEOUT_S);
+                screen_backlight_off();
+                mpu6886_configure_wom(0x20);   /* ~128 mg pick-up threshold */
+                mpu6886_clear_interrupt();
+                rtc_gpio_init(GPIO_NUM_35);
+                rtc_gpio_set_direction(GPIO_NUM_35, RTC_GPIO_MODE_INPUT_ONLY);
+                rtc_gpio_pulldown_en(GPIO_NUM_35);
+                rtc_gpio_pullup_dis(GPIO_NUM_35);
+                esp_sleep_enable_ext1_wakeup(1ULL << GPIO_NUM_35,
+                                             ESP_EXT1_WAKEUP_ANY_HIGH);
+                esp_deep_sleep_start();
+            }
+#endif
 #endif
 
             vTaskDelay(pdMS_TO_TICKS(200));   /* poll every 200 ms */

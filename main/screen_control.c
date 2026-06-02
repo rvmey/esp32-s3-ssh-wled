@@ -587,6 +587,11 @@ void screen_reinit_display(void)
     /* No-op: JC3248W535 AXS15231B does not require SPI-share recovery. */
 }
 
+void screen_backlight_off(void)
+{
+    /* No-op: JC3248W535 does not use AXP192 backlight control. */
+}
+
 void screen_set_touch_handler(screen_touch_handler_t handler)
 {
     s_touch_handler = handler;

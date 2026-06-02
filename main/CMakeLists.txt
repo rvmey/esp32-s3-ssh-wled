@@ -32,6 +32,7 @@ elseif(CONFIG_HARDWARE_CORE2)
         "core2_audio.c"
         "core2_mic.c"
         "core2_leds.c"
+        "mpu6886.c"
         "picture_frame.c"
         "socketio.c"
         "http_pf_config.c")

@@ -159,6 +159,19 @@ menu "ESP32 SSH LED Configuration"
                 Leave empty to store rides locally without uploading.
     endmenu
 
+    menu "Core2 Settings"
+        depends on HARDWARE_CORE2
+
+        config CORE2_SLEEP_TIMEOUT_S
+            int "Deep-sleep idle timeout (seconds; 0 = disabled)"
+            default 600
+            range 0 7200
+            help
+                Seconds of inactivity (no touch, no TRIGGERcmd command) before
+                the Core2 enters deep sleep.  The MPU6886 motion interrupt on
+                GPIO 35 wakes the device.  Set to 0 to disable auto-sleep.
+    endmenu
+
     config WIFI_SSID
         string "WiFi SSID"
         default "MyWifi"
