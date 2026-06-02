@@ -168,8 +168,8 @@ menu "ESP32 SSH LED Configuration"
             range 0 7200
             help
                 Seconds of inactivity (no touch, no TRIGGERcmd command) before
-                the Core2 enters deep sleep.  The MPU6886 motion interrupt on
-                GPIO 35 wakes the device.  Set to 0 to disable auto-sleep.
+                the Core2 enters deep sleep.  Touching the screen (FT6336U INT
+                on GPIO 39) wakes the device.  Set to 0 to disable auto-sleep.
     endmenu
 
     config WIFI_SSID

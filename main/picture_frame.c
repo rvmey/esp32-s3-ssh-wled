@@ -5320,11 +5320,10 @@ void picture_frame_run(void)
 
 #if CONFIG_HARDWARE_CORE2
     {
-        bool imu_wakeup = (esp_sleep_get_wakeup_causes() & ESP_SLEEP_WAKEUP_EXT1) != 0;
+        bool touch_wakeup = (esp_sleep_get_wakeup_causes() & ESP_SLEEP_WAKEUP_EXT1) != 0;
         mpu6886_init();
-        mpu6886_clear_interrupt();   /* deassert INT line regardless of wakeup cause */
-        if (imu_wakeup) {
-            ESP_LOGI(TAG, "Woke from deep sleep via IMU motion");
+        if (touch_wakeup) {
+            ESP_LOGI(TAG, "Woke from deep sleep via touch");
         }
         s_last_activity_tick = xTaskGetTickCount();
     }
@@ -5726,14 +5725,14 @@ void picture_frame_run(void)
                 ESP_LOGI(TAG, "Idle timeout (%d s) — entering deep sleep",
                          CONFIG_CORE2_SLEEP_TIMEOUT_S);
                 screen_backlight_off();
-                mpu6886_configure_wom(0x20);   /* ~128 mg pick-up threshold */
-                mpu6886_clear_interrupt();
-                rtc_gpio_init(GPIO_NUM_35);
-                rtc_gpio_set_direction(GPIO_NUM_35, RTC_GPIO_MODE_INPUT_ONLY);
-                rtc_gpio_pulldown_en(GPIO_NUM_35);
-                rtc_gpio_pullup_dis(GPIO_NUM_35);
-                esp_sleep_enable_ext1_wakeup(1ULL << GPIO_NUM_35,
-                                             ESP_EXT1_WAKEUP_ANY_HIGH);
+                /* MPU6886 INT is not wired to the ESP32 on Core2.
+                 * Wake via FT6336U touch INT (GPIO 39, active-low, PCB pull-up). */
+                rtc_gpio_init(GPIO_NUM_39);
+                rtc_gpio_set_direction(GPIO_NUM_39, RTC_GPIO_MODE_INPUT_ONLY);
+                rtc_gpio_pullup_dis(GPIO_NUM_39);
+                rtc_gpio_pulldown_dis(GPIO_NUM_39);
+                esp_sleep_enable_ext1_wakeup(1ULL << GPIO_NUM_39,
+                                             ESP_EXT1_WAKEUP_ALL_LOW);
                 esp_deep_sleep_start();
             }
 #endif
