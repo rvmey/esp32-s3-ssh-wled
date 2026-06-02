@@ -78,6 +78,16 @@ For any variant that uses a stable installer alias (e.g. `manifest-core2.json`),
 
 This step is required whenever installer-facing firmware for that variant changes.
 
+## Adding TRIGGERcmd commands (picture_frame variants)
+
+When adding a new command to a picture_frame variant (Core2, JC3248W535, picture_frame), **three things are required** — missing any one means the command won't appear in TRIGGERcmd:
+
+1. **`main/picture_frame_commands.json`** — add a JSON entry. This file is documentation only and is **not read at runtime**.
+
+2. **`main/picture_frame.c` — `pf_event_handler`** — add an `else if (strcmp(s_trigger, "name") == 0)` branch to execute the command.
+
+3. **`main/picture_frame.c` — `s_pf_cmds` or `s_pf_media_cmds` array** — add an entry so `sync_all_commands()` registers it with the TRIGGERcmd cloud. **This is the step that makes the command appear in the TRIGGERcmd web UI.** Without it the handler exists but the command is invisible to users.
+
 ## Project structure
 
 - [main/main.c](main/main.c) — defines `APP_VERSION` (single source of truth for the version string)

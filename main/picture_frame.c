@@ -4169,6 +4169,7 @@ static const pf_cmd_t s_pf_cmds[] = {
     { "folders",   "folders",   "false", "List the folders on the SD card.", "\xF0\x9F\x93\x82" /* 📂 */ },
     { "files",     "files",     "true",  "List files in a folder on the SD card. Example: 'music'", "\xF0\x9F\x93\x84" /* 📄 */ },
     { "reboot",    "reboot",    "false", "Reboot the device.", "\xF0\x9F\x94\x81" /* 🔁 */ },
+    { "sleeptimer","sleeptimer","true",  "Set minutes of inactivity before the device sleeps (0 = never). Example: '10'", "\xF0\x9F\x98\xB4" /* 😴 */ },
 };
 #define PF_CMD_COUNT  (sizeof(s_pf_cmds) / sizeof(s_pf_cmds[0]))
 
