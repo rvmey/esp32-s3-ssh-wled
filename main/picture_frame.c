@@ -1167,7 +1167,9 @@ static void bt_build_sbc_pref_mcc(esp_a2d_mcc_t *mcc)
     mcc->cie.sbc_info.num_subbands = ESP_A2D_SBC_CIE_NUM_SUBBANDS_8;
     mcc->cie.sbc_info.block_len = ESP_A2D_SBC_CIE_BLOCK_LEN_16;
     mcc->cie.sbc_info.min_bitpool = 2;
-    mcc->cie.sbc_info.max_bitpool = 24;
+    /* 18 ≈ 64 kbps at 44.1 kHz joint-stereo — gives more RF headroom than 24
+     * (≈ 85 kbps), reducing L2CAP congestion cycles during WiFi coexistence. */
+    mcc->cie.sbc_info.max_bitpool = 18;
 }
 
 static void bt_set_pref_codec(esp_a2d_conn_hdl_t conn_hdl)

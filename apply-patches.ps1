@@ -182,4 +182,31 @@ if (-not (Test-Path $idfSpiLock)) {
     }
 }
 
+# ---------------------------------------------------------------------------
+# Patch 0006 - l2c_link.c: demote is_cong_cback_context log from ERROR to DEBUG
+# ESP-IDF v6.0 Bluedroid fires L2CAP_TRACE_ERROR("l2cab is_cong_cback_context")
+# at 100+ times/second during normal A2DP + WiFi coexistence RF congestion.
+# Each call string-formats and serializes to UART, stealing CPU from BT audio
+# tasks and directly causing audio glitches.  The guard itself (return;) is
+# correct and should stay.  Only the log level needs demotion so it is silent
+# in production while remaining visible when BT debug tracing is enabled.
+# ---------------------------------------------------------------------------
+$l2cLink = "C:\esp\v6.0\esp-idf\components\bt\host\bluedroid\stack\l2cap\l2c_link.c"
+if (-not (Test-Path $l2cLink)) {
+    Write-Warning "SKIP  0006 l2c_link.c is_cong_cback_context ERROR->DEBUG  (ESP-IDF not found at C:\esp\v6.0)"
+} else {
+    $old06 = '        L2CAP_TRACE_ERROR("l2cab is_cong_cback_context");'
+    $new06 = '        L2CAP_TRACE_DEBUG("l2cab is_cong_cback_context");'
+    $content06 = Get-Content $l2cLink -Raw -Encoding UTF8
+    if ($content06.Contains($new06)) {
+        Write-Host "SKIP  0006 l2c_link.c is_cong_cback_context ERROR->DEBUG  (already applied)" -ForegroundColor DarkGray
+    } elseif (-not $content06.Contains($old06)) {
+        Write-Warning "SKIP  0006 l2c_link.c is_cong_cback_context ERROR->DEBUG  (original text not found - ESP-IDF version may differ)"
+    } else {
+        $patched06 = $content06.Replace($old06, $new06)
+        [System.IO.File]::WriteAllText($l2cLink, $patched06, [System.Text.UTF8Encoding]::new($false))
+        Write-Host "OK    0006 l2c_link.c is_cong_cback_context ERROR->DEBUG" -ForegroundColor Green
+    }
+}
+
 Write-Host "`nDone." -ForegroundColor Cyan
