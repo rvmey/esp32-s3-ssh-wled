@@ -5364,8 +5364,6 @@ void picture_frame_run(void)
 
     sync_time_before_tls();
 
-    screen_set_color(0, 32, 0);   /* green = connected */
-    vTaskDelay(pdMS_TO_TICKS(500));
     screen_off();
 
     /* ── NVS: read hw_token and computer_id ─────────────────────────────── */
