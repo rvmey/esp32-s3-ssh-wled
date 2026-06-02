@@ -20,7 +20,14 @@ esp_err_t mpu6886_init(void);
 esp_err_t mpu6886_configure_wom(uint8_t threshold);
 
 /**
- * Read INT_STATUS to deassert the latched INT output.  Must be called after
- * waking from deep sleep so GPIO 35 goes low before being released as EXT1.
+ * Read INT_STATUS to deassert the latched INT output.
  */
 void mpu6886_clear_interrupt(void);
+
+/**
+ * Read the accelerometer and return true if the per-axis delta from the
+ * previous call exceeds `threshold` LSBs in magnitude.
+ * At ±2 g full scale, 1 LSB ≈ 0.061 mg; 500 LSB ≈ 30 mg (light hand tremor).
+ * The first call always returns false (establishes the baseline).
+ */
+bool mpu6886_motion_detected(int16_t threshold);

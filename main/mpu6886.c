@@ -1,5 +1,6 @@
 #include "mpu6886.h"
 
+#include <stdbool.h>
 #include "driver/i2c.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
@@ -11,6 +12,7 @@ static const char *TAG = "mpu6886";
 #define MPU6886_I2C_PORT    I2C_NUM_0
 
 /* ── Register map ────────────────────────────────────────────────────────── */
+#define REG_ACCEL_XOUT_H    0x3B
 #define REG_ACCEL_CONFIG2   0x1D
 #define REG_WOM_THR         0x1F
 #define REG_INT_PIN_CFG     0x37
@@ -22,6 +24,10 @@ static const char *TAG = "mpu6886";
 #define REG_WHO_AM_I        0x75
 
 #define MPU6886_WHO_AM_I_VAL 0x19
+
+/* Baseline accelerometer sample for mpu6886_motion_detected(). */
+static int16_t s_prev_ax = 0, s_prev_ay = 0, s_prev_az = 0;
+static bool    s_prev_valid = false;
 
 /* portMAX_DELAY: BT A2DP + WiFi coexistence can delay the I2C ISR 50+ ms;
  * a finite timeout would trigger i2c_hw_fsm_reset which deadlocks with the
@@ -71,6 +77,11 @@ esp_err_t mpu6886_init(void)
     if (ret != ESP_OK) return ret;
 
     ESP_LOGI(TAG, "MPU6886 initialised (full-power, gyro standby)");
+
+    /* Invalidate the motion-detection baseline so the next poll establishes
+     * a fresh reference rather than comparing against pre-reset data. */
+    s_prev_valid = false;
+
     return ESP_OK;
 }
 
@@ -125,4 +136,32 @@ void mpu6886_clear_interrupt(void)
     uint8_t status = 0;
     read_reg(REG_INT_STATUS, &status);   /* Reading INT_STATUS deasserts INT pin. */
     (void)status;
+}
+
+bool mpu6886_motion_detected(int16_t threshold)
+{
+    uint8_t reg = REG_ACCEL_XOUT_H;
+    uint8_t buf[6];
+    if (i2c_master_write_read_device(MPU6886_I2C_PORT, MPU6886_ADDR,
+                                     &reg, 1, buf, sizeof(buf),
+                                     portMAX_DELAY) != ESP_OK) {
+        return false;
+    }
+
+    int16_t ax = (int16_t)((buf[0] << 8) | buf[1]);
+    int16_t ay = (int16_t)((buf[2] << 8) | buf[3]);
+    int16_t az = (int16_t)((buf[4] << 8) | buf[5]);
+
+    if (!s_prev_valid) {
+        s_prev_ax = ax;  s_prev_ay = ay;  s_prev_az = az;
+        s_prev_valid = true;
+        return false;
+    }
+
+    int32_t dx = ax - s_prev_ax;
+    int32_t dy = ay - s_prev_ay;
+    int32_t dz = az - s_prev_az;
+    s_prev_ax = ax;  s_prev_ay = ay;  s_prev_az = az;
+
+    return (dx*dx + dy*dy + dz*dz) > (int32_t)threshold * threshold;
 }

@@ -5719,6 +5719,19 @@ void picture_frame_run(void)
             }
             core2_poll_pwr_key();   /* voice query on PWR short press */
 
+            {
+                /* Poll IMU every 2 s; reset idle timer on motion so the device
+                 * stays awake while being held or moved. */
+                static TickType_t s_imu_last_poll = 0;
+                TickType_t now = xTaskGetTickCount();
+                if ((TickType_t)(now - s_imu_last_poll) >= pdMS_TO_TICKS(2000)) {
+                    s_imu_last_poll = now;
+                    if (mpu6886_motion_detected(500)) {
+                        s_last_activity_tick = now;
+                    }
+                }
+            }
+
 #if CONFIG_CORE2_SLEEP_TIMEOUT_S > 0
             if ((TickType_t)(xTaskGetTickCount() - s_last_activity_tick) >=
                     pdMS_TO_TICKS((uint32_t)CONFIG_CORE2_SLEEP_TIMEOUT_S * 1000u)) {
