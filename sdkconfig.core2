@@ -26,13 +26,11 @@ CONFIG_BT_BLUEDROID_ENABLED=y
 CONFIG_BT_CLASSIC_ENABLED=y
 CONFIG_BT_A2DP_ENABLE=y
 CONFIG_BT_SSP_ENABLED=y
-# HFP Audio Gateway — Core2 acts as AG (phone side); earbuds act as HF (headset side)
-# HCI audio data path: SCO PCM delivered via software callback, no I2S GPIO wiring needed
-CONFIG_BT_HFP_ENABLE=y
-# CONFIG_BT_HFP_CLIENT_ENABLE is not set
-CONFIG_BT_HFP_AG_ENABLE=y
-CONFIG_BT_HFP_AUDIO_DATA_PATH_HCI=y
-CONFIG_BT_HFP_WBS_ENABLE=y
+# HFP disabled: AUKEY EP-T21S aggressively closes RFCOMM after ~30-60 s idle,
+# which kills the shared ACL and drops A2DP.  Repeated reconnect cycles exhaust
+# the Bluedroid OSI timer pool → osi_alarm_new failure → crash.
+# Voice queries use the Core2 built-in PDM mic instead.
+# CONFIG_BT_HFP_ENABLE is not set
 # CONFIG_BT_BLE_ENABLED is not set
 # CONFIG_BT_GOEPC_ENABLED is not set
 CONFIG_BT_ALLOCATION_FROM_SPIRAM_FIRST=y
