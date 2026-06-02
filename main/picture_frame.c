@@ -57,6 +57,9 @@
 #include "esp_a2dp_api.h"
 #include "esp_avrc_api.h"
 #endif
+#if CONFIG_BT_HFP_AG_ENABLE
+#include "esp_hf_ag_api.h"
+#endif
 #endif
 
 #if CONFIG_ESP_COEX_ENABLED
@@ -844,6 +847,21 @@ static TickType_t s_bt_speaker_resume_after = 0;
 #define BT_SPEAKER_REINIT_BACKOFF_MAX_MS 15000U
 static uint32_t s_bt_speaker_resume_backoff_ms = BT_SPEAKER_REINIT_BACKOFF_MIN_MS;
 
+/* ── HFP AG state (earbud mic for voice queries) ─────────────────────────── */
+#if CONFIG_BT_HFP_AG_ENABLE
+static volatile bool        s_hfp_slc_ready   = false;
+static volatile bool        s_hfp_audio_ready = false;
+static volatile bool        s_hfp_is_msbc     = false;
+static esp_bd_addr_t        s_hfp_peer_addr   = {0};
+static esp_hf_sync_conn_hdl_t s_hfp_sync_hdl = 0;
+#define HFP_SCO_MAX_BYTES   (16000u * 2u * 4u)   /* 4 s at 16 kHz 16-bit mono */
+static uint8_t             *s_hfp_sco_buf     = NULL;
+static volatile size_t      s_hfp_sco_len     = 0;
+static volatile bool        s_hfp_recording   = false;
+static StaticSemaphore_t    s_hfp_audio_sem_buf;
+static SemaphoreHandle_t    s_hfp_audio_sem   = NULL;
+#endif
+
 static void bt_update_coex_preference(bool streaming)
 {
 #if CONFIG_ESP_COEX_ENABLED
@@ -1247,6 +1265,11 @@ static void bt_a2dp_cb(esp_a2d_cb_event_t event, esp_a2d_cb_param_t *param)
             core2_audio_deinit();
 #endif
             ESP_LOGI(TAG, "bt: A2DP connected to %s", s_bt.selected_bda[0] ? s_bt.selected_bda : connected_bda);
+#if CONFIG_BT_HFP_AG_ENABLE
+            /* Initiate HFP SLC so the earbud mic becomes available for voice queries.
+             * Earbuds may auto-connect HFP; if they don't, we trigger it from our side. */
+            esp_hf_ag_slc_connect(s_bt.bda);
+#endif
 
             if (s_bt.pairing_ui_active) {
                 const char *pair_name = s_bt.selected_name[0] ? s_bt.selected_name : "(unknown)";
@@ -1373,6 +1396,63 @@ static void bt_a2dp_cb(esp_a2d_cb_event_t event, esp_a2d_cb_param_t *param)
                  (unsigned)min_bp,
                  (unsigned)max_bp);
     }
+}
+#endif
+
+#if CONFIG_BT_HFP_AG_ENABLE
+static void bt_hfp_ag_cb(esp_hf_cb_event_t event, esp_hf_cb_param_t *param)
+{
+    if (!param) return;
+    switch (event) {
+    case ESP_HF_CONNECTION_STATE_EVT:
+        if (param->conn_stat.state == ESP_HF_CONNECTION_STATE_SLC_CONNECTED) {
+            s_hfp_slc_ready = true;
+            memcpy(s_hfp_peer_addr, param->conn_stat.remote_bda, ESP_BD_ADDR_LEN);
+            ESP_LOGI(TAG, "hfp ag: SLC connected (earbud mic ready)");
+        } else if (param->conn_stat.state == ESP_HF_CONNECTION_STATE_DISCONNECTED) {
+            s_hfp_slc_ready = false;
+            s_hfp_audio_ready = false;
+            ESP_LOGI(TAG, "hfp ag: disconnected");
+        }
+        break;
+    case ESP_HF_AUDIO_STATE_EVT:
+        if (param->audio_stat.state == ESP_HF_AUDIO_STATE_CONNECTED ||
+            param->audio_stat.state == ESP_HF_AUDIO_STATE_CONNECTED_MSBC) {
+            s_hfp_audio_ready = true;
+            s_hfp_is_msbc     = (param->audio_stat.state == ESP_HF_AUDIO_STATE_CONNECTED_MSBC);
+            s_hfp_sync_hdl    = param->audio_stat.sync_conn_handle;
+            ESP_LOGI(TAG, "hfp ag: SCO audio connected (%s)",
+                     s_hfp_is_msbc ? "mSBC 16kHz" : "CVSD 8kHz");
+            if (s_hfp_audio_sem) xSemaphoreGive(s_hfp_audio_sem);
+        } else if (param->audio_stat.state == ESP_HF_AUDIO_STATE_DISCONNECTED) {
+            s_hfp_audio_ready = false;
+            s_hfp_sync_hdl    = 0;
+            ESP_LOGI(TAG, "hfp ag: SCO audio disconnected");
+        }
+        break;
+    default:
+        break;
+    }
+}
+
+static void bt_hfp_audio_data_cb(esp_hf_sync_conn_hdl_t sync_conn_hdl,
+                                  esp_hf_audio_buff_t   *audio_buf,
+                                  bool                   is_bad_frame)
+{
+    if (!audio_buf) return;
+    if (s_hfp_recording && !is_bad_frame &&
+        audio_buf->data && audio_buf->data_len > 0 &&
+        s_hfp_sco_buf) {
+        size_t pos  = s_hfp_sco_len;
+        size_t room = (pos < HFP_SCO_MAX_BYTES) ? (HFP_SCO_MAX_BYTES - pos) : 0;
+        if (room > 0) {
+            size_t copy = (audio_buf->data_len < (uint16_t)room)
+                          ? (size_t)audio_buf->data_len : room;
+            memcpy(s_hfp_sco_buf + pos, audio_buf->data, copy);
+            s_hfp_sco_len = pos + copy;
+        }
+    }
+    esp_hf_ag_audio_buff_free(audio_buf);
 }
 #endif
 
@@ -1606,6 +1686,36 @@ static bool bt_init_if_needed(void)
         ESP_LOGE(TAG, "bt: GAP callback registration failed: %s", esp_err_to_name(err));
         return false;
     }
+
+#if CONFIG_BT_HFP_AG_ENABLE
+    if (!s_hfp_audio_sem) {
+        s_hfp_audio_sem = xSemaphoreCreateBinaryStatic(&s_hfp_audio_sem_buf);
+    }
+    if (!s_hfp_sco_buf) {
+        s_hfp_sco_buf = heap_caps_malloc(HFP_SCO_MAX_BYTES,
+                                          MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (!s_hfp_sco_buf) s_hfp_sco_buf = malloc(HFP_SCO_MAX_BYTES);
+        if (!s_hfp_sco_buf) {
+            ESP_LOGW(TAG, "bt: HFP SCO buffer alloc failed");
+        }
+    }
+    err = esp_hf_ag_register_callback(bt_hfp_ag_cb);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "bt: HFP AG callback reg failed: %s", esp_err_to_name(err));
+    } else {
+        err = esp_hf_ag_init();
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "bt: HFP AG init failed: %s", esp_err_to_name(err));
+        } else {
+            err = esp_hf_ag_register_audio_data_callback(bt_hfp_audio_data_cb);
+            if (err != ESP_OK) {
+                ESP_LOGW(TAG, "bt: HFP AG audio cb reg failed: %s", esp_err_to_name(err));
+            } else {
+                ESP_LOGI(TAG, "bt: HFP AG ready (earbud mic enabled)");
+            }
+        }
+    }
+#endif
 
 #if CONFIG_BT_A2DP_ENABLE
     /* Bluedroid requires AVRCP to be registered before A2DP source init.
@@ -3421,55 +3531,35 @@ static int core2_https_post_json(const char *url, const char *token,
     return status;
 }
 
-static void do_core2_voice_query(void)
+static void do_core2_voice_query(void);   /* forward declaration for HFP fallback */
+
+/* ── Shared STT + TRIGGERcmd chat dispatch ───────────────────────────────── */
+/* Called with a heap-allocated WAV buffer (44-byte header + PCM).
+ * Takes ownership: frees wav before returning. */
+static void do_core2_voice_http(uint8_t *wav, size_t wav_len)
 {
-    ESP_LOGI(TAG, "Voice query: starting");
-    if (s_mp3_saved_font_scale >= 0) {
-        screen_set_font_scale_silent(s_mp3_saved_font_scale);
-        s_mp3_saved_font_scale = -1;
-    }
-    screen_draw_text("Listening...");
-
-    /* Suspend the mp3 player task and pause I2S before recording.
-     * Both stay suspended/paused for the ENTIRE voice query — recording AND
-     * all HTTP calls (STT + Chat API) — so mp3_play and core2_i2s do not
-     * compete with the WiFi/TLS stack on CPU0, which would cause TLS failures
-     * and task WDT warnings.  Audio hardware and mp3 task are restored at the
-     * single exit point at the bottom after all network work is done. */
-    if (s_mp3.active && !s_mp3.paused) s_mp3.paused = true;
-    if (s_mp3_task) vTaskSuspend(s_mp3_task);
-    core2_audio_pause();
-    core2_mic_init();
-
-    uint8_t *wav    = NULL;
-    size_t   wav_len = core2_mic_record(&wav, 4000);
-    core2_mic_deinit();
-    /* GPIO 0 is now free; I2S1 stays disabled; mp3 task stays suspended. */
-
-    /* ── All HTTP work happens here with audio fully quiescent ──────────── */
-
     char stt_key[CORE2_STT_KEY_MAX] = {0};
     char transcript[CORE2_TRANSCRIPT_MAX] = {0};
     char *resp = NULL;
 
     if (wav_len == 0 || !wav) {
-        ESP_LOGW(TAG, "Voice query: no audio captured");
+        ESP_LOGW(TAG, "Voice HTTP: no audio");
         screen_draw_text("Voice: no audio\ncaptured");
-        goto voice_done;
+        goto http_done;
     }
 
     screen_draw_text("Processing...");
 
     if (!nvs_read_str(NVS_KEY_STT, stt_key, sizeof(stt_key))) {
-        ESP_LOGW(TAG, "Voice query: no STT API key");
+        ESP_LOGW(TAG, "Voice HTTP: no STT API key");
         screen_draw_text("Voice: no API key\nVisit device IP\nto configure");
-        goto voice_done;
+        goto http_done;
     }
 
     if (!core2_stt_transcribe(wav, wav_len, stt_key, transcript) || !transcript[0]) {
-        ESP_LOGW(TAG, "Voice query: STT failed or empty");
+        ESP_LOGW(TAG, "Voice HTTP: STT failed or empty");
         screen_draw_text("Voice: not heard\nor STT failed");
-        goto voice_done;
+        goto http_done;
     }
     ESP_LOGI(TAG, "Voice transcript: %s", transcript);
 
@@ -3512,19 +3602,152 @@ static void do_core2_voice_query(void)
                 strncpy(s_voice_conv_id, new_conv, sizeof(s_voice_conv_id) - 1);
                 nvs_write_str(NVS_KEY_VOICE_CONV, s_voice_conv_id);
             }
-            ESP_LOGI(TAG, "Voice query: chat API success");
+            ESP_LOGI(TAG, "Voice HTTP: chat API success");
         } else {
-            ESP_LOGW(TAG, "Voice query: chat API returned HTTP %d", status);
+            ESP_LOGW(TAG, "Voice HTTP: chat API returned HTTP %d", status);
             screen_draw_text("Voice: chat API\nfailed");
         }
     }
 
-voice_done:
-    /* Restore audio hardware and mp3 player task AFTER all HTTP is done.
-     * Do NOT restore s_mp3.paused — the command that arrived via Socket.IO
-     * during the query has already set the correct audio state. */
-    if (wav) { free(wav); }
+http_done:
+    if (wav)  { free(wav);  }
     if (resp) { free(resp); }
+}
+
+#if CONFIG_BT_HFP_AG_ENABLE
+/* Voice query using the earbud microphone via HFP/SCO.
+ * Falls back to do_core2_voice_query() (Core2 PDM mic) if HFP is not ready. */
+static void do_core2_hfp_voice_query(void)
+{
+    if (!s_hfp_slc_ready) {
+        ESP_LOGW(TAG, "HFP voice: SLC not ready, falling back to PDM mic");
+        do_core2_voice_query();
+        return;
+    }
+
+    ESP_LOGI(TAG, "HFP voice: starting (earbud mic)");
+    if (s_mp3_saved_font_scale >= 0) {
+        screen_set_font_scale_silent(s_mp3_saved_font_scale);
+        s_mp3_saved_font_scale = -1;
+    }
+    screen_draw_text("Listening...\n(earbud mic)");
+
+    /* Suspend MP3 task so HTTP calls below don't compete on CPU0. */
+    if (s_mp3.active && !s_mp3.paused) s_mp3.paused = true;
+    if (s_mp3_task) vTaskSuspend(s_mp3_task);
+    /* No I2S pause needed — SCO audio bypasses the I2S hardware. */
+
+    /* Prepare SCO recording buffer */
+    s_hfp_sco_len    = 0;
+    s_hfp_recording  = false;
+    xSemaphoreTake(s_hfp_audio_sem, 0);   /* clear any stale signal */
+
+    /* Open SCO audio connection to the earbuds */
+    esp_err_t err = esp_hf_ag_audio_connect(s_hfp_peer_addr);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "HFP voice: audio_connect failed: %s", esp_err_to_name(err));
+        screen_draw_text("HFP: SCO open\nfailed");
+        goto hfp_voice_fallback;
+    }
+
+    /* Wait for SCO to be established (up to 3 s) */
+    if (xSemaphoreTake(s_hfp_audio_sem, pdMS_TO_TICKS(3000)) != pdTRUE) {
+        ESP_LOGW(TAG, "HFP voice: SCO connection timeout");
+        screen_draw_text("HFP: SCO timeout");
+        esp_hf_ag_audio_disconnect(s_hfp_peer_addr);
+        goto hfp_voice_fallback;
+    }
+
+    /* Determine sample rate: mSBC = 16 kHz, CVSD = 8 kHz */
+    uint32_t sample_rate  = s_hfp_is_msbc ? 16000u : 8000u;
+    size_t   max_pcm_bytes = (size_t)sample_rate * 2u * 4u;  /* 4 s */
+    if (max_pcm_bytes > HFP_SCO_MAX_BYTES) max_pcm_bytes = HFP_SCO_MAX_BYTES;
+
+    /* Start collecting SCO audio frames via bt_hfp_audio_data_cb */
+    s_hfp_recording = true;
+    TickType_t rec_start = xTaskGetTickCount();
+
+    while (s_hfp_sco_len < max_pcm_bytes) {
+        uint32_t elapsed = (uint32_t)((xTaskGetTickCount() - rec_start) * portTICK_PERIOD_MS);
+        if (elapsed >= 4500u) break;
+        vTaskDelay(pdMS_TO_TICKS(20));
+    }
+
+    s_hfp_recording = false;
+    size_t recorded_pcm = s_hfp_sco_len;
+    esp_hf_ag_audio_disconnect(s_hfp_peer_addr);
+
+    ESP_LOGI(TAG, "HFP voice: recorded %u B at %lu Hz",
+             (unsigned int)recorded_pcm, (unsigned long)sample_rate);
+
+    /* Build a WAV buffer from the raw PCM */
+    uint8_t *wav = NULL;
+    if (recorded_pcm > 0 && s_hfp_sco_buf) {
+        wav = heap_caps_malloc(44u + recorded_pcm, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (!wav) wav = malloc(44u + recorded_pcm);
+        if (wav) {
+            uint32_t pcm_bytes = (uint32_t)recorded_pcm;
+            uint32_t byte_rate = sample_rate * 2u;
+            uint32_t riff_size = 36u + pcm_bytes;
+            memcpy(wav,      "RIFF", 4);  memcpy(wav +  4, &riff_size, 4);
+            memcpy(wav + 8,  "WAVE", 4);  memcpy(wav + 12, "fmt ", 4);
+            uint32_t fmt_sz = 16; memcpy(wav + 16, &fmt_sz, 4);
+            uint16_t pcm_t  =  1; memcpy(wav + 20, &pcm_t, 2);
+            uint16_t ch     =  1; memcpy(wav + 22, &ch, 2);
+                                  memcpy(wav + 24, &sample_rate, 4);
+                                  memcpy(wav + 28, &byte_rate, 4);
+            uint16_t align  =  2; memcpy(wav + 32, &align, 2);
+            uint16_t bits   = 16; memcpy(wav + 34, &bits, 2);
+            memcpy(wav + 36, "data", 4); memcpy(wav + 40, &pcm_bytes, 4);
+            memcpy(wav + 44, s_hfp_sco_buf, recorded_pcm);
+        }
+    }
+
+    /* STT + Chat API — takes ownership of wav (frees it) */
+    do_core2_voice_http(wav, wav ? (44u + recorded_pcm) : 0u);
+
+    if (s_mp3_task) vTaskResume(s_mp3_task);
+    s_pending_vibrate = true;
+    return;
+
+hfp_voice_fallback:
+    /* HFP failed before any recording — resume task and fall back to PDM mic */
+    if (s_mp3_task) vTaskResume(s_mp3_task);
+    do_core2_voice_query();
+}
+#endif /* CONFIG_BT_HFP_AG_ENABLE */
+
+static void do_core2_voice_query(void)
+{
+    ESP_LOGI(TAG, "Voice query: starting");
+    if (s_mp3_saved_font_scale >= 0) {
+        screen_set_font_scale_silent(s_mp3_saved_font_scale);
+        s_mp3_saved_font_scale = -1;
+    }
+    screen_draw_text("Listening...");
+
+    /* Suspend the mp3 player task and pause I2S before recording.
+     * Both stay suspended/paused for the ENTIRE voice query — recording AND
+     * all HTTP calls (STT + Chat API) — so mp3_play and core2_i2s do not
+     * compete with the WiFi/TLS stack on CPU0, which would cause TLS failures
+     * and task WDT warnings.  Audio hardware and mp3 task are restored at the
+     * single exit point at the bottom after all network work is done. */
+    if (s_mp3.active && !s_mp3.paused) s_mp3.paused = true;
+    if (s_mp3_task) vTaskSuspend(s_mp3_task);
+    core2_audio_pause();
+    core2_mic_init();
+
+    uint8_t *wav    = NULL;
+    size_t   wav_len = core2_mic_record(&wav, 4000);
+    core2_mic_deinit();
+    /* GPIO 0 is now free; I2S1 stays disabled; mp3 task stays suspended. */
+
+    /* STT + Chat API dispatch — frees wav, updates screen */
+    do_core2_voice_http(wav, wav_len);
+
+    /* Restore audio hardware and mp3 player task AFTER all HTTP is done.
+     * Do NOT restore s_mp3.paused — Socket.IO commands during the query
+     * have already set the correct audio state. */
     core2_audio_resume();
     if (s_mp3_task) vTaskResume(s_mp3_task);
     s_pending_vibrate = true;
@@ -5873,8 +6096,18 @@ void picture_frame_run(void)
             }
             if (s_avrc_pending_voice) {
                 s_avrc_pending_voice = false;
+#if CONFIG_BT_HFP_AG_ENABLE
+                if (s_hfp_slc_ready) {
+                    ESP_LOGI(TAG, "avrc: double tap → voice query (earbud mic via HFP)");
+                    do_core2_hfp_voice_query();
+                } else {
+                    ESP_LOGI(TAG, "avrc: double tap → voice query (Core2 mic, HFP not ready)");
+                    do_core2_voice_query();
+                }
+#else
                 ESP_LOGI(TAG, "avrc: double tap → voice query (Core2 mic)");
                 do_core2_voice_query();
+#endif
             }
 #endif
 
