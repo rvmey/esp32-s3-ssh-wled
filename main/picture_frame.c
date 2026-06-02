@@ -1600,6 +1600,33 @@ static bool bt_init_if_needed(void)
     }
 
 #if CONFIG_BT_A2DP_ENABLE
+    /* Bluedroid requires AVRCP to be registered before A2DP source init.
+     * Initializing after A2DP causes "expected to be initialized in advance"
+     * warnings and breaks both the AVRCP channel and A2DP audio quality. */
+    err = esp_avrc_ct_register_callback(bt_avrc_ct_cb);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "bt: AVRCP CT callback registration failed: %s", esp_err_to_name(err));
+    } else {
+        err = esp_avrc_ct_init();
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "bt: AVRCP CT init failed: %s", esp_err_to_name(err));
+        } else {
+            ESP_LOGI(TAG, "bt: AVRCP CT ready");
+        }
+    }
+
+    err = esp_avrc_tg_register_callback(bt_avrc_tg_cb);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "bt: AVRCP TG callback registration failed: %s", esp_err_to_name(err));
+    } else {
+        err = esp_avrc_tg_init();
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "bt: AVRCP TG init failed: %s", esp_err_to_name(err));
+        } else {
+            ESP_LOGI(TAG, "bt: AVRCP TG ready (earbud controls enabled)");
+        }
+    }
+
     err = esp_a2d_register_callback(bt_a2dp_cb);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "bt: A2DP callback registration failed: %s", esp_err_to_name(err));
@@ -1623,33 +1650,6 @@ static bool bt_init_if_needed(void)
     err = esp_a2d_source_register_stream_endpoint(0, &sep_mcc);
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "bt: register SEP(0) failed: %s", esp_err_to_name(err));
-    }
-
-    /* AVRCP CT: Core2 initiates the AVRCP session to the earbuds (sink).
-     * Without CT the earbuds won't establish an AVRCP channel at all, so
-     * their passthrough button commands never reach us as AVRCP TG. */
-    err = esp_avrc_ct_register_callback(bt_avrc_ct_cb);
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "bt: AVRCP CT callback registration failed: %s", esp_err_to_name(err));
-    } else {
-        err = esp_avrc_ct_init();
-        if (err != ESP_OK) {
-            ESP_LOGW(TAG, "bt: AVRCP CT init failed: %s", esp_err_to_name(err));
-        } else {
-            ESP_LOGI(TAG, "bt: AVRCP CT ready");
-        }
-    }
-
-    err = esp_avrc_tg_register_callback(bt_avrc_tg_cb);
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "bt: AVRCP TG callback registration failed: %s", esp_err_to_name(err));
-    } else {
-        err = esp_avrc_tg_init();
-        if (err != ESP_OK) {
-            ESP_LOGW(TAG, "bt: AVRCP TG init failed: %s", esp_err_to_name(err));
-        } else {
-            ESP_LOGI(TAG, "bt: AVRCP TG ready (earbud controls enabled)");
-        }
     }
 #endif
 
