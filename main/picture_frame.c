@@ -5733,7 +5733,8 @@ void picture_frame_run(void)
             }
 
 #if CONFIG_CORE2_SLEEP_TIMEOUT_S > 0
-            if ((TickType_t)(xTaskGetTickCount() - s_last_activity_tick) >=
+            if (!(s_mp3.active && !s_mp3.paused) &&
+                (TickType_t)(xTaskGetTickCount() - s_last_activity_tick) >=
                     pdMS_TO_TICKS((uint32_t)CONFIG_CORE2_SLEEP_TIMEOUT_S * 1000u)) {
                 ESP_LOGI(TAG, "Idle timeout (%d s) — entering deep sleep",
                          CONFIG_CORE2_SLEEP_TIMEOUT_S);
