@@ -391,7 +391,7 @@ static volatile bool  s_avrc_pending_play_pause  = false;
 static volatile int   s_avrc_pending_track_step  = 0;   /* +1 next, -1 prev */
 static volatile bool  s_avrc_pending_voice       = false;
 static TickType_t     s_avrc_play_pressed_tick   = 0;
-#define AVRC_VOICE_LONG_PRESS_MS 800U
+#define AVRC_VOICE_LONG_PRESS_MS 500U
 #endif
 
 /* Pending JPEG URL — set by the WS event task, consumed by the main loop */
@@ -1412,6 +1412,8 @@ static void bt_avrc_tg_cb(esp_avrc_tg_cb_event_t event, esp_avrc_tg_cb_param_t *
                 ? (uint32_t)((xTaskGetTickCount() - s_avrc_play_pressed_tick) * portTICK_PERIOD_MS)
                 : 0;
             s_avrc_play_pressed_tick = 0;
+            ESP_LOGI(TAG, "avrc tg: play/pause held %lu ms (threshold %u ms)",
+                     (unsigned long)held_ms, AVRC_VOICE_LONG_PRESS_MS);
             if (held_ms >= AVRC_VOICE_LONG_PRESS_MS) {
                 s_avrc_pending_voice = true;
                 ESP_LOGI(TAG, "avrc tg: long press → voice prompt");
