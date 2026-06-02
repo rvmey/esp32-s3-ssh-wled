@@ -55,6 +55,7 @@
 #include "esp_gap_bt_api.h"
 #if CONFIG_BT_A2DP_ENABLE
 #include "esp_a2dp_api.h"
+#include "esp_avrc_api.h"
 #endif
 #endif
 
@@ -383,6 +384,15 @@ static volatile bool s_pending_run        = false;
 static volatile bool s_pending_vibrate    __attribute__((unused)) = false;
 static int           s_pending_run_tries  __attribute__((unused)) = 0;
 static TickType_t    s_pending_run_retry_after __attribute__((unused)) = 0;
+
+/* Pending AVRCP actions — set by bt_avrc_tg_cb, consumed by the main loop */
+#if CONFIG_BT_ENABLED && CONFIG_BT_A2DP_ENABLE
+static volatile bool  s_avrc_pending_play_pause  = false;
+static volatile int   s_avrc_pending_track_step  = 0;   /* +1 next, -1 prev */
+static volatile bool  s_avrc_pending_voice       = false;
+static TickType_t     s_avrc_play_pressed_tick   = 0;
+#define AVRC_VOICE_LONG_PRESS_MS 800U
+#endif
 
 /* Pending JPEG URL — set by the WS event task, consumed by the main loop */
 static char          s_pending_jpeg_url[512] __attribute__((unused)) = {0};
@@ -1365,6 +1375,42 @@ static void bt_a2dp_cb(esp_a2d_cb_event_t event, esp_a2d_cb_param_t *param)
 }
 #endif
 
+#if CONFIG_BT_A2DP_ENABLE
+static void bt_avrc_tg_cb(esp_avrc_tg_cb_event_t event, esp_avrc_tg_cb_param_t *param)
+{
+    if (!param || event != ESP_AVRC_TG_PASSTHROUGH_CMD_EVT) return;
+
+    uint8_t cmd   = param->psth_cmd.key_code;
+    uint8_t state = param->psth_cmd.key_state;
+
+    ESP_LOGD(TAG, "avrc tg: cmd=0x%02X %s", cmd,
+             state == ESP_AVRC_PT_CMD_STATE_PRESSED ? "PRESSED" : "RELEASED");
+
+    if (cmd == ESP_AVRC_PT_CMD_PLAY || cmd == ESP_AVRC_PT_CMD_PAUSE) {
+        if (state == ESP_AVRC_PT_CMD_STATE_PRESSED) {
+            s_avrc_play_pressed_tick = xTaskGetTickCount();
+        } else {
+            uint32_t held_ms = s_avrc_play_pressed_tick
+                ? (uint32_t)((xTaskGetTickCount() - s_avrc_play_pressed_tick) * portTICK_PERIOD_MS)
+                : 0;
+            s_avrc_play_pressed_tick = 0;
+            if (held_ms >= AVRC_VOICE_LONG_PRESS_MS) {
+                s_avrc_pending_voice = true;
+                ESP_LOGI(TAG, "avrc tg: long press → voice prompt");
+            } else {
+                s_avrc_pending_play_pause = true;
+            }
+        }
+    } else if (cmd == ESP_AVRC_PT_CMD_STOP && state == ESP_AVRC_PT_CMD_STATE_PRESSED) {
+        s_avrc_pending_play_pause = true;
+    } else if (cmd == ESP_AVRC_PT_CMD_FORWARD && state == ESP_AVRC_PT_CMD_STATE_PRESSED) {
+        s_avrc_pending_track_step = 1;
+    } else if (cmd == ESP_AVRC_PT_CMD_BACKWARD && state == ESP_AVRC_PT_CMD_STATE_PRESSED) {
+        s_avrc_pending_track_step = -1;
+    }
+}
+#endif
+
 static void bt_bda_to_str(const esp_bd_addr_t bda, char *out, size_t out_sz)
 {
     if (!out || out_sz < 18) return;
@@ -1560,6 +1606,18 @@ static bool bt_init_if_needed(void)
     err = esp_a2d_source_register_stream_endpoint(0, &sep_mcc);
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "bt: register SEP(0) failed: %s", esp_err_to_name(err));
+    }
+
+    err = esp_avrc_tg_register_callback(bt_avrc_tg_cb);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "bt: AVRCP TG callback registration failed: %s", esp_err_to_name(err));
+    } else {
+        err = esp_avrc_tg_init();
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "bt: AVRCP TG init failed: %s", esp_err_to_name(err));
+        } else {
+            ESP_LOGI(TAG, "bt: AVRCP TG ready (earbud controls enabled)");
+        }
     }
 #endif
 
@@ -5735,6 +5793,26 @@ void picture_frame_run(void)
                 }
             }
             core2_poll_pwr_key();   /* voice query on PWR short press */
+
+#if CONFIG_BT_ENABLED && CONFIG_BT_A2DP_ENABLE
+            if (s_avrc_pending_play_pause) {
+                s_avrc_pending_play_pause = false;
+                (void)pf_touch_handler(0, 0, SCREEN_GESTURE_TAP);
+            }
+            {
+                int step = s_avrc_pending_track_step;
+                if (step != 0) {
+                    s_avrc_pending_track_step = 0;
+                    if (mp3_advance_track(step, step > 0 ? "avrc next" : "avrc prev")) {
+                        mp3_request_ui_refresh();
+                    }
+                }
+            }
+            if (s_avrc_pending_voice) {
+                s_avrc_pending_voice = false;
+                do_core2_voice_query();
+            }
+#endif
 
             {
                 /* Poll IMU every 2 s; reset idle timer on motion so the device
