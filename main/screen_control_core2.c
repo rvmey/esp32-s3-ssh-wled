@@ -644,17 +644,7 @@ esp_err_t screen_init(void)
     ili_cmd(0x29);                              /* DISPLAY_ON        */
     vTaskDelay(pdMS_TO_TICKS(20));
 
-    /* Quick power-on diagnostic: proves whether GRAM writes are reaching LCD. */
-    ESP_LOGI(TAG, "Core2 LCD RGB self-test (red/green/blue)");
-    screen_fill(0xFF, 0x00, 0x00);
-    vTaskDelay(pdMS_TO_TICKS(450));
-    screen_fill(0x00, 0xFF, 0x00);
-    vTaskDelay(pdMS_TO_TICKS(450));
-    screen_fill(0x00, 0x00, 0xFF);
-    vTaskDelay(pdMS_TO_TICKS(450));
-
-    /* Blackout after test so first app frame is deterministic. */
-    screen_off();
+    screen_off();   /* clear GRAM before backlight is visible */
 
     ESP_LOGI(TAG, "ILI9342C ready (%d x %d @ %d MHz SPI)",
              lcd_w(), lcd_h(), LCD_CLK_HZ / 1000000);
