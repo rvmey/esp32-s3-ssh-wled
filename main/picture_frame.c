@@ -3665,6 +3665,11 @@ static void do_core2_hfp_voice_query(void)
     size_t   max_pcm_bytes = (size_t)sample_rate * 2u * 4u;  /* 4 s */
     if (max_pcm_bytes > HFP_SCO_MAX_BYTES) max_pcm_bytes = HFP_SCO_MAX_BYTES;
 
+    /* Tell the earbuds that voice recognition is active.
+     * Without +BVRA:1, HF devices typically keep their mic silent even
+     * though the SCO channel is open. */
+    esp_hf_ag_vra_control(s_hfp_peer_addr, ESP_HF_VR_STATE_ENABLED);
+
     /* Start collecting SCO audio frames via bt_hfp_audio_data_cb */
     s_hfp_recording = true;
     TickType_t rec_start = xTaskGetTickCount();
@@ -3676,6 +3681,7 @@ static void do_core2_hfp_voice_query(void)
     }
 
     s_hfp_recording = false;
+    esp_hf_ag_vra_control(s_hfp_peer_addr, ESP_HF_VR_STATE_DISABLED);
     size_t recorded_pcm = s_hfp_sco_len;
     esp_hf_ag_audio_disconnect(s_hfp_peer_addr);
 
