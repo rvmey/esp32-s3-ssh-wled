@@ -3644,20 +3644,23 @@ static void do_core2_hfp_voice_query(void)
     s_hfp_recording  = false;
     xSemaphoreTake(s_hfp_audio_sem, 0);   /* clear any stale signal */
 
-    /* Open SCO audio connection to the earbuds */
-    esp_err_t err = esp_hf_ag_audio_connect(s_hfp_peer_addr);
+    /* HFP Voice Recognition flow (per spec):
+     *   1. AG sends +BVRA:1 to the HF (earbuds)
+     *   2. HF initiates SCO from its side (AG is already in LISTEN_ST)
+     *   3. AG accepts the incoming SCO connection
+     * If we call esp_hf_ag_audio_connect() instead, the AG tries to OPEN SCO
+     * while the state machine expects to RECEIVE it — the earbuds reject it. */
+    esp_err_t err = esp_hf_ag_vra_control(s_hfp_peer_addr, ESP_HF_VR_STATE_ENABLED);
     if (err != ESP_OK) {
-        ESP_LOGW(TAG, "HFP voice: audio_connect failed: %s", esp_err_to_name(err));
-        screen_draw_text("HFP: SCO open\nfailed");
-        goto hfp_voice_fallback;
+        ESP_LOGW(TAG, "HFP voice: vra_control ENABLED failed: %s", esp_err_to_name(err));
     }
+    ESP_LOGI(TAG, "HFP voice: VRA enabled — waiting for earbuds to open SCO");
 
-    /* Wait for SCO to be established (up to 8 s — SCO handshake from sniff mode
-     * can take several seconds; 3 s was too tight in practice). */
+    /* Wait for the earbuds to open the SCO they initiated in response to VRA */
     if (xSemaphoreTake(s_hfp_audio_sem, pdMS_TO_TICKS(8000)) != pdTRUE) {
         ESP_LOGW(TAG, "HFP voice: SCO connection timeout");
         screen_draw_text("HFP: SCO timeout");
-        esp_hf_ag_audio_disconnect(s_hfp_peer_addr);
+        esp_hf_ag_vra_control(s_hfp_peer_addr, ESP_HF_VR_STATE_DISABLED);
         goto hfp_voice_fallback;
     }
 
@@ -3666,12 +3669,8 @@ static void do_core2_hfp_voice_query(void)
     size_t   max_pcm_bytes = (size_t)sample_rate * 2u * 4u;  /* 4 s */
     if (max_pcm_bytes > HFP_SCO_MAX_BYTES) max_pcm_bytes = HFP_SCO_MAX_BYTES;
 
-    /* Tell the earbuds that voice recognition is active.
-     * Without +BVRA:1, HF devices typically keep their mic silent even
-     * though the SCO channel is open. */
-    esp_hf_ag_vra_control(s_hfp_peer_addr, ESP_HF_VR_STATE_ENABLED);
-
-    /* Start collecting SCO audio frames via bt_hfp_audio_data_cb */
+    /* VRA was already sent before the wait; SCO is now open.
+     * Start collecting SCO audio frames via bt_hfp_audio_data_cb */
     s_hfp_recording = true;
     TickType_t rec_start = xTaskGetTickCount();
 
