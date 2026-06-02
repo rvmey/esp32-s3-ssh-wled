@@ -1623,6 +1623,17 @@ static bool bt_init_if_needed(void)
         if (err != ESP_OK) {
             ESP_LOGW(TAG, "bt: AVRCP TG init failed: %s", esp_err_to_name(err));
         } else {
+            /* Register the passthrough commands we want delivered to our callback.
+             * Bluedroid's SUPPORTED_CMD filter defaults to empty; commands not in it
+             * are handled internally and never reach ESP_AVRC_TG_PASSTHROUGH_CMD_EVT. */
+            esp_avrc_psth_bit_mask_t psth_mask;
+            memset(&psth_mask, 0, sizeof(psth_mask));
+            esp_avrc_psth_bit_mask_operation(ESP_AVRC_BIT_MASK_OP_SET, &psth_mask, ESP_AVRC_PT_CMD_PLAY);
+            esp_avrc_psth_bit_mask_operation(ESP_AVRC_BIT_MASK_OP_SET, &psth_mask, ESP_AVRC_PT_CMD_PAUSE);
+            esp_avrc_psth_bit_mask_operation(ESP_AVRC_BIT_MASK_OP_SET, &psth_mask, ESP_AVRC_PT_CMD_STOP);
+            esp_avrc_psth_bit_mask_operation(ESP_AVRC_BIT_MASK_OP_SET, &psth_mask, ESP_AVRC_PT_CMD_FORWARD);
+            esp_avrc_psth_bit_mask_operation(ESP_AVRC_BIT_MASK_OP_SET, &psth_mask, ESP_AVRC_PT_CMD_BACKWARD);
+            esp_avrc_tg_set_psth_cmd_filter(ESP_AVRC_PSTH_FILTER_SUPPORTED_CMD, &psth_mask);
             ESP_LOGI(TAG, "bt: AVRCP TG ready (earbud controls enabled)");
         }
     }
