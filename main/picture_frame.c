@@ -1424,6 +1424,11 @@ static void bt_avrc_tg_cb(esp_avrc_tg_cb_event_t event, esp_avrc_tg_cb_param_t *
         s_avrc_pending_track_step = 1;
     } else if (cmd == ESP_AVRC_PT_CMD_BACKWARD && state == ESP_AVRC_PT_CMD_STATE_PRESSED) {
         s_avrc_pending_track_step = -1;
+    } else if (cmd == ESP_AVRC_PT_CMD_VENDOR && state == ESP_AVRC_PT_CMD_STATE_PRESSED) {
+        /* Many earbuds map their long-press button to the vendor-unique AVRCP
+         * command (0x7E) rather than holding PLAY long enough to trip the timer. */
+        s_avrc_pending_voice = true;
+        ESP_LOGI(TAG, "avrc tg: vendor command → voice prompt");
     }
 }
 #endif
@@ -1633,6 +1638,7 @@ static bool bt_init_if_needed(void)
             esp_avrc_psth_bit_mask_operation(ESP_AVRC_BIT_MASK_OP_SET, &psth_mask, ESP_AVRC_PT_CMD_STOP);
             esp_avrc_psth_bit_mask_operation(ESP_AVRC_BIT_MASK_OP_SET, &psth_mask, ESP_AVRC_PT_CMD_FORWARD);
             esp_avrc_psth_bit_mask_operation(ESP_AVRC_BIT_MASK_OP_SET, &psth_mask, ESP_AVRC_PT_CMD_BACKWARD);
+            esp_avrc_psth_bit_mask_operation(ESP_AVRC_BIT_MASK_OP_SET, &psth_mask, ESP_AVRC_PT_CMD_VENDOR);
             esp_avrc_tg_set_psth_cmd_filter(ESP_AVRC_PSTH_FILTER_SUPPORTED_CMD, &psth_mask);
             ESP_LOGI(TAG, "bt: AVRCP TG ready (earbud controls enabled)");
         }
@@ -5840,19 +5846,26 @@ void picture_frame_run(void)
 #if CONFIG_BT_ENABLED && CONFIG_BT_A2DP_ENABLE
             if (s_avrc_pending_play_pause) {
                 s_avrc_pending_play_pause = false;
+                bool was_paused = s_mp3.paused;
                 (void)pf_touch_handler(0, 0, SCREEN_GESTURE_TAP);
+                ESP_LOGI(TAG, "avrc: single tap → %s", was_paused ? "play" : "pause");
             }
             {
                 int step = s_avrc_pending_track_step;
                 if (step != 0) {
                     s_avrc_pending_track_step = 0;
-                    if (mp3_advance_track(step, step > 0 ? "avrc next" : "avrc prev")) {
-                        mp3_request_ui_refresh();
+                    if (step > 0) {
+                        ESP_LOGI(TAG, "avrc: double tap → next track");
+                        if (mp3_advance_track(1, "avrc next")) mp3_request_ui_refresh();
+                    } else {
+                        ESP_LOGI(TAG, "avrc: triple tap → previous track");
+                        if (mp3_advance_track(-1, "avrc prev")) mp3_request_ui_refresh();
                     }
                 }
             }
             if (s_avrc_pending_voice) {
                 s_avrc_pending_voice = false;
+                ESP_LOGI(TAG, "avrc: long press → voice query (Core2 mic)");
                 do_core2_voice_query();
             }
 #endif
