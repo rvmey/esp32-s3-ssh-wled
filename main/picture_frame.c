@@ -1321,6 +1321,7 @@ static void bt_a2dp_cb(esp_a2d_cb_event_t event, esp_a2d_cb_param_t *param)
                     ESP_LOGW(TAG, "bt: pairing failed");
                     s_bt.pairing_ui_active = false;
                     s_bt_hold_local_speaker = false;
+                    screen_draw_text("BT pairing\nfailed");
                 }
             } else if (!scheduled_retry) {
                 s_bt_hold_local_speaker = false;
@@ -1466,12 +1467,14 @@ static void bt_gap_cb(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t *param)
                         ESP_LOGW(TAG, "bt: pairing connect failed");
                         s_bt.pairing_ui_active = false;
                         s_bt_hold_local_speaker = false;
+                        screen_draw_text("BT pairing\nfailed");
                     }
                 }
             } else if (s_bt.pairing_ui_active && !s_bt.has_bda) {
                 ESP_LOGW(TAG, "bt: pairing no audio device found");
                 s_bt.pairing_ui_active = false;
                 s_bt_hold_local_speaker = false;
+                screen_draw_text("No audio\ndevice found");
             }
 #endif
         }
