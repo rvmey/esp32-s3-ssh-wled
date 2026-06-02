@@ -391,7 +391,7 @@ static volatile bool  s_avrc_pending_play_pause  = false;
 static volatile int   s_avrc_pending_track_step  = 0;   /* +1 next, -1 prev */
 static volatile bool  s_avrc_pending_voice       = false;
 static TickType_t     s_avrc_play_pressed_tick   = 0;
-#define AVRC_VOICE_LONG_PRESS_MS 500U
+#define AVRC_VOICE_LONG_PRESS_MS 800U
 #endif
 
 /* Pending JPEG URL — set by the WS event task, consumed by the main loop */
@@ -1415,8 +1415,8 @@ static void bt_avrc_tg_cb(esp_avrc_tg_cb_event_t event, esp_avrc_tg_cb_param_t *
             ESP_LOGI(TAG, "avrc tg: play/pause held %lu ms (threshold %u ms)",
                      (unsigned long)held_ms, AVRC_VOICE_LONG_PRESS_MS);
             if (held_ms >= AVRC_VOICE_LONG_PRESS_MS) {
-                s_avrc_pending_voice = true;
-                ESP_LOGI(TAG, "avrc tg: long press → voice prompt");
+                s_avrc_pending_track_step = 1;   /* long press → next track */
+                ESP_LOGI(TAG, "avrc tg: long press → next track");
             } else {
                 s_avrc_pending_play_pause = true;
             }
@@ -1424,12 +1424,10 @@ static void bt_avrc_tg_cb(esp_avrc_tg_cb_event_t event, esp_avrc_tg_cb_param_t *
     } else if (cmd == ESP_AVRC_PT_CMD_STOP && state == ESP_AVRC_PT_CMD_STATE_PRESSED) {
         s_avrc_pending_play_pause = true;
     } else if (cmd == ESP_AVRC_PT_CMD_FORWARD && state == ESP_AVRC_PT_CMD_STATE_PRESSED) {
-        s_avrc_pending_track_step = 1;
+        s_avrc_pending_voice = true;   /* double tap → voice prompt */
     } else if (cmd == ESP_AVRC_PT_CMD_BACKWARD && state == ESP_AVRC_PT_CMD_STATE_PRESSED) {
-        s_avrc_pending_track_step = -1;
+        s_avrc_pending_track_step = -1;   /* triple tap → previous track */
     } else if (cmd == ESP_AVRC_PT_CMD_VENDOR && state == ESP_AVRC_PT_CMD_STATE_PRESSED) {
-        /* Many earbuds map their long-press button to the vendor-unique AVRCP
-         * command (0x7E) rather than holding PLAY long enough to trip the timer. */
         s_avrc_pending_voice = true;
         ESP_LOGI(TAG, "avrc tg: vendor command → voice prompt");
     }
@@ -5865,7 +5863,7 @@ void picture_frame_run(void)
                 if (step != 0) {
                     s_avrc_pending_track_step = 0;
                     if (step > 0) {
-                        ESP_LOGI(TAG, "avrc: double tap → next track");
+                        ESP_LOGI(TAG, "avrc: long press → next track");
                         if (mp3_advance_track(1, "avrc next")) mp3_request_ui_refresh();
                     } else {
                         ESP_LOGI(TAG, "avrc: triple tap → previous track");
@@ -5875,7 +5873,7 @@ void picture_frame_run(void)
             }
             if (s_avrc_pending_voice) {
                 s_avrc_pending_voice = false;
-                ESP_LOGI(TAG, "avrc: long press → voice query (Core2 mic)");
+                ESP_LOGI(TAG, "avrc: double tap → voice query (Core2 mic)");
                 do_core2_voice_query();
             }
 #endif
