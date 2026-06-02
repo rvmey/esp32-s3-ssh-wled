@@ -358,6 +358,7 @@ static const char *tcmd_display_host(void)
 #define NVS_KEY_MP3_MODE "mp3_mode"
 #define NVS_KEY_BT_BDA  "bt_bda"
 #define NVS_KEY_BT_NAME "bt_name"
+#define NVS_KEY_SLEEP_MIN "sleep_min"
 
 #define HW_TOKEN_MAX_LEN    513   /* 512 payload + NUL */
 #define COMPUTER_ID_MAX_LEN  33   /* 32 payload + NUL  */
@@ -369,8 +370,11 @@ static char s_computer_id[COMPUTER_ID_MAX_LEN] __attribute__((unused)) = {0};
 
 #if CONFIG_HARDWARE_CORE2
 /* Timestamp of last user activity; reset by touch and received commands.
- * Used by the main loop to trigger deep sleep after CORE2_SLEEP_TIMEOUT_S. */
+ * Used by the main loop to trigger deep sleep. */
 static TickType_t s_last_activity_tick = 0;
+/* Runtime sleep timeout in seconds; 0 = disabled.  Defaults to the Kconfig
+ * value but can be overridden at runtime by the "sleeptimer" command. */
+static uint32_t   s_sleep_timeout_s    = CONFIG_CORE2_SLEEP_TIMEOUT_S;
 #endif
 
 /* Pending run/save — set by the WS event task, consumed by the main loop */
@@ -4892,6 +4896,16 @@ static void pf_event_handler(const char *event_name,
     } else if (strcmp(s_trigger, "btforget") == 0) {
         bt_cmd_forget();
 
+#if CONFIG_HARDWARE_CORE2
+    } else if (strcmp(s_trigger, "sleeptimer") == 0) {
+        int mins = atoi(s_params);
+        if (mins < 0)   mins = 0;
+        if (mins > 120) mins = 120;
+        s_sleep_timeout_s = (uint32_t)mins * 60u;
+        nvs_write_u8(NVS_KEY_SLEEP_MIN, (uint8_t)mins);
+        ESP_LOGI(TAG, "sleep timeout set to %d minutes", mins);
+#endif
+
     } else {
         int folder_idx = mp3_find_folder_trigger(s_trigger);
         if (folder_idx >= 0) {
@@ -5399,6 +5413,10 @@ void picture_frame_run(void)
         if (nvs_read_u8(NVS_KEY_VISUALIZER, &visualizer)) {
             s_mp3.visualizer = (visualizer != 0);
         }
+        uint8_t sleep_min = 0;
+        if (nvs_read_u8(NVS_KEY_SLEEP_MIN, &sleep_min)) {
+            s_sleep_timeout_s = (uint32_t)sleep_min * 60u;
+        }
 #endif
     }
     /* Defer SD mount/index work until the main loop so boot UI is responsive. */
@@ -5730,10 +5748,10 @@ void picture_frame_run(void)
                 }
             }
 
-#if CONFIG_CORE2_SLEEP_TIMEOUT_S > 0
-            if (!(s_mp3.active && !s_mp3.paused) &&
+            if (s_sleep_timeout_s > 0 &&
+                !(s_mp3.active && !s_mp3.paused) &&
                 (TickType_t)(xTaskGetTickCount() - s_last_activity_tick) >=
-                    pdMS_TO_TICKS((uint32_t)CONFIG_CORE2_SLEEP_TIMEOUT_S * 1000u)) {
+                    pdMS_TO_TICKS(s_sleep_timeout_s * 1000u)) {
                 ESP_LOGI(TAG, "Idle timeout (%d s) — entering deep sleep",
                          CONFIG_CORE2_SLEEP_TIMEOUT_S);
                 screen_backlight_off();
@@ -5747,7 +5765,6 @@ void picture_frame_run(void)
                                              ESP_EXT1_WAKEUP_ALL_LOW);
                 esp_deep_sleep_start();
             }
-#endif
 #endif
 
             vTaskDelay(pdMS_TO_TICKS(200));   /* poll every 200 ms */

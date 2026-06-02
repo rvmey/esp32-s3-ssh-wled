@@ -215,5 +215,12 @@
   "allowParams": "false",
   "mcpToolDescription": "Forget the saved Bluetooth device and stop auto-reconnect.",
   "icon": "🧹"
+ },
+ {
+  "trigger": "sleeptimer",
+  "command": "sleeptimer",
+  "allowParams": "true",
+  "mcpToolDescription": "Set the number of minutes of inactivity before the device sleeps. Use 0 to disable auto-sleep. Example: '10' or '0'",
+  "icon": "😴"
  }
 ]
