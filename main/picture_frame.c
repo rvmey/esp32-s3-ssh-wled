@@ -1307,22 +1307,30 @@ static void bt_a2dp_cb(esp_a2d_cb_event_t event, esp_a2d_cb_param_t *param)
             /* Schedule a retry on transient open/disconnect failures. */
             bool scheduled_retry = false;
             bool allow_runtime_retry = s_bt.pairing_ui_active || s_mp3.active;
+            /* Capture exhausted state BEFORE any scheduling; bt_schedule_reconnect
+             * increments the counter internally. */
+            bool retries_exhausted = (s_bt.connect_retries >= BT_CONNECT_RETRY_MAX);
             if (s_bt.has_bda && !s_bt.discovering && allow_runtime_retry &&
-                s_bt.connect_retries < BT_CONNECT_RETRY_MAX && !s_bt_pending_reconnect) {
+                !retries_exhausted && !s_bt_pending_reconnect) {
                 uint32_t min_delay_ms = s_bt_recent_acl_drop ? BT_RECONNECT_DELAY_HARD_DROP_MS : 0;
                 bt_schedule_reconnect("A2DP disconnected", min_delay_ms);
                 scheduled_retry = true;
-            } else {
+            } else if (!s_bt_pending_reconnect || !allow_runtime_retry || retries_exhausted) {
+                /* Reset retries when giving up or when no pending retry is
+                 * keeping the budget alive.  Do NOT reset when a pending retry
+                 * exists within the budget — that would allow the counter to
+                 * wrap back to 0 and restart infinite retry loops. */
                 s_bt.connect_retries = 0;
             }
             if (s_bt.pairing_ui_active) {
-                /* Defer the failure message while any retry is still in
-                 * progress: either we just scheduled one (scheduled_retry),
-                 * the main loop has one queued (s_bt_pending_reconnect), or
-                 * a connection attempt is actively running (s_bt.connecting).
-                 * Racing any of these would falsely show "BT pairing failed"
-                 * even though the in-flight attempt may still succeed. */
-                if (scheduled_retry || s_bt_pending_reconnect || s_bt.connecting) {
+                /* Defer the failure message when retry work is still in flight.
+                 * Important: only defer on s_bt_pending_reconnect when retries
+                 * are not yet exhausted — otherwise the pending timer could fire,
+                 * reset the counter to 0, and restart an infinite retry loop. */
+                bool defer = scheduled_retry
+                             || s_bt.connecting
+                             || (s_bt_pending_reconnect && !retries_exhausted);
+                if (defer) {
                     ESP_LOGI(TAG, "bt: pairing retry pending (%d/%d)",
                              s_bt.connect_retries, BT_CONNECT_RETRY_MAX);
                 } else {
@@ -1331,7 +1339,7 @@ static void bt_a2dp_cb(esp_a2d_cb_event_t event, esp_a2d_cb_param_t *param)
                     s_bt_hold_local_speaker = false;
                     screen_draw_text("BT pairing\nfailed");
                 }
-            } else if (!scheduled_retry) {
+            } else if (!scheduled_retry && !s_bt_pending_reconnect && !s_bt.connecting) {
                 s_bt_hold_local_speaker = false;
             }
         }
