@@ -1316,7 +1316,15 @@ static void bt_a2dp_cb(esp_a2d_cb_event_t event, esp_a2d_cb_param_t *param)
                 s_bt.connect_retries = 0;
             }
             if (s_bt.pairing_ui_active) {
-                if (scheduled_retry) {
+                /* Defer the failure message while any retry is still in
+                 * progress: either we just scheduled one (scheduled_retry),
+                 * the main loop has one queued (s_bt_pending_reconnect), or
+                 * a connection attempt is actively running (s_bt.connecting).
+                 * Racing any of these would falsely show "BT pairing failed"
+                 * even though the in-flight attempt may still succeed. */
+                if (scheduled_retry || s_bt_pending_reconnect || s_bt.connecting) {
+                    ESP_LOGI(TAG, "bt: pairing retry pending (%d/%d)",
+                             s_bt.connect_retries, BT_CONNECT_RETRY_MAX);
                 } else {
                     ESP_LOGW(TAG, "bt: pairing failed");
                     s_bt.pairing_ui_active = false;
