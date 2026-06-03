@@ -1465,7 +1465,13 @@ static void bt_gap_cb(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t *param)
             if (s_bt.connect_after_discovery && s_bt.has_bda) {
                 s_bt.connect_after_discovery = false;
                 if (!bt_start_connect_now("scan complete")) {
-                    if (s_bt.pairing_ui_active && !s_bt_pending_reconnect) {
+                    /* bt_start_connect_now returns false both when it cannot
+                     * initiate a new connection AND when one is already in
+                     * progress (s_bt.connecting).  Only show failure when we
+                     * are genuinely stuck — not when a pending connection may
+                     * still succeed. */
+                    if (s_bt.pairing_ui_active && !s_bt_pending_reconnect
+                            && !s_bt.connecting) {
                         ESP_LOGW(TAG, "bt: pairing connect failed");
                         s_bt.pairing_ui_active = false;
                         s_bt_hold_local_speaker = false;
