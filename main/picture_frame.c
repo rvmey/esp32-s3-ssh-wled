@@ -595,12 +595,12 @@ static TickType_t    s_bt_reconnect_after   = 0;
 static TickType_t    s_bt_connect_started_at = 0;
 static bool          s_bt_recent_acl_drop = false;
 
-#define BT_CONNECT_RETRY_MAX          5
-#define BT_CONNECT_TIMEOUT_MS          8000U
+#define BT_CONNECT_RETRY_MAX          8
+#define BT_CONNECT_TIMEOUT_MS          12000U
 #define BT_RECONNECT_DELAY_HARD_DROP_MS 1500U
 
 static const uint16_t s_bt_retry_delay_ms[BT_CONNECT_RETRY_MAX] = {
-    900, 1800, 3000, 4500, 6000
+    900, 1800, 3000, 4500, 6000, 8000, 10000, 12000
 };
 
 #define BT_STARTUP_MIN_INTERNAL_FREE    (44 * 1024)
