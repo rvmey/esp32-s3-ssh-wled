@@ -3771,6 +3771,35 @@ static void do_core2_voice_query(void)
     }
     /* GPIO 0 is now free; I2S1 stays disabled; mp3 task stays suspended. */
 
+#if CONFIG_BT_ENABLED
+    /* When the BT controller is running, WiFi/BT coexistence causes ~30% TCP
+     * packet loss.  With TCP retransmit backoff, effective throughput drops to
+     * ~7 KB/s regardless of window size.  128 KB at 7 KB/s = 18.3 s, just
+     * over the server's TLS write reset timeout.
+     * Downsample 16 kHz → 8 kHz (average adjacent sample pairs) when BT is
+     * active: this halves the WAV to 64 KB while keeping the 4-second recording
+     * window.  64 KB at 7 KB/s = 9 s — well within the 18-second limit.
+     * Whisper transcribes 8 kHz audio correctly for short voice commands. */
+    if (s_bt.initialized && wav && wav_len > 44u) {
+        int16_t  *pcm      = (int16_t *)(wav + 44u);
+        uint32_t  n_in     = (uint32_t)(wav_len - 44u) / 2u;
+        uint32_t  n_out    = n_in / 2u;
+        for (uint32_t i = 0; i < n_out; i++) {
+            pcm[i] = (int16_t)(((int32_t)pcm[i * 2u] + (int32_t)pcm[i * 2u + 1u]) / 2);
+        }
+        uint32_t pcm_bytes  = n_out * 2u;
+        uint32_t sr8        = 8000u;
+        uint32_t byte_rate  = sr8 * 2u;
+        uint32_t riff_size  = 36u + pcm_bytes;
+        memcpy(wav +  4, &riff_size,  4);
+        memcpy(wav + 24, &sr8,        4);
+        memcpy(wav + 28, &byte_rate,  4);
+        memcpy(wav + 40, &pcm_bytes,  4);
+        wav_len = 44u + pcm_bytes;
+        ESP_LOGI(TAG, "Voice: downsampled to 8 kHz, WAV %u bytes", (unsigned)wav_len);
+    }
+#endif
+
     /* STT + Chat API dispatch — frees wav, updates screen */
     do_core2_voice_http(wav, wav_len);
 
