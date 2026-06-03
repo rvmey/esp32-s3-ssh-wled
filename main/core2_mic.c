@@ -56,14 +56,22 @@ static void write_wav_header(uint8_t *hdr, uint32_t pcm_bytes)
 
 /* ── Public API ──────────────────────────────────────────────────────────── */
 
-void core2_mic_init(void)
+esp_err_t core2_mic_init(void)
 {
-    if (s_rx_chan) return;
+    if (s_rx_chan) return ESP_OK;
 
+    /* Use 4 DMA descriptors instead of 8 to reduce internal DMA-capable SRAM
+     * usage.  After BT scan + WiFi TLS, the internal heap is often fragmented;
+     * smaller descriptors improve allocation success. */
     i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(MIC_I2S_PORT, I2S_ROLE_MASTER);
-    chan_cfg.dma_desc_num  = 8;
+    chan_cfg.dma_desc_num  = 4;
     chan_cfg.dma_frame_num = DMA_BUF_SAMPLES;
-    ESP_ERROR_CHECK(i2s_new_channel(&chan_cfg, NULL, &s_rx_chan));
+    esp_err_t err = i2s_new_channel(&chan_cfg, NULL, &s_rx_chan);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "i2s_new_channel failed: %s", esp_err_to_name(err));
+        s_rx_chan = NULL;
+        return err;
+    }
 
     i2s_pdm_rx_config_t pdm_cfg = {
         .clk_cfg = {
@@ -86,13 +94,20 @@ void core2_mic_init(void)
     };
     /* SPM1423 SEL=GND on Core2 → data on left channel */
     pdm_cfg.slot_cfg.slot_mask = I2S_PDM_SLOT_LEFT;
-    ESP_ERROR_CHECK(i2s_channel_init_pdm_rx_mode(s_rx_chan, &pdm_cfg));
+    err = i2s_channel_init_pdm_rx_mode(s_rx_chan, &pdm_cfg);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "i2s_channel_init_pdm_rx_mode failed: %s", esp_err_to_name(err));
+        i2s_del_channel(s_rx_chan);
+        s_rx_chan = NULL;
+        return err;
+    }
 
     uint32_t clk_out_sig = GPIO.func_out_sel_cfg[MIC_CLK_PIN].func_sel;
     ESP_LOGI(TAG, "Diag: GPIO%d out_sel=%lu  I2S0I_WS=%d",
              MIC_CLK_PIN, (unsigned long)clk_out_sig, I2S0I_WS_OUT_IDX);
     ESP_LOGI(TAG, "PDM RX ready: CLK=%d DATA=%d @ %d Hz DSR_16S",
              MIC_CLK_PIN, MIC_DATA_PIN, MIC_SAMPLE_RATE);
+    return ESP_OK;
 }
 
 size_t core2_mic_record(uint8_t **wav_out, uint32_t max_ms)

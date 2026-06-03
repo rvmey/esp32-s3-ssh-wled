@@ -3743,11 +3743,16 @@ static void do_core2_voice_query(void)
     if (s_mp3.active && !s_mp3.paused) s_mp3.paused = true;
     if (s_mp3_task) vTaskSuspend(s_mp3_task);
     core2_audio_pause();
-    core2_mic_init();
 
     uint8_t *wav    = NULL;
-    size_t   wav_len = core2_mic_record(&wav, 4000);
-    core2_mic_deinit();
+    size_t   wav_len = 0;
+    if (core2_mic_init() == ESP_OK) {
+        wav_len = core2_mic_record(&wav, 4000);
+        core2_mic_deinit();
+    } else {
+        ESP_LOGW(TAG, "Voice query: mic init failed (DMA alloc), skipping recording");
+        screen_draw_text("Voice: mic init\nfailed");
+    }
     /* GPIO 0 is now free; I2S1 stays disabled; mp3 task stays suspended. */
 
     /* STT + Chat API dispatch — frees wav, updates screen */
