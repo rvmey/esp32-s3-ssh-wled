@@ -3760,20 +3760,10 @@ static void do_core2_voice_query(void)
     if (s_mp3_task) vTaskSuspend(s_mp3_task);
     core2_audio_pause();
 
-    /* When the BT controller is running, WiFi/BT coexistence throttles uploads.
-     * 128 KB (4 s × 16 kHz) takes ~18 s to upload, hitting OpenAI's timeout.
-     * With BT initialized, record only 2 s (64 KB) so the upload completes in
-     * ~9 s even with coexist interference. */
-#if CONFIG_BT_ENABLED
-    uint32_t rec_ms = s_bt.initialized ? 2000u : 4000u;
-#else
-    uint32_t rec_ms = 4000u;
-#endif
-
     uint8_t *wav    = NULL;
     size_t   wav_len = 0;
     if (core2_mic_init() == ESP_OK) {
-        wav_len = core2_mic_record(&wav, rec_ms);
+        wav_len = core2_mic_record(&wav, 4000);
         core2_mic_deinit();
     } else {
         ESP_LOGW(TAG, "Voice query: mic init failed (DMA alloc), skipping recording");
