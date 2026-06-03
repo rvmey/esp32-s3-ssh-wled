@@ -3540,6 +3540,14 @@ static void do_core2_voice_query(void);   /* forward declaration for HFP fallbac
  * Takes ownership: frees wav before returning. */
 static void do_core2_voice_http(uint8_t *wav, size_t wav_len)
 {
+    /* Disable WiFi power save for the duration of the HTTP upload.
+     * When BT is connected but not streaming, WiFi is in MIN_MODEM PS.
+     * With BT sharing the 2.4 GHz RF (even in sniff mode), uploading the
+     * 128 KB WAV at reduced WiFi duty cycle causes the OpenAI server to
+     * reset the TLS connection after ~18 s.  WIFI_PS_NONE gives WiFi
+     * full RF priority for the upload and restores PS when done. */
+    esp_wifi_set_ps(WIFI_PS_NONE);
+
     char stt_key[CORE2_STT_KEY_MAX] = {0};
     char transcript[CORE2_TRANSCRIPT_MAX] = {0};
     char *resp = NULL;
@@ -3614,6 +3622,7 @@ static void do_core2_voice_http(uint8_t *wav, size_t wav_len)
 http_done:
     if (wav)  { free(wav);  }
     if (resp) { free(resp); }
+    esp_wifi_set_ps(WIFI_PS_MIN_MODEM);   /* restore normal PS after upload */
 }
 
 #if CONFIG_BT_HFP_AG_ENABLE
