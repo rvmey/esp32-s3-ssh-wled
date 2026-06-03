@@ -8,15 +8,6 @@ CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
 # WebSocket receive buffer (must hold a full Socket.IO frame + overhead)
 CONFIG_WS_BUFFER_SIZE=8192
 
-# lwIP TCP send/receive window — increase from default 5760 to 65535 bytes.
-# With BT coexistence active, WiFi round-trip time rises to ~1.1 s per slot.
-# At 5760-byte window: throughput = 5760 / 1.1s = 5 KB/s → 128 KB WAV takes
-# ~25 s, exceeding the OpenAI server's 18-second TLS write reset.
-# At 65535-byte window: 65535 / 1.1s = 58 KB/s → 128 KB takes ~2 s.  Buffers
-# are PSRAM-backed so the 128 KB overhead (2 × 64 KB × 1 socket) is trivial.
-CONFIG_LWIP_TCP_SND_BUF_DEFAULT=65535
-CONFIG_LWIP_TCP_WND_DEFAULT=65535
-
 # QSPI PSRAM (8 MB PSRAM on Core2, classic ESP32 — NOT OPI/octal)
 CONFIG_SPIRAM=y
 CONFIG_SPIRAM_USE_MALLOC=y
@@ -35,11 +26,6 @@ CONFIG_BT_BLUEDROID_ENABLED=y
 CONFIG_BT_CLASSIC_ENABLED=y
 CONFIG_BT_A2DP_ENABLE=y
 CONFIG_BT_SSP_ENABLED=y
-# HFP disabled: AUKEY EP-T21S aggressively closes RFCOMM after ~30-60 s idle,
-# which kills the shared ACL and drops A2DP.  Repeated reconnect cycles exhaust
-# the Bluedroid OSI timer pool → osi_alarm_new failure → crash.
-# Voice queries use the Core2 built-in PDM mic instead.
-# CONFIG_BT_HFP_ENABLE is not set
 # CONFIG_BT_BLE_ENABLED is not set
 # CONFIG_BT_GOEPC_ENABLED is not set
 CONFIG_BT_ALLOCATION_FROM_SPIRAM_FIRST=y

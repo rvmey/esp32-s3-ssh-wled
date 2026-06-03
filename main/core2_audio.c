@@ -15,11 +15,7 @@
 #define CORE2_I2S_WS_GPIO   0
 #define CORE2_I2S_DOUT_GPIO 2
 #define CORE2_I2S_CHUNK_FRAMES 512
-/* 4 DMA descriptors instead of 8 — frees 8 KB of DMA-capable internal SRAM
- * (4 × 512 frames × 4 bytes/frame = 8 KB saved) so the PDM mic can allocate
- * its own 4 KB DMA buffers while BT is active.  The 48 KB PCM ring buffer
- * provides more than enough pre-buffering that 4 descriptors is sufficient. */
-#define CORE2_I2S_DMA_DESC_NUM 4
+#define CORE2_I2S_DMA_DESC_NUM 8
 #define CORE2_I2S_RING_BYTES (48 * 1024)
 #define CORE2_I2S_RING_FALLBACK_BYTES (12 * 1024)
 
