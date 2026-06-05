@@ -7,11 +7,11 @@
  *   1. screen_init()
  *   2. WiFi — Improv-WiFi BLE provisioning if no stored credentials.
  *   3. User JWT — obtained via pair code flow:
- *        GET /pair?model=TCMDSCREEN → {pairCode, pairToken}
+ *        GET /pair?model=TCMDCORE2 → {pairCode, pairToken}
  *        Display code; poll GET /pair/lookup every 5 s (up to 10 min).
  *        On authorisation, token is saved to NVS and device reboots.
  *        On timeout, a fresh pair code is fetched automatically.
- *   4. Provisioning — POST /api/computer/save with name TCMDSCREEN-<MAC>,
+ *   4. Provisioning — POST /api/computer/save with name TCMDCORE2-<MAC>,
  *      receiving back a computer ID stored in NVS.
  *   5. Command sync — GET /api/command/list, then POST /api/command/save
  *      for any commands from picture_frame_commands.json not yet online.
@@ -363,7 +363,7 @@ static const char *tcmd_display_host(void)
 
 #define HW_TOKEN_MAX_LEN    513   /* 512 payload + NUL */
 #define COMPUTER_ID_MAX_LEN  33   /* 32 payload + NUL  */
-#define COMPUTER_NAME_LEN    32   /* "TCMDSCREEN-AABBCCDDEEFF" + NUL */
+#define COMPUTER_NAME_LEN    32   /* "TCMDCORE2-AABBCCDDEEFF" + NUL */
 
 /* ── Module-level statics shared with event handler ────────────────────── */
 static char s_hw_token[HW_TOKEN_MAX_LEN]      __attribute__((unused)) = {0};
@@ -3513,7 +3513,7 @@ static void do_core2_voice_query(void)
         esp_read_mac(mac, ESP_MAC_WIFI_STA);
         char computer_name[32];
         snprintf(computer_name, sizeof(computer_name),
-                 "TCMDSCREEN-%02X%02X%02X%02X%02X%02X",
+                 "TCMDCORE2-%02X%02X%02X%02X%02X%02X",
                  mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
 
         char json_body[CORE2_TRANSCRIPT_MAX + 256];
@@ -5585,7 +5585,7 @@ void picture_frame_run(void)
             char *pair_body = NULL;
             char pair_url[192];
             snprintf(pair_url, sizeof(pair_url),
-                     "%s/pair?model=TCMDSCREEN", TCMD_BASE_URL);
+                     "%s/pair?model=TCMDCORE2", TCMD_BASE_URL);
             int pair_len = https_get_simple(pair_url, &pair_body);
 
             if (pair_len <= 0 || !pair_body) {
@@ -5665,7 +5665,7 @@ void picture_frame_run(void)
         esp_read_mac(mac, ESP_MAC_WIFI_STA);
         char computer_name[COMPUTER_NAME_LEN];
         snprintf(computer_name, sizeof(computer_name),
-                 "TCMDSCREEN-%02X%02X%02X%02X%02X%02X",
+                 "TCMDCORE2-%02X%02X%02X%02X%02X%02X",
                  mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
 
         ESP_LOGI(TAG, "Creating computer: %s", computer_name);
@@ -5674,7 +5674,7 @@ void picture_frame_run(void)
         char save_url[192];
         snprintf(save_url, sizeof(save_url), "%s/api/computer/save", TCMD_BASE_URL);
 
-        /* Body: name=TCMDSCREEN-AABBCCDDEEFF (no special encoding needed) */
+        /* Body: name=TCMDCORE2-AABBCCDDEEFF (no special encoding needed) */
         char form[64];
         snprintf(form, sizeof(form), "name=%s", computer_name);
 
