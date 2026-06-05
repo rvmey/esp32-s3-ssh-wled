@@ -4,7 +4,7 @@
   "command": "text",
   "voice": "text",
   "allowParams": "true",
-  "mcpToolDescription": "Update the display text. Example: 'Hello world!'",
+  "mcpToolDescription": "Update the display text on the user's Core2 device. Example: 'Hello world!'",
   "icon": "📝"
  },
  {
@@ -12,7 +12,7 @@
   "command": "color",
   "voice": "color",
   "allowParams": "true",
-  "mcpToolDescription": "Change the display color. Example: 'red' or '#FF0000'",
+  "mcpToolDescription": "Change the display background color on the user's Core2 device. Example: 'red' or '#FF0000'",
   "icon": "🔤"
  },
  {
@@ -21,7 +21,7 @@
   "voice": "textcolor",
   "allowParams": "true",
   "quoteParams": "false",
-  "mcpToolDescription": "Change the text color. Example: 'blue' or '#0000FF'",
+  "mcpToolDescription": "Change the text color on the user's Core2 device. Example: 'blue' or '#0000FF'",
   "icon": "🎨"
  },
  {
@@ -29,7 +29,7 @@
   "command": "fontsize",
   "voice": "fontsize",
   "allowParams": "true",
-  "mcpToolDescription": "Change the font size (1-4). Example: '3'",
+  "mcpToolDescription": "Change the font size on the user's Core2 device (1-4). Example: '3'",
   "icon": "🔡"
  },
  {
@@ -37,7 +37,7 @@
   "command": "landscape",
   "voice": "landscape",
   "allowParams": "false",
-  "mcpToolDescription": "Set the display to landscape orientation.",
+  "mcpToolDescription": "Set the user's Core2 device display to landscape orientation.",
   "icon": "↔️"
  },
  {
@@ -45,189 +45,189 @@
   "command": "portrait",
   "voice": "portrait",
   "allowParams": "false",
-  "mcpToolDescription": "Set the display to portrait orientation.",
+  "mcpToolDescription": "Set the user's Core2 device display to portrait orientation.",
   "icon": "↕️"
  },
  {
   "trigger": "jpeg",
   "command": "jpeg",
   "allowParams": "true",
-  "mcpToolDescription": "Display a JPEG picture for the user when they say something like, 'Picture of a cat'. Use loremflickr.com by default. If multiple words (Example: cat_and_dog), use an underscores. The command parameter should always be a URL like this: 'https://loremflickr.com/320/240/cat_and_dog'",
+  "mcpToolDescription": "Display a JPEG picture on the user's Core2 device when they say something like, 'Picture of a cat'. Use loremflickr.com by default. If multiple words (Example: cat_and_dog), use an underscores. The command parameter should always be a URL like this: 'https://loremflickr.com/320/240/cat_and_dog'",
   "icon": "🖼️"
  },
 {
   "trigger": "save",
   "command": "save",
   "allowParams": "false",
-  "mcpToolDescription": "Save the screen settings to non-volatile memory.",
+  "mcpToolDescription": "Save the screen settings to non-volatile memory on the user's Core2 device.",
   "icon": "💾"
  },
  {
   "trigger": "savepic",
   "command": "savepic",
   "allowParams": "false",
-  "mcpToolDescription": "Save the currently displayed JPEG to the SD card in the 'pictures' folder.",
+  "mcpToolDescription": "Save the currently displayed JPEG to the SD card on the user's Core2 device in the 'pictures' folder.",
   "icon": "📷"
  },
  {
   "trigger": "folders",
   "command": "folders",
   "allowParams": "false",
-  "mcpToolDescription": "List the folders on the SD card.",
+  "mcpToolDescription": "List the folders on the SD card in the user's Core2 device.",
   "icon": "📂"
  },
  {
   "trigger": "files",
   "command": "files",
   "allowParams": "true",
-  "mcpToolDescription": "List files in a folder on the SD card. Example: 'music'",
+  "mcpToolDescription": "List files in a folder on the SD card in the user's Core2 device. Example: 'music'",
   "icon": "📄"
  },
  {
   "trigger": "reboot",
   "command": "reboot",
   "allowParams": "false",
-  "mcpToolDescription": "Reboot the device.",
+  "mcpToolDescription": "Reboot the user's Core2 device.",
   "icon": "🔁"
  },
  {
   "trigger": "play",
   "command": "play",
   "allowParams": "false",
-  "mcpToolDescription": "Resume paused MP3 playback.",
+  "mcpToolDescription": "Resume paused MP3 playback on the user's Core2 device.",
   "icon": "▶️"
  },
  {
   "trigger": "pause",
   "command": "pause",
   "allowParams": "false",
-  "mcpToolDescription": "Toggle MP3 playback: plays if paused, pauses if playing.",
+  "mcpToolDescription": "Toggle MP3 playback on the user's Core2 device: plays if paused, pauses if playing.",
   "icon": "⏯️"
  },
  {
   "trigger": "stop",
   "command": "stop",
   "allowParams": "false",
-  "mcpToolDescription": "Pause MP3 playback and keep the current position visible.",
+  "mcpToolDescription": "Pause MP3 playback on the user's Core2 device and keep the current position visible.",
   "icon": "⏸️"
  },
  {
   "trigger": "forward",
   "command": "forward",
   "allowParams": "false",
-  "mcpToolDescription": "Skip forward 10 seconds within the current MP3.",
+  "mcpToolDescription": "Skip forward 10 seconds within the current MP3 on the user's Core2 device.",
   "icon": "⏩"
  },
  {
   "trigger": "reverse",
   "command": "reverse",
   "allowParams": "false",
-  "mcpToolDescription": "Skip backward 10 seconds within the current MP3.",
+  "mcpToolDescription": "Skip backward 10 seconds within the current MP3 on the user's Core2 device.",
   "icon": "⏪"
  },
  {
   "trigger": "volumeup",
   "command": "volumeup",
   "allowParams": "false",
-  "mcpToolDescription": "Increase playback volume.",
+  "mcpToolDescription": "Increase the playback volume on the user's Core2 device.",
   "icon": "🔊"
  },
  {
   "trigger": "volumedown",
   "command": "volumedown",
   "allowParams": "false",
-  "mcpToolDescription": "Decrease playback volume.",
+  "mcpToolDescription": "Decrease the playback volume on the user's Core2 device.",
   "icon": "🔉"
  },
  {
   "trigger": "volumelevel",
   "command": "volumelevel",
   "allowParams": "true",
-  "mcpToolDescription": "Set the playback volume to an exact percentage (0–100). Example: '75'",
+  "mcpToolDescription": "Set the playback volume on the user's Core2 device to an exact percentage (0–100). Example: '75'",
   "icon": "🔊"
  },
  {
   "trigger": "mute",
   "command": "mute",
   "allowParams": "false",
-  "mcpToolDescription": "Toggle mute on or off. Mute state is not saved across reboots.",
+  "mcpToolDescription": "Toggle mute on or off on the user's Core2 device. Mute state is not saved across reboots.",
   "icon": "🔇"
  },
  {
   "trigger": "shuffle",
   "command": "shuffle",
   "allowParams": "true",
-  "mcpToolDescription": "Enable or disable shuffle mode. Example: 'on' or 'off'",
+  "mcpToolDescription": "Enable or disable shuffle mode on the user's Core2 device. Example: 'on' or 'off'",
   "icon": "🔀"
  },
  {
   "trigger": "repeattrack",
   "command": "repeattrack",
   "allowParams": "true",
-  "mcpToolDescription": "Enable or disable repeat-track mode. Example: 'on' or 'off'",
+  "mcpToolDescription": "Enable or disable repeat-track mode on the user's Core2 device. Example: 'on' or 'off'",
   "icon": "🔂"
  },
  {
   "trigger": "repeatplaylist",
   "command": "repeatplaylist",
   "allowParams": "true",
-  "mcpToolDescription": "Enable or disable repeat-playlist mode. Example: 'on' or 'off'",
+  "mcpToolDescription": "Enable or disable repeat-playlist mode on the user's Core2 device. Example: 'on' or 'off'",
   "icon": "🔁"
  },
  {
   "trigger": "visualizer",
   "command": "visualizer",
   "allowParams": "true",
-  "mcpToolDescription": "Enable or disable the LED audio visualizer on the sides of the device. When on, the LEDs show FFT frequency levels while music plays. Example: 'on' or 'off'",
+  "mcpToolDescription": "Enable or disable the LED audio visualizer on the sides of the user's Core2 device. When on, the LEDs show FFT frequency levels while music plays. Example: 'on' or 'off'",
   "icon": "🌈"
  },
  {
   "trigger": "ledcolor",
   "command": "ledcolor",
   "allowParams": "true",
-  "mcpToolDescription": "Set all side LEDs to a solid color. Examples: 'red', '#FF0000', 'off'",
+  "mcpToolDescription": "Set all side LEDs on the user's Core2 device to a solid color. Examples: 'red', '#FF0000', 'off'",
   "icon": "💡"
  },
  {
   "trigger": "pair",
   "command": "pair",
   "allowParams": "true",
-  "mcpToolDescription": "Pair with a Bluetooth headset or speaker. Example: 'pair'",
+  "mcpToolDescription": "Pair the user's Core2 device with a Bluetooth headset or speaker. Example: 'pair'",
   "icon": "🎧"
  },
  {
   "trigger": "btstatus",
   "command": "btstatus",
   "allowParams": "false",
-  "mcpToolDescription": "Show Bluetooth audio connection status.",
+  "mcpToolDescription": "Show the Bluetooth audio connection status of the user's Core2 device.",
   "icon": "📶"
  },
  {
   "trigger": "btdisconnect",
   "command": "btdisconnect",
   "allowParams": "false",
-  "mcpToolDescription": "Disconnect the current Bluetooth audio device.",
+  "mcpToolDescription": "Disconnect the current Bluetooth audio device from the user's Core2 device.",
   "icon": "🔌"
  },
  {
   "trigger": "btforget",
   "command": "btforget",
   "allowParams": "false",
-  "mcpToolDescription": "Forget the saved Bluetooth device and stop auto-reconnect.",
+  "mcpToolDescription": "Forget the saved Bluetooth device on the user's Core2 device and stop auto-reconnect.",
   "icon": "🧹"
  },
  {
   "trigger": "sleeptimer",
   "command": "sleeptimer",
   "allowParams": "true",
-  "mcpToolDescription": "Set the number of minutes of inactivity before the device sleeps. Use 0 to disable auto-sleep. Example: '10' or '0'",
+  "mcpToolDescription": "Set the number of minutes of inactivity before the user's Core2 device sleeps. Use 0 to disable auto-sleep. Example: '10' or '0'",
   "icon": "😴"
  },
  {
   "trigger": "sleep",
   "command": "sleep",
   "allowParams": "false",
-  "mcpToolDescription": "Put the device into deep sleep immediately. Wake by touching the screen.",
+  "mcpToolDescription": "Put the user's Core2 device into deep sleep immediately. The user can wake the device by touching the screen.",
   "icon": "💤"
  }
 ]
