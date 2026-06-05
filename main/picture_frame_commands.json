@@ -222,5 +222,12 @@
   "allowParams": "true",
   "mcpToolDescription": "Set the number of minutes of inactivity before the device sleeps. Use 0 to disable auto-sleep. Example: '10' or '0'",
   "icon": "😴"
+ },
+ {
+  "trigger": "sleep",
+  "command": "sleep",
+  "allowParams": "false",
+  "mcpToolDescription": "Put the device into deep sleep immediately. Wake by touching the screen.",
+  "icon": "💤"
  }
 ]

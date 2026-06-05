@@ -4314,6 +4314,7 @@ static const pf_cmd_t s_pf_cmds[] = {
     { "files",     "files",     "true",  "List files in a folder on the SD card. Example: 'music'", "\xF0\x9F\x93\x84" /* 📄 */ },
     { "reboot",    "reboot",    "false", "Reboot the device.", "\xF0\x9F\x94\x81" /* 🔁 */ },
     { "sleeptimer","sleeptimer","true",  "Set minutes of inactivity before the device sleeps (0 = never). Example: '10'", "\xF0\x9F\x98\xB4" /* 😴 */ },
+    { "sleep",     "sleep",     "false", "Put the device into deep sleep immediately. Wake by touching the screen.", "\xF0\x9F\x92\xA4" /* 💤 */ },
 };
 #define PF_CMD_COUNT  (sizeof(s_pf_cmds) / sizeof(s_pf_cmds[0]))
 
@@ -5049,6 +5050,16 @@ static void pf_event_handler(const char *event_name,
         s_sleep_timeout_s = (uint32_t)mins * 60u;
         nvs_write_u8(NVS_KEY_SLEEP_MIN, (uint8_t)mins);
         ESP_LOGI(TAG, "sleep timeout set to %d minutes", mins);
+
+    } else if (strcmp(s_trigger, "sleep") == 0) {
+        ESP_LOGI(TAG, "sleep command — entering deep sleep");
+        screen_backlight_off();
+        rtc_gpio_init(GPIO_NUM_39);
+        rtc_gpio_set_direction(GPIO_NUM_39, RTC_GPIO_MODE_INPUT_ONLY);
+        rtc_gpio_pullup_dis(GPIO_NUM_39);
+        rtc_gpio_pulldown_dis(GPIO_NUM_39);
+        esp_sleep_enable_ext1_wakeup(1ULL << GPIO_NUM_39, ESP_EXT1_WAKEUP_ALL_LOW);
+        esp_deep_sleep_start();
 #endif
 
     } else {
