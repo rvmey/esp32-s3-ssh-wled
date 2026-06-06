@@ -120,7 +120,7 @@ menu "ESP32 SSH LED Configuration"
 
         config TRACKER_HALL_GPIO
             int "KY-003 hall sensor GPIO (must be RTC-capable, 0-21)"
-            default 5
+            default 2
             range 0 21
             depends on TRACKER_HALL_ENABLE
             help

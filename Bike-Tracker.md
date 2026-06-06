@@ -31,7 +31,7 @@ High-level runtime flow:
 | MPU6050 SDA | 8 | I2C data |
 | MPU6050 SCL | 9 | I2C clock |
 | MPU6050 INT | 4 | Must be RTC-capable for EXT0 wakeup |
-| KY-003 DO | 5 | Must be RTC-capable for EXT1 wakeup |
+| KY-003 DO | 2 | Must be RTC-capable for EXT1 wakeup |
 | GPS UART TX | 17 | ESP32 TX to GPS RX |
 | GPS UART RX | 18 | ESP32 RX from GPS TX |
 | GPS power enable | -1 | Optional; -1 means unused |
@@ -112,7 +112,7 @@ All settings are under `ESP32 SSH LED Configuration -> Bike Tracker Settings`.
 | TRACKER_LOG_INTERVAL_S | 5 | Point logging interval |
 | TRACKER_INACTIVITY_TIMEOUT_S | 30 | Inactivity timeout |
 | TRACKER_HALL_ENABLE | y | Enable KY-003 speed pulses |
-| TRACKER_HALL_GPIO | 5 | KY-003 digital output pin (RTC-capable) |
+| TRACKER_HALL_GPIO | 2 | KY-003 digital output pin (RTC-capable) |
 | TRACKER_HALL_ACTIVE_HIGH | n | Set y if magnet detection drives output HIGH |
 | TRACKER_WHEEL_CIRCUM_MM | 2105 | Wheel circumference used for speed conversion |
 | TRACKER_HALL_PULSES_PER_REV | 1 | Pulses generated per wheel revolution |
