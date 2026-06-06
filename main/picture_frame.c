@@ -298,6 +298,12 @@ typedef struct {
 } mp3_folder_t;
 
 typedef struct {
+    char trigger[MP3_MAX_TRIGGER_LEN];
+    char folder_path[MP3_MAX_PATH_LEN];
+    int  jpeg_count;
+} jpeg_folder_t;
+
+typedef struct {
     bool       active;
     bool       paused;
     bool       shuffle;
@@ -399,8 +405,11 @@ static TickType_t     s_avrc_play_pressed_tick   = 0;
 #endif
 
 /* Pending JPEG URL — set by the WS event task, consumed by the main loop */
-static char          s_pending_jpeg_url[512] __attribute__((unused)) = {0};
-static volatile bool s_pending_jpeg          = false;
+static char          s_pending_jpeg_url[512]      __attribute__((unused)) = {0};
+static volatile bool s_pending_jpeg               = false;
+/* Pending local JPEG file path — set by WS event task, consumed by the main loop */
+static char          s_pending_jpeg_file_path[512] __attribute__((unused)) = {0};
+static volatile bool s_pending_jpeg_file           = false;
 
 /* Pending display updates — set by WS callback, applied by main loop. */
 static char          s_pending_text[512] __attribute__((unused)) = {0};
@@ -427,6 +436,8 @@ static sdmmc_card_t *s_sd_card __attribute__((unused)) = NULL;
 static bool          s_sd_mounted __attribute__((unused)) = false;
 static mp3_folder_t  s_mp3_folders[MP3_MAX_FOLDERS] __attribute__((unused));
 static size_t        s_mp3_folder_count __attribute__((unused)) = 0;
+static jpeg_folder_t s_jpeg_folders[MP3_MAX_FOLDERS] __attribute__((unused));
+static size_t        s_jpeg_folder_count __attribute__((unused)) = 0;
 static mp3_state_t   s_mp3 = {
     .active = false,
     .paused = false,
@@ -2119,6 +2130,59 @@ static bool mp3_get_nth_file(const char *folder_path,
     return ok;
 }
 
+static bool is_jpeg_file_name(const char *name)
+{
+    return str_ends_with_ci(name, ".jpg") || str_ends_with_ci(name, ".jpeg");
+}
+
+static int jpeg_count_in_folder(const char *folder_path) __attribute__((unused));
+static int jpeg_count_in_folder(const char *folder_path)
+{
+    DIR *d = opendir(folder_path);
+    if (!d) return 0;
+    int count = 0;
+    struct dirent *e;
+    while ((e = readdir(d)) != NULL) {
+        if (e->d_name[0] == '.') continue;
+        if (is_jpeg_file_name(e->d_name)) count++;
+    }
+    closedir(d);
+    return count;
+}
+
+static bool jpeg_get_nth_file(const char *folder_path,
+                               int target_idx,
+                               char *out_name,
+                               size_t out_sz,
+                               int *total_out) __attribute__((unused));
+static bool jpeg_get_nth_file(const char *folder_path,
+                               int target_idx,
+                               char *out_name,
+                               size_t out_sz,
+                               int *total_out)
+{
+    DIR *d = opendir(folder_path);
+    if (!d) return false;
+    int index = 0;
+    int total = 0;
+    bool ok = false;
+    struct dirent *e;
+    while ((e = readdir(d)) != NULL) {
+        if (e->d_name[0] == '.') continue;
+        if (!is_jpeg_file_name(e->d_name)) continue;
+        if (index == target_idx) {
+            strncpy(out_name, e->d_name, out_sz - 1);
+            out_name[out_sz - 1] = '\0';
+            ok = true;
+        }
+        index++;
+        total++;
+    }
+    closedir(d);
+    if (total_out) *total_out = total;
+    return ok;
+}
+
 typedef struct {
     int frame_bytes;
     int sample_rate;
@@ -3609,6 +3673,16 @@ static int mp3_find_folder_trigger(const char *trigger)
     return -1;
 }
 
+static int jpeg_find_folder_trigger(const char *trigger)
+{
+    for (size_t i = 0; i < s_jpeg_folder_count; i++) {
+        if (strcasecmp(trigger, s_jpeg_folders[i].trigger) == 0) {
+            return (int)i;
+        }
+    }
+    return -1;
+}
+
 static bool mount_sd_card_if_needed(void)
 {
     if (s_sd_mounted) return true;
@@ -3780,6 +3854,49 @@ static void rebuild_mp3_folder_index(void)
     closedir(d);
 
     ESP_LOGI(TAG, "mp3: discovered %u folders with mp3 content", (unsigned)s_mp3_folder_count);
+}
+
+static void rebuild_jpeg_folder_index(void)
+{
+    s_jpeg_folder_count = 0;
+
+    if (!mount_sd_card_if_needed()) return;
+
+    DIR *d = opendir(MP3_ROOT_PATH);
+    if (!d) {
+        ESP_LOGW(TAG, "sd: cannot open root %s for jpeg scan", MP3_ROOT_PATH);
+        return;
+    }
+
+    struct dirent *e;
+    while ((e = readdir(d)) != NULL) {
+        if (e->d_name[0] == '.') continue;
+        if (s_jpeg_folder_count >= MP3_MAX_FOLDERS) break;
+        if (trigger_reserved(e->d_name)) continue;
+
+        char folder_path[MP3_MAX_PATH_LEN];
+        int max_name = (int)sizeof(folder_path) - (int)strlen(MP3_ROOT_PATH) - 2;
+        if (max_name <= 0) continue;
+        int n = snprintf(folder_path, sizeof(folder_path), "%s/%.*s",
+                 MP3_ROOT_PATH, max_name, e->d_name);
+        if (n <= 0 || n >= (int)sizeof(folder_path)) continue;
+
+        struct stat st;
+        if (stat(folder_path, &st) != 0 || !S_ISDIR(st.st_mode)) continue;
+
+        int jpeg_count = jpeg_count_in_folder(folder_path);
+        if (jpeg_count <= 0) continue;
+
+        jpeg_folder_t *f = &s_jpeg_folders[s_jpeg_folder_count++];
+        strncpy(f->trigger, e->d_name, sizeof(f->trigger) - 1);
+        f->trigger[sizeof(f->trigger) - 1] = '\0';
+        strncpy(f->folder_path, folder_path, sizeof(f->folder_path) - 1);
+        f->folder_path[sizeof(f->folder_path) - 1] = '\0';
+        f->jpeg_count = jpeg_count;
+    }
+    closedir(d);
+
+    ESP_LOGI(TAG, "jpeg: discovered %u folders with jpeg content", (unsigned)s_jpeg_folder_count);
 }
 
 static esp_err_t save_display_state_to_nvs(void)
@@ -4586,6 +4703,21 @@ static void sync_all_commands(bool remove_stale_mp3)
         sync_command_if_missing(&dyn_cmd, cmd_url, list_body, list_len);
     }
 
+    for (size_t i = 0; i < s_jpeg_folder_count; i++) {
+        char desc[320];
+        snprintf(desc, sizeof(desc),
+                 "Display jpeg files in the %s folder. If the parameter is a number from 1 to 100, it specifies one of the jpeg files, otherwise, this command will display the first jpeg file.",
+                 s_jpeg_folders[i].trigger);
+        pf_cmd_t dyn_cmd = {
+            .trigger = s_jpeg_folders[i].trigger,
+            .voice = s_jpeg_folders[i].trigger,
+            .allow_params = "true",
+            .mcp_desc = desc,
+            .icon = "\xF0\x9F\x96\xBC\xEF\xB8\x8F", /* 🖼️ */
+        };
+        sync_command_if_missing(&dyn_cmd, cmd_url, list_body, list_len);
+    }
+
     if (remove_stale_mp3 && list_body && list_len > 0) {
         char del_url[192];
         snprintf(del_url, sizeof(del_url), "%s/api/command/delete2", TCMD_BASE_URL);
@@ -5179,8 +5311,35 @@ static void pf_event_handler(const char *event_name,
                 return;
             }
         } else {
-            ESP_LOGW(TAG, "message: unknown trigger '%s'", s_trigger);
-            return;
+            int jpeg_folder_idx = jpeg_find_folder_trigger(s_trigger);
+            if (jpeg_folder_idx >= 0) {
+                int requested_idx = 0;
+                const char *p = s_params;
+                while (*p == ' ') p++;
+                if (*p >= '1' && *p <= '9') {
+                    int n = atoi(p);
+                    if (n >= 1 && n <= 100) requested_idx = n - 1;
+                }
+                char file_name[MP3_MAX_FILE_LEN] = {0};
+                int total = 0;
+                if (!jpeg_get_nth_file(s_jpeg_folders[jpeg_folder_idx].folder_path,
+                                       requested_idx, file_name, sizeof(file_name), &total)
+                        || total <= 0) {
+                    ESP_LOGW(TAG, "jpeg folder: no jpeg files in '%s'", s_trigger);
+                    return;
+                }
+                char file_path[MP3_MAX_PATH_LEN + MP3_MAX_FILE_LEN + 4];
+                snprintf(file_path, sizeof(file_path), "%s/%s",
+                         s_jpeg_folders[jpeg_folder_idx].folder_path, file_name);
+                s_mp3_ui_override_allowed = false;
+                s_pending_jpeg = false;
+                strncpy(s_pending_jpeg_file_path, file_path, sizeof(s_pending_jpeg_file_path) - 1);
+                s_pending_jpeg_file_path[sizeof(s_pending_jpeg_file_path) - 1] = '\0';
+                s_pending_jpeg_file = true;
+            } else {
+                ESP_LOGW(TAG, "message: unknown trigger '%s'", s_trigger);
+                return;
+            }
         }
     }
 
@@ -5402,6 +5561,53 @@ static bool download_and_show_jpeg(const char *url)
         return true;
     }
 
+    screen_draw_text("Image decode\nfailed");
+    return false;
+}
+
+static bool load_and_show_jpeg_file(const char *path)
+{
+    screen_draw_text("Loading image...");
+
+    FILE *f = fopen(path, "rb");
+    if (!f) {
+        ESP_LOGE(TAG, "jpeg file: cannot open %s", path);
+        screen_draw_text("Image load\nfailed");
+        return false;
+    }
+    fseek(f, 0, SEEK_END);
+    long file_sz = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    if (file_sz <= 0 || file_sz > 512 * 1024) {
+        ESP_LOGE(TAG, "jpeg file: bad size %ld for %s", file_sz, path);
+        fclose(f);
+        screen_draw_text("Image load\nfailed");
+        return false;
+    }
+    uint8_t *buf = heap_caps_malloc((size_t)file_sz, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!buf) buf = malloc((size_t)file_sz);
+    if (!buf) {
+        ESP_LOGE(TAG, "jpeg file: cannot alloc %ld bytes", file_sz);
+        fclose(f);
+        screen_draw_text("Image load\nfailed");
+        return false;
+    }
+    size_t nr = fread(buf, 1, (size_t)file_sz, f);
+    fclose(f);
+    if ((long)nr != file_sz) {
+        ESP_LOGE(TAG, "jpeg file: read %zu of %ld bytes", nr, file_sz);
+        free(buf);
+        screen_draw_text("Image load\nfailed");
+        return false;
+    }
+
+    if (s_jpeg_cache) { free(s_jpeg_cache); s_jpeg_cache = NULL; }
+    s_jpeg_cache     = buf;
+    s_jpeg_cache_len = (int)nr;
+
+    if (decode_and_show_jpeg(s_jpeg_cache, s_jpeg_cache_len)) {
+        return true;
+    }
     screen_draw_text("Image decode\nfailed");
     return false;
 }
@@ -5836,6 +6042,7 @@ void picture_frame_run(void)
 #endif
 
     rebuild_mp3_folder_index();
+    rebuild_jpeg_folder_index();
 
     /* Keep cloud commands aligned with built-in and dynamic MP3-folder triggers. */
     pf_status_draw("Syncing commands...");
@@ -5924,6 +6131,21 @@ void picture_frame_run(void)
                 jpeg_url[sizeof(jpeg_url) - 1] = '\0';
                 if (download_and_show_jpeg(jpeg_url)) {
                     strncpy(s_current_jpeg_url, jpeg_url, sizeof(s_current_jpeg_url) - 1);
+                    s_current_jpeg_url[sizeof(s_current_jpeg_url) - 1] = '\0';
+                }
+            }
+
+            if (s_pending_jpeg_file) {
+                s_pending_jpeg_file = false;
+                if (s_mp3_saved_font_scale >= 0) {
+                    screen_set_font_scale_silent(s_mp3_saved_font_scale);
+                    s_mp3_saved_font_scale = -1;
+                }
+                char file_path[512];
+                strncpy(file_path, s_pending_jpeg_file_path, sizeof(file_path) - 1);
+                file_path[sizeof(file_path) - 1] = '\0';
+                if (load_and_show_jpeg_file(file_path)) {
+                    strncpy(s_current_jpeg_url, file_path, sizeof(s_current_jpeg_url) - 1);
                     s_current_jpeg_url[sizeof(s_current_jpeg_url) - 1] = '\0';
                 }
             }
@@ -6071,6 +6293,7 @@ void picture_frame_run(void)
                 ESP_LOGI(TAG, "sd: retrying deferred mount");
                 bool was_mounted = s_sd_mounted;
                 rebuild_mp3_folder_index();
+                rebuild_jpeg_folder_index();
                 if (!was_mounted && s_sd_mounted) {
                     ESP_LOGI(TAG, "sd: mount restored; reconciling MP3 folder commands");
                     sync_all_commands(true);
