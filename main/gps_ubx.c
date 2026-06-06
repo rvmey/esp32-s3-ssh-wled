@@ -14,7 +14,7 @@ static const char *TAG = "gps_ubx";
 
 #define UART_NUM       ((uart_port_t)CONFIG_GPS_UART_NUM)
 #define UART_BUF_SIZE  512
-#define GPS_BAUD       115200
+#define GPS_BAUD       9600
 
 /* UBX protocol constants */
 #define UBX_SYNC1  0xB5
