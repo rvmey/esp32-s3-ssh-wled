@@ -4314,7 +4314,7 @@ static const pf_cmd_t s_pf_cmds[] = {
     { "save",      "save",      "false", "Save the screen settings to non-volatile memory.", "\xF0\x9F\x92\xBE" /* 💾 */, NULL },
     { "savepic",   "savepic",   "false", "Save the currently displayed JPEG to the SD card in the 'pictures' folder.", "\xF0\x9F\x93\xB7" /* 📷 */, NULL },
     { "folders",   "folders",   "false", "List the folders on the SD card.", "\xF0\x9F\x93\x82" /* 📂 */, "{{result}}" },
-    { "files",     "files",     "true",  "List files in a folder on the SD card. Example: 'music'", "\xF0\x9F\x93\x84" /* 📄 */, NULL },
+    { "files",     "files",     "true",  "List files in a folder on the SD card. Example: 'music'", "\xF0\x9F\x93\x84" /* 📄 */, "{{result}}" },
     { "reboot",    "reboot",    "false", "Reboot the device.", "\xF0\x9F\x94\x81" /* 🔁 */, NULL },
     { "sleeptimer","sleeptimer","true",  "Set minutes of inactivity before the device sleeps (0 = never). Example: '10'", "\xF0\x9F\x98\xB4" /* 😴 */, NULL },
     { "sleep",     "sleep",     "false", "Put the device into deep sleep immediately. Wake by touching the screen.", "\xF0\x9F\x92\xA4" /* 💤 */, NULL },
@@ -4809,6 +4809,10 @@ static void pf_event_handler(const char *event_name,
             } else {
                 char msg[256];
                 int msg_len = snprintf(msg, sizeof(msg), "%s:", s_params);
+                char json_arr[512];
+                int  ja = 0;
+                bool jfirst = true;
+                json_arr[ja++] = '[';
                 int count = 0;
                 struct dirent *e;
                 while ((e = readdir(d)) != NULL) {
@@ -4820,10 +4824,24 @@ static void pf_event_handler(const char *event_name,
                         msg_len += nlen;
                         msg[msg_len] = '\0';
                     }
+                    int ja_need = (jfirst ? 0 : 1) + 4 + nlen;
+                    if (ja + ja_need < (int)sizeof(json_arr) - 2) {
+                        if (!jfirst) json_arr[ja++] = ',';
+                        json_arr[ja++] = '\\'; json_arr[ja++] = '"';
+                        memcpy(json_arr + ja, e->d_name, (size_t)nlen);
+                        ja += nlen;
+                        json_arr[ja++] = '\\'; json_arr[ja++] = '"';
+                        jfirst = false;
+                    }
                     count++;
                 }
                 closedir(d);
-                ESP_LOGI(TAG, "files: %d file(s) in %s", count, dir_path);
+                json_arr[ja++] = ']';
+                json_arr[ja]   = '\0';
+                strncpy(s_pending_result, json_arr, sizeof(s_pending_result) - 1);
+                s_pending_result[sizeof(s_pending_result) - 1] = '\0';
+                s_pending_has_result = true;
+                ESP_LOGI(TAG, "files: %d file(s) in %s, result: %s", count, dir_path, s_pending_result);
                 screen_draw_text(count > 0 ? msg : "Empty folder");
             }
         }

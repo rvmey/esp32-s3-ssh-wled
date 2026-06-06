@@ -81,6 +81,7 @@
   "trigger": "files",
   "command": "files",
   "allowParams": "true",
+  "voiceReply": "{{result}}",
   "mcpToolDescription": "List files in a folder on the SD card in the user's Core2 device. Example: 'music'",
   "icon": "📄"
  },
