@@ -52,7 +52,7 @@
   "trigger": "jpeg",
   "command": "jpeg",
   "allowParams": "true",
-  "mcpToolDescription": "Display a JPEG picture on the user's Core2 device when they say something like, 'Picture of a cat'. Use loremflickr.com by default. If multiple words (Example: cat_and_dog), use an underscores. The command parameter should always be a URL like this: 'https://loremflickr.com/320/240/cat_and_dog'",
+  "mcpToolDescription": "Display a JPEG picture on the user's Core2 device when they say something like, 'Picture of a cat'. Use loremflickr.com by default. If multiple words (Example: cat,dog), use a comma. The command parameter should always be a URL like this: 'https://loremflickr.com/320/240/dog,cat/all' or this if single word: https://loremflickr.com/320/240/dog",
   "icon": "🖼️"
  },
 {

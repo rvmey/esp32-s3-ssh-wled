@@ -4335,7 +4335,7 @@ static const pf_cmd_t s_pf_cmds[] = {
     { "fontsize",  "fontsize",  "true",  "Change the font size (1-4). Example: '3'",                     "\xF0\x9F\x94\xA1" /* 🔡 */, NULL },
     { "landscape", "landscape", "false", "Set the display to landscape orientation.",                        "\xE2\x86\x94\xEF\xB8\x8F" /* ↔️ */, NULL },
     { "portrait",  "portrait",  "false", "Set the display to portrait orientation.",                         "\xE2\x86\x95\xEF\xB8\x8F" /* ↕️ */, NULL },
-    { "jpeg",      "jpeg",      "true",  "Display a JPEG picture for the user when they say something like, 'Picture of a cat'. Use loremflickr.com by default. If multiple words (Example: cat_and_dog), use an underscores. The command parameter should always be a URL like this: 'https://loremflickr.com/320/240/cat_and_dog'", "\xF0\x9F\x96\xBC\xEF\xB8\x8F" /* 🖼️ */, NULL },
+    { "jpeg",      "jpeg",      "true",  "Display a JPEG picture for the user when they say something like, 'Picture of a cat'. Use loremflickr.com by default. If multiple words (Example: cat,dog), use a comma. The command parameter should always be a URL like this: 'https://loremflickr.com/320/240/dog,cat/all' or this if single word: https://loremflickr.com/320/240/dog", "\xF0\x9F\x96\xBC\xEF\xB8\x8F" /* 🖼️ */, NULL },
     { "save",      "save",      "false", "Save the screen settings to non-volatile memory.", "\xF0\x9F\x92\xBE" /* 💾 */, NULL },
     { "savepic",   "savepic",   "false", "Save the currently displayed JPEG to the SD card in the 'pictures' folder.", "\xF0\x9F\x93\xB7" /* 📷 */, NULL },
     { "folders",   "folders",   "false", "List the folders on the SD card.", "\xF0\x9F\x93\x82" /* 📂 */, "{{result}}" },
