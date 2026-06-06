@@ -4318,6 +4318,7 @@ static const pf_cmd_t s_pf_cmds[] = {
     { "reboot",    "reboot",    "false", "Reboot the device.", "\xF0\x9F\x94\x81" /* 🔁 */, NULL },
     { "sleeptimer","sleeptimer","true",  "Set minutes of inactivity before the device sleeps (0 = never). Example: '10'", "\xF0\x9F\x98\xB4" /* 😴 */, NULL },
     { "sleep",     "sleep",     "false", "Put the device into deep sleep immediately. Wake by touching the screen.", "\xF0\x9F\x92\xA4" /* 💤 */, NULL },
+    { "battery",   "battery",   "false", "Get the battery level of the user's Core2 device. Returns level (0-100), charging status, and voltage in mV.", "\xF0\x9F\x94\x8B" /* 🔋 */, "{{result}}" },
 };
 #define PF_CMD_COUNT  (sizeof(s_pf_cmds) / sizeof(s_pf_cmds[0]))
 
@@ -5101,6 +5102,32 @@ static void pf_event_handler(const char *event_name,
         rtc_gpio_pulldown_dis(GPIO_NUM_39);
         esp_sleep_enable_ext1_wakeup(1ULL << GPIO_NUM_39, ESP_EXT1_WAKEUP_ALL_LOW);
         esp_deep_sleep_start();
+
+    } else if (strcmp(s_trigger, "battery") == 0) {
+        uint8_t vbat_h = 0, vbat_l = 0, pwr_status = 0;
+        bool read_ok = (core2_axp_read_reg(0x78, &vbat_h) == ESP_OK) &&
+                       (core2_axp_read_reg(0x79, &vbat_l) == ESP_OK) &&
+                       (core2_axp_read_reg(0x01, &pwr_status) == ESP_OK);
+        if (!read_ok) {
+            screen_draw_text("Battery read\nfailed");
+        } else {
+            int adc    = ((int)vbat_h << 4) | ((int)vbat_l & 0x0F);
+            int vbat   = (int)((float)adc * 1.1f);   /* millivolts */
+            bool chg   = (pwr_status >> 6) & 0x01;
+            int  level = (vbat - 3300) * 100 / 900;
+            if (level < 0)   level = 0;
+            if (level > 100) level = 100;
+            char scr[64];
+            snprintf(scr, sizeof(scr), "Battery: %d%%\n%d mV%s",
+                     level, vbat, chg ? "\nCharging" : "");
+            screen_draw_text(scr);
+            /* Pre-escaped JSON object for embedding in the command/result payload */
+            snprintf(s_pending_result, sizeof(s_pending_result),
+                     "{\\\"level\\\":%d,\\\"charging\\\":%s,\\\"voltage_mv\\\":%d}",
+                     level, chg ? "true" : "false", vbat);
+            s_pending_has_result = true;
+            ESP_LOGI(TAG, "battery: %d%% %d mV charging=%d", level, vbat, (int)chg);
+        }
 #endif
 
     } else {

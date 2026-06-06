@@ -231,5 +231,13 @@
   "allowParams": "false",
   "mcpToolDescription": "Put the user's Core2 device into deep sleep immediately. The user can wake the device by touching the screen.",
   "icon": "💤"
+ },
+ {
+  "trigger": "battery",
+  "command": "battery",
+  "allowParams": "false",
+  "voiceReply": "{{result}}",
+  "mcpToolDescription": "Get the battery level of the user's Core2 device. Returns level (0-100), charging status, and voltage in mV.",
+  "icon": "🔋"
  }
 ]
