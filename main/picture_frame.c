@@ -379,7 +379,8 @@ static uint32_t   s_sleep_timeout_s    = CONFIG_CORE2_SLEEP_TIMEOUT_S;
 #endif
 
 /* Pending run/save — set by the WS event task, consumed by the main loop */
-static char          s_pending_run_id[33] __attribute__((unused)) = {0};
+static char          s_pending_run_id[33]  __attribute__((unused)) = {0};
+static char          s_pending_run_status[512] __attribute__((unused)) = {0};
 static volatile bool s_pending_run        = false;
 static volatile bool s_pending_vibrate    __attribute__((unused)) = false;
 static int           s_pending_run_tries  __attribute__((unused)) = 0;
@@ -4298,47 +4299,48 @@ typedef struct {
     const char *allow_params;   /* "true" or "false" */
     const char *mcp_desc;
     const char *icon;           /* UTF-8 emoji */
+    const char *voice_reply;    /* NULL → "" (server default); "{{result}}" → wait for run/save status */
 } pf_cmd_t;
 
 static const pf_cmd_t s_pf_cmds[] = {
-    { "text",      "text",      "true",  "Update the display text. Example: 'Hello world!'",           "\xF0\x9F\x93\x9D" /* 📝 */ },
-    { "color",     "color",     "true",  "Change the display color. Example: 'red' or '#FF0000'", "\xF0\x9F\x94\xA4" /* 🔤 */ },
-    { "textcolor", "textcolor", "true",  "Change the text color. Example: 'blue' or '#0000FF'", "\xF0\x9F\x8E\xA8" /* 🎨 */ },
-    { "fontsize",  "fontsize",  "true",  "Change the font size (1-4). Example: '3'",                     "\xF0\x9F\x94\xA1" /* 🔡 */ },
-    { "landscape", "landscape", "false", "Set the display to landscape orientation.",                        "\xE2\x86\x94\xEF\xB8\x8F" /* ↔️ */ },
-    { "portrait",  "portrait",  "false", "Set the display to portrait orientation.",                         "\xE2\x86\x95\xEF\xB8\x8F" /* ↕️ */ },
-    { "jpeg",      "jpeg",      "true",  "Display a JPEG picture for the user when they say something like, 'Picture of a cat'. Use loremflickr.com by default. If multiple words (Example: cat_and_dog), use an underscores. The command parameter should always be a URL like this: 'https://loremflickr.com/320/240/cat_and_dog'", "\xF0\x9F\x96\xBC\xEF\xB8\x8F" /* 🖼️ */ },
-    { "save",      "save",      "false", "Save the screen settings to non-volatile memory.", "\xF0\x9F\x92\xBE" /* 💾 */ },
-    { "savepic",   "savepic",   "false", "Save the currently displayed JPEG to the SD card in the 'pictures' folder.", "\xF0\x9F\x93\xB7" /* 📷 */ },
-    { "folders",   "folders",   "false", "List the folders on the SD card.", "\xF0\x9F\x93\x82" /* 📂 */ },
-    { "files",     "files",     "true",  "List files in a folder on the SD card. Example: 'music'", "\xF0\x9F\x93\x84" /* 📄 */ },
-    { "reboot",    "reboot",    "false", "Reboot the device.", "\xF0\x9F\x94\x81" /* 🔁 */ },
-    { "sleeptimer","sleeptimer","true",  "Set minutes of inactivity before the device sleeps (0 = never). Example: '10'", "\xF0\x9F\x98\xB4" /* 😴 */ },
-    { "sleep",     "sleep",     "false", "Put the device into deep sleep immediately. Wake by touching the screen.", "\xF0\x9F\x92\xA4" /* 💤 */ },
+    { "text",      "text",      "true",  "Update the display text. Example: 'Hello world!'",           "\xF0\x9F\x93\x9D" /* 📝 */, NULL },
+    { "color",     "color",     "true",  "Change the display color. Example: 'red' or '#FF0000'", "\xF0\x9F\x94\xA4" /* 🔤 */, NULL },
+    { "textcolor", "textcolor", "true",  "Change the text color. Example: 'blue' or '#0000FF'", "\xF0\x9F\x8E\xA8" /* 🎨 */, NULL },
+    { "fontsize",  "fontsize",  "true",  "Change the font size (1-4). Example: '3'",                     "\xF0\x9F\x94\xA1" /* 🔡 */, NULL },
+    { "landscape", "landscape", "false", "Set the display to landscape orientation.",                        "\xE2\x86\x94\xEF\xB8\x8F" /* ↔️ */, NULL },
+    { "portrait",  "portrait",  "false", "Set the display to portrait orientation.",                         "\xE2\x86\x95\xEF\xB8\x8F" /* ↕️ */, NULL },
+    { "jpeg",      "jpeg",      "true",  "Display a JPEG picture for the user when they say something like, 'Picture of a cat'. Use loremflickr.com by default. If multiple words (Example: cat_and_dog), use an underscores. The command parameter should always be a URL like this: 'https://loremflickr.com/320/240/cat_and_dog'", "\xF0\x9F\x96\xBC\xEF\xB8\x8F" /* 🖼️ */, NULL },
+    { "save",      "save",      "false", "Save the screen settings to non-volatile memory.", "\xF0\x9F\x92\xBE" /* 💾 */, NULL },
+    { "savepic",   "savepic",   "false", "Save the currently displayed JPEG to the SD card in the 'pictures' folder.", "\xF0\x9F\x93\xB7" /* 📷 */, NULL },
+    { "folders",   "folders",   "false", "List the folders on the SD card.", "\xF0\x9F\x93\x82" /* 📂 */, "{{result}}" },
+    { "files",     "files",     "true",  "List files in a folder on the SD card. Example: 'music'", "\xF0\x9F\x93\x84" /* 📄 */, NULL },
+    { "reboot",    "reboot",    "false", "Reboot the device.", "\xF0\x9F\x94\x81" /* 🔁 */, NULL },
+    { "sleeptimer","sleeptimer","true",  "Set minutes of inactivity before the device sleeps (0 = never). Example: '10'", "\xF0\x9F\x98\xB4" /* 😴 */, NULL },
+    { "sleep",     "sleep",     "false", "Put the device into deep sleep immediately. Wake by touching the screen.", "\xF0\x9F\x92\xA4" /* 💤 */, NULL },
 };
 #define PF_CMD_COUNT  (sizeof(s_pf_cmds) / sizeof(s_pf_cmds[0]))
 
 static const pf_cmd_t s_pf_media_cmds[] = {
-    { "play",        "play",        "false", "Resume paused MP3 playback.", "\xE2\x96\xB6\xEF\xB8\x8F" /* ▶️ */ },
-    { "pause",       "pause",       "false", "Toggle MP3 playback: plays if paused, pauses if playing.", "\xE2\x8F\xAF\xEF\xB8\x8F" /* ⏯️ */ },
-    { "stop",        "stop",        "false", "Pause MP3 playback and keep the current position visible.", "\xE2\x8F\xB8\xEF\xB8\x8F" /* ⏸️ */ },
-    { "next",        "next",        "false", "Skip to the next MP3 file in the current folder.", "\xE2\x8F\xA9" /* ⏩ */ },
-    { "previous",    "previous",    "false", "Go to the previous MP3 file in the current folder.", "\xE2\x8F\xAA" /* ⏪ */ },
-    { "forward",     "forward",     "false", "Skip forward 10 seconds within the current MP3.", "\xE2\x8F\xA9" /* ⏩ */ },
-    { "reverse",     "reverse",     "false", "Skip backward 10 seconds within the current MP3.", "\xE2\x8F\xAA" /* ⏪ */ },
-    { "volumeup",    "volumeup",    "false", "Increase playback volume.", "\xF0\x9F\x94\x8A" /* 🔊 */ },
-    { "volumedown",  "volumedown",  "false", "Decrease playback volume.", "\xF0\x9F\x94\x89" /* 🔉 */ },
-    { "volumelevel", "volumelevel", "true",  "Set the playback volume to an exact percentage (0\xe2\x80\x93" "100). Example: '75'", "\xF0\x9F\x94\x8A" /* 🔊 */ },
-    { "mute",        "mute",        "false", "Toggle mute on or off. Mute state is not saved across reboots.", "\xF0\x9F\x94\x87" /* 🔇 */ },
-    { "shuffle",     "shuffle",     "true",  "Enable or disable shuffle mode. Example: 'on' or 'off'", "\xF0\x9F\x94\x80" /* 🔀 */ },
-    { "repeattrack", "repeattrack", "true",  "Enable or disable repeat-track mode. Example: 'on' or 'off'", "\xF0\x9F\x94\x82" /* 🔂 */ },
-    { "repeatplaylist", "repeatplaylist", "true",  "Enable or disable repeat-playlist mode. Example: 'on' or 'off'", "\xF0\x9F\x94\x81" /* 🔁 */ },
-    { "visualizer",  "visualizer",  "true",  "Enable or disable the LED audio visualizer on the sides of the device. When on, the LEDs show FFT frequency levels while music plays. Example: 'on' or 'off'", "\xF0\x9F\x8C\x88" /* 🌈 */ },
-    { "ledcolor",    "ledcolor",    "true",  "Set all side LEDs to a solid color. Examples: 'red', '#FF0000', 'off'", "\xF0\x9F\x92\xA1" /* 💡 */ },
-    { "pair",        "pair",        "true",  "Pair with a Bluetooth headset or speaker. Example: 'pair'", "\xF0\x9F\x8E\xA7" /* 🎧 */ },
-    { "btstatus",    "btstatus",    "false", "Show Bluetooth audio connection status.", "\xF0\x9F\x93\xB6" /* 📶 */ },
-    { "btdisconnect", "btdisconnect", "false", "Disconnect the current Bluetooth audio device.", "\xF0\x9F\x94\x8C" /* 🔌 */ },
-    { "btforget",    "btforget",    "false", "Forget the saved Bluetooth device and stop auto-reconnect.", "\xF0\x9F\xA7\xB9" /* 🧹 */ },
+    { "play",        "play",        "false", "Resume paused MP3 playback.", "\xE2\x96\xB6\xEF\xB8\x8F" /* ▶️ */, NULL },
+    { "pause",       "pause",       "false", "Toggle MP3 playback: plays if paused, pauses if playing.", "\xE2\x8F\xAF\xEF\xB8\x8F" /* ⏯️ */, NULL },
+    { "stop",        "stop",        "false", "Pause MP3 playback and keep the current position visible.", "\xE2\x8F\xB8\xEF\xB8\x8F" /* ⏸️ */, NULL },
+    { "next",        "next",        "false", "Skip to the next MP3 file in the current folder.", "\xE2\x8F\xA9" /* ⏩ */, NULL },
+    { "previous",    "previous",    "false", "Go to the previous MP3 file in the current folder.", "\xE2\x8F\xAA" /* ⏪ */, NULL },
+    { "forward",     "forward",     "false", "Skip forward 10 seconds within the current MP3.", "\xE2\x8F\xA9" /* ⏩ */, NULL },
+    { "reverse",     "reverse",     "false", "Skip backward 10 seconds within the current MP3.", "\xE2\x8F\xAA" /* ⏪ */, NULL },
+    { "volumeup",    "volumeup",    "false", "Increase playback volume.", "\xF0\x9F\x94\x8A" /* 🔊 */, NULL },
+    { "volumedown",  "volumedown",  "false", "Decrease playback volume.", "\xF0\x9F\x94\x89" /* 🔉 */, NULL },
+    { "volumelevel", "volumelevel", "true",  "Set the playback volume to an exact percentage (0\xe2\x80\x93" "100). Example: '75'", "\xF0\x9F\x94\x8A" /* 🔊 */, NULL },
+    { "mute",        "mute",        "false", "Toggle mute on or off. Mute state is not saved across reboots.", "\xF0\x9F\x94\x87" /* 🔇 */, NULL },
+    { "shuffle",     "shuffle",     "true",  "Enable or disable shuffle mode. Example: 'on' or 'off'", "\xF0\x9F\x94\x80" /* 🔀 */, NULL },
+    { "repeattrack", "repeattrack", "true",  "Enable or disable repeat-track mode. Example: 'on' or 'off'", "\xF0\x9F\x94\x82" /* 🔂 */, NULL },
+    { "repeatplaylist", "repeatplaylist", "true",  "Enable or disable repeat-playlist mode. Example: 'on' or 'off'", "\xF0\x9F\x94\x81" /* 🔁 */, NULL },
+    { "visualizer",  "visualizer",  "true",  "Enable or disable the LED audio visualizer on the sides of the device. When on, the LEDs show FFT frequency levels while music plays. Example: 'on' or 'off'", "\xF0\x9F\x8C\x88" /* 🌈 */, NULL },
+    { "ledcolor",    "ledcolor",    "true",  "Set all side LEDs to a solid color. Examples: 'red', '#FF0000', 'off'", "\xF0\x9F\x92\xA1" /* 💡 */, NULL },
+    { "pair",        "pair",        "true",  "Pair with a Bluetooth headset or speaker. Example: 'pair'", "\xF0\x9F\x8E\xA7" /* 🎧 */, NULL },
+    { "btstatus",    "btstatus",    "false", "Show Bluetooth audio connection status.", "\xF0\x9F\x93\xB6" /* 📶 */, NULL },
+    { "btdisconnect", "btdisconnect", "false", "Disconnect the current Bluetooth audio device.", "\xF0\x9F\x94\x8C" /* 🔌 */, NULL },
+    { "btforget",    "btforget",    "false", "Forget the saved Bluetooth device and stop auto-reconnect.", "\xF0\x9F\xA7\xB9" /* 🧹 */, NULL },
 };
 #define PF_MEDIA_CMD_COUNT (sizeof(s_pf_media_cmds) / sizeof(s_pf_media_cmds[0]))
 
@@ -4418,7 +4420,7 @@ static void sync_command_if_missing(const pf_cmd_t *cmd,
     APPEND_FIELD_LOCAL("name",               cmd->trigger)
     APPEND_FIELD_LOCAL("computer",           s_computer_id)
     APPEND_FIELD_LOCAL("voice",              cmd->voice ? cmd->voice : "")
-    APPEND_FIELD_LOCAL("voiceReply",         "")
+    APPEND_FIELD_LOCAL("voiceReply",         cmd->voice_reply ? cmd->voice_reply : "")
     APPEND_FIELD_LOCAL("allowParams",        cmd->allow_params ? cmd->allow_params : "false")
     APPEND_FIELD_LOCAL("mcpToolDescription", cmd->mcp_desc ? cmd->mcp_desc : "")
     APPEND_FIELD_LOCAL("icon",               cmd->icon ? cmd->icon : "")
@@ -4633,6 +4635,9 @@ static void pf_event_handler(const char *event_name,
     ESP_LOGI(TAG, "message dispatch: trigger='%s' id='%s' params='%s'",
              s_trigger, s_id, s_params);
 
+    strncpy(s_pending_run_status, "Command ran", sizeof(s_pending_run_status) - 1);
+    s_pending_run_status[sizeof(s_pending_run_status) - 1] = '\0';
+
     if (strcmp(s_trigger, "text") == 0) {
         /* Discard any cached JPEG so orientation changes redraw text, not image */
         if (s_jpeg_cache) { free(s_jpeg_cache); s_jpeg_cache = NULL; s_jpeg_cache_len = 0; }
@@ -4745,6 +4750,12 @@ static void pf_event_handler(const char *event_name,
             } else {
                 char msg[256] = "Folders:";
                 int msg_len = (int)strlen(msg);
+                /* JSON array with pre-escaped quotes for embedding in the run/save JSON string.
+                 * Each name is stored as \"name\" so snprintf %s produces valid JSON. */
+                char json_arr[512];
+                int  ja = 0;
+                bool jfirst = true;
+                json_arr[ja++] = '[';
                 int count = 0;
                 struct dirent *e;
                 while ((e = readdir(d)) != NULL) {
@@ -4762,10 +4773,23 @@ static void pf_event_handler(const char *event_name,
                         msg_len += nlen;
                         msg[msg_len] = '\0';
                     }
+                    int ja_need = (jfirst ? 0 : 1) + 4 + nlen; /* [,]\"name\" */
+                    if (ja + ja_need < (int)sizeof(json_arr) - 2) {
+                        if (!jfirst) json_arr[ja++] = ',';
+                        json_arr[ja++] = '\\'; json_arr[ja++] = '"';
+                        memcpy(json_arr + ja, e->d_name, (size_t)nlen);
+                        ja += nlen;
+                        json_arr[ja++] = '\\'; json_arr[ja++] = '"';
+                        jfirst = false;
+                    }
                     count++;
                 }
                 closedir(d);
-                ESP_LOGI(TAG, "folders: %d folder(s) on SD", count);
+                json_arr[ja++] = ']';
+                json_arr[ja]   = '\0';
+                strncpy(s_pending_run_status, json_arr, sizeof(s_pending_run_status) - 1);
+                s_pending_run_status[sizeof(s_pending_run_status) - 1] = '\0';
+                ESP_LOGI(TAG, "folders: %d folder(s) on SD, result: %s", count, s_pending_run_status);
                 screen_draw_text(count > 0 ? msg : "No folders\non SD card");
             }
         }
@@ -5848,10 +5872,10 @@ void picture_frame_run(void)
             if (s_pending_run &&
                 (s_pending_run_retry_after == 0 ||
                  xTaskGetTickCount() >= s_pending_run_retry_after)) {
-                char data_json[320];
+                char data_json[640];
                 snprintf(data_json, sizeof(data_json),
-                         "{\"status\":\"Command ran\",\"computer\":\"%s\",\"command\":\"%s\"}",
-                         s_computer_id, s_pending_run_id);
+                         "{\"status\":\"%s\",\"computer\":\"%s\",\"command\":\"%s\"}",
+                         s_pending_run_status, s_computer_id, s_pending_run_id);
                 esp_err_t post_err = socketio_send_vpost("/api/run/save", s_hw_token, data_json);
                 ESP_LOGI(TAG, "run/save vpost → %s", esp_err_to_name(post_err));
 

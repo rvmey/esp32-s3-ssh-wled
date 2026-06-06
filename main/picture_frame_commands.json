@@ -73,6 +73,7 @@
   "trigger": "folders",
   "command": "folders",
   "allowParams": "false",
+  "voiceReply": "{{result}}",
   "mcpToolDescription": "List the folders on the SD card in the user's Core2 device.",
   "icon": "📂"
  },
