@@ -240,8 +240,11 @@ esp_err_t gps_ubx_init(void)
 
 esp_err_t gps_ubx_wait_fix(int timeout_s)
 {
-    int64_t deadline_ms = (int64_t)timeout_s * 1000;
-    int64_t elapsed_ms  = 0;
+    int64_t deadline_ms   = (int64_t)timeout_s * 1000;
+    int64_t elapsed_ms    = 0;
+    int64_t last_status   = -10000;  /* force first log immediately */
+    uint32_t total_bytes  = 0;
+    uint32_t total_frames = 0;
     uint8_t byte;
 
     ESP_LOGI(TAG, "Waiting up to %d s for 3D fix ...", timeout_s);
@@ -249,19 +252,52 @@ esp_err_t gps_ubx_wait_fix(int timeout_s)
     while (elapsed_ms < deadline_ms) {
         int n = uart_read_bytes(UART_NUM, &byte, 1, pdMS_TO_TICKS(200));
         if (n == 1) {
-            if (feed_byte(byte) && s_pvt.fix_type >= 3) {
-                ESP_LOGI(TAG, "3D fix obtained: lat=%ld lon=%ld sv=%u",
-                         (long)s_pvt.lat, (long)s_pvt.lon, s_pvt.num_sv);
-                return ESP_OK;
+            total_bytes++;
+            if (feed_byte(byte)) {
+                total_frames++;
+                if (s_pvt.fix_type >= 3) {
+                    ESP_LOGI(TAG, "3D fix: lat=%ld lon=%ld sv=%u",
+                             (long)s_pvt.lat, (long)s_pvt.lon, s_pvt.num_sv);
+                    return ESP_OK;
+                }
             }
         } else {
             elapsed_ms += 200;
         }
-        /* Accumulate time even when reading — approximate but sufficient.  */
         elapsed_ms += 1;
+
+        /* Log status every 10 s so wiring/fix problems are visible.         */
+        if (elapsed_ms - last_status >= 10000) {
+            last_status = elapsed_ms;
+            if (total_bytes == 0) {
+                ESP_LOGW(TAG, "t=%.0f s: no bytes received — check UART wiring "
+                         "(TX→GPIO%d RX→GPIO%d)",
+                         elapsed_ms / 1000.0,
+                         CONFIG_GPS_UART_TX_GPIO, CONFIG_GPS_UART_RX_GPIO);
+            } else if (total_frames == 0) {
+                ESP_LOGW(TAG, "t=%.0f s: %"PRIu32" bytes received but no UBX "
+                         "NAV-PVT frames — check baud rate or CFG-MSG",
+                         elapsed_ms / 1000.0, total_bytes);
+            } else {
+                static const char *fix_names[] = {
+                    "no fix", "dead reck.", "2D", "3D", "GNSS+DR", "time only"
+                };
+                const char *fix_str = (s_pvt.fix_type < 6)
+                                      ? fix_names[s_pvt.fix_type] : "?";
+                ESP_LOGI(TAG, "t=%.0f s: fix=%s (%u) sv=%u bytes=%"PRIu32
+                         " frames=%"PRIu32,
+                         elapsed_ms / 1000.0,
+                         fix_str, s_pvt.fix_type, s_pvt.num_sv,
+                         total_bytes, total_frames);
+            }
+        }
     }
 
-    ESP_LOGW(TAG, "GPS fix timeout after %d s", timeout_s);
+    ESP_LOGW(TAG, "GPS fix timeout after %d s "
+             "(bytes=%"PRIu32" frames=%"PRIu32" last fix=%u sv=%u)",
+             timeout_s, total_bytes, total_frames,
+             s_pvt_valid ? s_pvt.fix_type : 0,
+             s_pvt_valid ? s_pvt.num_sv   : 0);
     return ESP_ERR_TIMEOUT;
 }
 
