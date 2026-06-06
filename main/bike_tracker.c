@@ -64,6 +64,31 @@ static const char *wakeup_src_label(wakeup_src_t src)
     return "KY-003 only";
 }
 
+/* ── Debug log setting ───────────────────────────────────────────────────── */
+
+static bool s_debug_log = false;
+
+static bool load_debug_log(void)
+{
+    nvs_handle_t h;
+    uint8_t val = 0;
+    if (nvs_open("bt_cfg", NVS_READONLY, &h) == ESP_OK) {
+        nvs_get_u8(h, "debug_log", &val);
+        nvs_close(h);
+    }
+    return val != 0;
+}
+
+static void save_debug_log(bool enabled)
+{
+    nvs_handle_t h;
+    if (nvs_open("bt_cfg", NVS_READWRITE, &h) == ESP_OK) {
+        nvs_set_u8(h, "debug_log", enabled ? 1 : 0);
+        nvs_commit(h);
+        nvs_close(h);
+    }
+}
+
 /* ── Hall sensor pin polarity (needed by settings window and ISR) ────────── */
 
 #if CONFIG_TRACKER_HALL_ACTIVE_HIGH
@@ -174,6 +199,14 @@ static esp_err_t bt_settings_get_handler(httpd_req_t *req)
         ssid2, ssid3);
     httpd_resp_sendstr_chunk(req, buf);
 
+    snprintf(buf, sizeof(buf),
+        "<h2>Logging</h2>"
+        "<div class='rg'><label>"
+        "<input type='checkbox' name='debug' value='1'%s>"
+        " Enable DEBUG log output</label></div>",
+        s_debug_log ? " checked" : "");
+    httpd_resp_sendstr_chunk(req, buf);
+
     httpd_resp_sendstr_chunk(req,
         "<button type='submit'>Save &amp; Continue</button>"
         "</form></div></body></html>");
@@ -210,6 +243,16 @@ static esp_err_t bt_settings_post_handler(httpd_req_t *req)
             s_wakeup_src = new_src;
             ESP_LOGI(TAG, "Wakeup source -> %s", wakeup_src_label(s_wakeup_src));
         }
+    }
+
+    char debug_str[4] = {0};
+    bt_form_get(body, "debug", debug_str, sizeof(debug_str));
+    bool new_debug = (debug_str[0] == '1');
+    if (new_debug != s_debug_log) {
+        save_debug_log(new_debug);
+        s_debug_log = new_debug;
+        esp_log_level_set("bike_tracker", new_debug ? ESP_LOG_DEBUG : ESP_LOG_INFO);
+        ESP_LOGI(TAG, "Log level -> %s", new_debug ? "DEBUG" : "INFO");
     }
 
     char ssid2[33] = {0}, pass2[65] = {0};
@@ -570,6 +613,12 @@ void bike_tracker_run(void)
 {
     ESP_LOGI(TAG, "bike_tracker v%s", g_firmware_version);
     ride_log_init();
+
+    s_debug_log = load_debug_log();
+    if (s_debug_log) {
+        esp_log_level_set("bike_tracker", ESP_LOG_DEBUG);
+        ESP_LOGI(TAG, "DEBUG logging enabled");
+    }
 
     s_wakeup_src = load_wakeup_src();
     ESP_LOGI(TAG, "Wakeup source: %s", wakeup_src_label(s_wakeup_src));
