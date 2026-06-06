@@ -396,6 +396,7 @@ static char          s_pending_result[512] __attribute__((unused)) = {0};
 static volatile bool s_pending_has_result  __attribute__((unused)) = false;
 static volatile bool s_pending_run        = false;
 static volatile bool s_pending_vibrate    __attribute__((unused)) = false;
+static volatile bool s_pending_voice_query __attribute__((unused)) = false;
 static int           s_pending_run_tries  __attribute__((unused)) = 0;
 static TickType_t    s_pending_run_retry_after __attribute__((unused)) = 0;
 
@@ -4496,6 +4497,7 @@ static const pf_cmd_t s_pf_cmds[] = {
     { "sleeptimer","sleeptimer","true",  "Set minutes of inactivity before the device sleeps (0 = never). Example: '10'", "\xF0\x9F\x98\xB4" /* 😴 */, NULL },
     { "sleep",     "sleep",     "false", "Put the device into deep sleep immediately. Wake by touching the screen.", "\xF0\x9F\x92\xA4" /* 💤 */, NULL },
     { "battery",   "battery",   "false", "Get the battery level of the user's Core2 device. Returns level (0-100), charging status, and voltage in mV.", "\xF0\x9F\x94\x8B" /* 🔋 */, "{{result}}" },
+    { "listen",    "listen",    "false", "Start listening for a voice command on the user's Core2 device (records for 4 seconds then processes as an AI prompt).", "\xF0\x9F\x8E\xA4" /* 🎤 */, NULL },
 };
 #define PF_CMD_COUNT  (sizeof(s_pf_cmds) / sizeof(s_pf_cmds[0]))
 
@@ -5330,6 +5332,11 @@ static void pf_event_handler(const char *event_name,
             s_pending_has_result = true;
             ESP_LOGI(TAG, "battery: %d%% %d mV", level, vbat);
         }
+#endif
+
+    } else if (strcmp(s_trigger, "listen") == 0) {
+#if CONFIG_HARDWARE_CORE2
+        s_pending_voice_query = true;
 #endif
 
     } else {
@@ -6267,6 +6274,10 @@ void picture_frame_run(void)
                 }
             }
             core2_poll_pwr_key();   /* voice query on PWR short press */
+            if (s_pending_voice_query) {
+                s_pending_voice_query = false;
+                do_core2_voice_query();
+            }
 
 #if CONFIG_BT_ENABLED && CONFIG_BT_A2DP_ENABLE
             if (s_avrc_pending_play_pause) {
