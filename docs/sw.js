@@ -22,7 +22,7 @@ self.addEventListener('fetch', event => {
   }
 
   if (reqUrl.pathname.endsWith('/manifest-bike_tracker.json')) {
-    const target = 'https://raw.githubusercontent.com/rvmey/esp32-s3-ssh-wled/master/docs/manifest-bike_tracker-2.0.369.json';
+    const target = 'https://raw.githubusercontent.com/rvmey/esp32-s3-ssh-wled/master/docs/manifest-bike_tracker-2.0.370.json';
     event.respondWith(fetch(target, { cache: 'no-store' }));
     return;
   }
