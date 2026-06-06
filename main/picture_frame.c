@@ -380,7 +380,8 @@ static uint32_t   s_sleep_timeout_s    = CONFIG_CORE2_SLEEP_TIMEOUT_S;
 
 /* Pending run/save — set by the WS event task, consumed by the main loop */
 static char          s_pending_run_id[33]  __attribute__((unused)) = {0};
-static char          s_pending_run_status[512] __attribute__((unused)) = {0};
+static char          s_pending_result[512] __attribute__((unused)) = {0};
+static volatile bool s_pending_has_result  __attribute__((unused)) = false;
 static volatile bool s_pending_run        = false;
 static volatile bool s_pending_vibrate    __attribute__((unused)) = false;
 static int           s_pending_run_tries  __attribute__((unused)) = 0;
@@ -4635,9 +4636,6 @@ static void pf_event_handler(const char *event_name,
     ESP_LOGI(TAG, "message dispatch: trigger='%s' id='%s' params='%s'",
              s_trigger, s_id, s_params);
 
-    strncpy(s_pending_run_status, "Command ran", sizeof(s_pending_run_status) - 1);
-    s_pending_run_status[sizeof(s_pending_run_status) - 1] = '\0';
-
     if (strcmp(s_trigger, "text") == 0) {
         /* Discard any cached JPEG so orientation changes redraw text, not image */
         if (s_jpeg_cache) { free(s_jpeg_cache); s_jpeg_cache = NULL; s_jpeg_cache_len = 0; }
@@ -4787,9 +4785,10 @@ static void pf_event_handler(const char *event_name,
                 closedir(d);
                 json_arr[ja++] = ']';
                 json_arr[ja]   = '\0';
-                strncpy(s_pending_run_status, json_arr, sizeof(s_pending_run_status) - 1);
-                s_pending_run_status[sizeof(s_pending_run_status) - 1] = '\0';
-                ESP_LOGI(TAG, "folders: %d folder(s) on SD, result: %s", count, s_pending_run_status);
+                strncpy(s_pending_result, json_arr, sizeof(s_pending_result) - 1);
+                s_pending_result[sizeof(s_pending_result) - 1] = '\0';
+                s_pending_has_result = true;
+                ESP_LOGI(TAG, "folders: %d folder(s) on SD, result: %s", count, s_pending_result);
                 screen_draw_text(count > 0 ? msg : "No folders\non SD card");
             }
         }
@@ -5867,15 +5866,29 @@ void picture_frame_run(void)
                  * so the next eligible main-loop tick will render now-playing. */
             }
 
+            /* Post command/result — dedicated result payload for commands that
+             * return data (e.g. "folders").  Sent before run/save so the server
+             * has the result ready when the MCP tool reply is triggered. */
+            if (s_pending_has_result) {
+                char result_json[640];
+                snprintf(result_json, sizeof(result_json),
+                         "{\"computer_id\":\"%s\",\"command_id\":\"%s\",\"result\":\"%s\"}",
+                         s_computer_id, s_pending_run_id, s_pending_result);
+                esp_err_t result_err = socketio_send_vpost("/api/command/result",
+                                                           s_hw_token, result_json);
+                ESP_LOGI(TAG, "command/result vpost → %s", esp_err_to_name(result_err));
+                s_pending_has_result = false;
+            }
+
             /* Post run/save from the main task — over existing Socket.IO session
              * so we avoid a second TLS handshake under low-memory conditions. */
             if (s_pending_run &&
                 (s_pending_run_retry_after == 0 ||
                  xTaskGetTickCount() >= s_pending_run_retry_after)) {
-                char data_json[640];
+                char data_json[320];
                 snprintf(data_json, sizeof(data_json),
-                         "{\"status\":\"%s\",\"computer\":\"%s\",\"command\":\"%s\"}",
-                         s_pending_run_status, s_computer_id, s_pending_run_id);
+                         "{\"status\":\"Command ran\",\"computer\":\"%s\",\"command\":\"%s\"}",
+                         s_computer_id, s_pending_run_id);
                 esp_err_t post_err = socketio_send_vpost("/api/run/save", s_hw_token, data_json);
                 ESP_LOGI(TAG, "run/save vpost → %s", esp_err_to_name(post_err));
 
