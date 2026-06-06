@@ -385,6 +385,10 @@ static uint32_t   s_sleep_timeout_s    = CONFIG_CORE2_SLEEP_TIMEOUT_S;
 /* Set while the battery readout is on screen; tap refreshes the reading. */
 static volatile bool s_battery_display_active = false;
 #endif
+/* Set while a JPEG-folder image is on screen; swipe navigates within the folder. */
+static volatile bool s_jpeg_folder_display_active = false;
+static int           s_jpeg_folder_display_idx    = -1;
+static int           s_jpeg_folder_image_idx      = 0;
 
 /* Pending run/save — set by the WS event task, consumed by the main loop */
 static char          s_pending_run_id[33]  __attribute__((unused)) = {0};
@@ -3119,6 +3123,36 @@ static bool pf_touch_handler(int x, int y, screen_gesture_t gesture)
         return true;
     }
 #endif
+    if (s_jpeg_folder_display_active &&
+            (gesture == SCREEN_GESTURE_SWIPE_LEFT || gesture == SCREEN_GESTURE_SWIPE_RIGHT)) {
+        int folder_idx = s_jpeg_folder_display_idx;
+        if (folder_idx >= 0 && (size_t)folder_idx < s_jpeg_folder_count) {
+            int total = s_jpeg_folders[folder_idx].jpeg_count;
+            if (total > 1) {
+                int new_idx = s_jpeg_folder_image_idx;
+                if (gesture == SCREEN_GESTURE_SWIPE_LEFT) {
+                    new_idx = (new_idx - 1 + total) % total;
+                } else {
+                    new_idx = (new_idx + 1) % total;
+                }
+                char file_name[MP3_MAX_FILE_LEN] = {0};
+                int file_total = 0;
+                if (jpeg_get_nth_file(s_jpeg_folders[folder_idx].folder_path,
+                                      new_idx, file_name, sizeof(file_name), &file_total)
+                        && file_total > 0) {
+                    char file_path[MP3_MAX_PATH_LEN + MP3_MAX_FILE_LEN + 4];
+                    snprintf(file_path, sizeof(file_path), "%s/%s",
+                             s_jpeg_folders[folder_idx].folder_path, file_name);
+                    s_jpeg_folder_image_idx = new_idx;
+                    strncpy(s_pending_jpeg_file_path, file_path,
+                            sizeof(s_pending_jpeg_file_path) - 1);
+                    s_pending_jpeg_file_path[sizeof(s_pending_jpeg_file_path) - 1] = '\0';
+                    s_pending_jpeg_file = true;
+                }
+            }
+        }
+        return true;
+    }
     if (!s_mp3.active || !s_mp3_ui_override_allowed) return false;
 
     s_mp3_ui_override_allowed = true;
@@ -4794,6 +4828,7 @@ static void pf_event_handler(const char *event_name,
 #if CONFIG_HARDWARE_CORE2
     s_battery_display_active = false;
 #endif
+    s_jpeg_folder_display_active = false;
 
     if (strcmp(s_trigger, "text") == 0) {
         /* Discard any cached JPEG so orientation changes redraw text, not image */
@@ -5325,6 +5360,9 @@ static void pf_event_handler(const char *event_name,
                          s_jpeg_folders[jpeg_folder_idx].folder_path, file_name);
                 s_mp3_ui_override_allowed = false;
                 s_pending_jpeg = false;
+                s_jpeg_folder_display_active = true;
+                s_jpeg_folder_display_idx    = jpeg_folder_idx;
+                s_jpeg_folder_image_idx      = requested_idx;
                 strncpy(s_pending_jpeg_file_path, file_path, sizeof(s_pending_jpeg_file_path) - 1);
                 s_pending_jpeg_file_path[sizeof(s_pending_jpeg_file_path) - 1] = '\0';
                 s_pending_jpeg_file = true;
