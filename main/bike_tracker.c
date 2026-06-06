@@ -64,6 +64,18 @@ static const char *wakeup_src_label(wakeup_src_t src)
     return "KY-003 only";
 }
 
+/* ── Hall sensor pin polarity (needed by settings window and ISR) ────────── */
+
+#if CONFIG_TRACKER_HALL_ACTIVE_HIGH
+#define HALL_INTR_TYPE GPIO_INTR_POSEDGE
+#define HALL_PULLUP    GPIO_PULLUP_DISABLE
+#define HALL_PULLDOWN  GPIO_PULLDOWN_ENABLE
+#else
+#define HALL_INTR_TYPE GPIO_INTR_NEGEDGE
+#define HALL_PULLUP    GPIO_PULLUP_ENABLE
+#define HALL_PULLDOWN  GPIO_PULLDOWN_DISABLE
+#endif
+
 /* ── Settings web page ───────────────────────────────────────────────────── */
 
 static bool s_settings_done = false;
@@ -262,10 +274,36 @@ static void run_settings_window(int timeout_ms)
     if (wifi_get_ip(ip, sizeof(ip)) == ESP_OK)
         ESP_LOGI(TAG, "Settings page at http://%s (%.0f s)", ip, timeout_ms / 1000.0f);
 
+#if CONFIG_TRACKER_HALL_ENABLE
+    /* Configure hall GPIO for level polling so sensor tests are visible.    */
+    gpio_config_t hall_cfg = {
+        .pin_bit_mask = 1ULL << CONFIG_TRACKER_HALL_GPIO,
+        .mode         = GPIO_MODE_INPUT,
+        .pull_up_en   = HALL_PULLUP,
+        .pull_down_en = HALL_PULLDOWN,
+        .intr_type    = GPIO_INTR_DISABLE,
+    };
+    gpio_config(&hall_cfg);
+    int hall_last = gpio_get_level((gpio_num_t)CONFIG_TRACKER_HALL_GPIO);
+#endif
+
     int elapsed = 0;
     while (!s_settings_done && elapsed < timeout_ms) {
-        vTaskDelay(pdMS_TO_TICKS(500));
-        elapsed += 500;
+        vTaskDelay(pdMS_TO_TICKS(100));
+        elapsed += 100;
+#if CONFIG_TRACKER_HALL_ENABLE
+        int hall_now = gpio_get_level((gpio_num_t)CONFIG_TRACKER_HALL_GPIO);
+        if (hall_now != hall_last) {
+            hall_last = hall_now;
+#if CONFIG_TRACKER_HALL_ACTIVE_HIGH
+            if (hall_now) ESP_LOGI(TAG, "Hall GPIO %d: magnet detected", CONFIG_TRACKER_HALL_GPIO);
+            else          ESP_LOGI(TAG, "Hall GPIO %d: magnet removed",  CONFIG_TRACKER_HALL_GPIO);
+#else
+            if (!hall_now) ESP_LOGI(TAG, "Hall GPIO %d: magnet detected", CONFIG_TRACKER_HALL_GPIO);
+            else           ESP_LOGI(TAG, "Hall GPIO %d: magnet removed",  CONFIG_TRACKER_HALL_GPIO);
+#endif
+        }
+#endif
     }
     httpd_stop(server);
     ESP_LOGI(TAG, "Settings window closed%s",
@@ -273,16 +311,6 @@ static void run_settings_window(int timeout_ms)
 }
 
 /* ── Hall sensor ─────────────────────────────────────────────────────────── */
-
-#if CONFIG_TRACKER_HALL_ACTIVE_HIGH
-#define HALL_INTR_TYPE GPIO_INTR_POSEDGE
-#define HALL_PULLUP    GPIO_PULLUP_DISABLE
-#define HALL_PULLDOWN  GPIO_PULLDOWN_ENABLE
-#else
-#define HALL_INTR_TYPE GPIO_INTR_NEGEDGE
-#define HALL_PULLUP    GPIO_PULLUP_ENABLE
-#define HALL_PULLDOWN  GPIO_PULLDOWN_DISABLE
-#endif
 
 #if CONFIG_TRACKER_HALL_ENABLE
 static volatile uint32_t s_hall_pulse_count = 0;
@@ -478,6 +506,8 @@ static void run_tracking_cycle(void)
                 };
                 ride_log_append(&pt);
 #if CONFIG_TRACKER_HALL_ENABLE
+                if (hall_pulses > 0)
+                    ESP_LOGI(TAG, "Hall: %" PRIu32 " pulse(s) this interval", hall_pulses);
                 ESP_LOGD(TAG, "Point: lat=%ld lon=%ld spd=%d km/hx10 hall_pulses=%" PRIu32,
                          (long)pt.lat, (long)pt.lon, pt.speed_kmh, hall_pulses);
 #else
