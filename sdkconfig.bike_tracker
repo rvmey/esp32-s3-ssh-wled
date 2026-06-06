@@ -15,3 +15,7 @@ CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions_bike_tracker.csv"
 
 # Smaller main stack — no wolfSSH session needed
 CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
+
+# KY-003 hall sensor pin (explicit override — Kconfig default alone won't
+# update a cached sdkconfig value)
+CONFIG_TRACKER_HALL_GPIO=5
