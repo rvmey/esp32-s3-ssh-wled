@@ -14,7 +14,7 @@ static const char *TAG = "gps_ubx";
 
 #define UART_NUM       ((uart_port_t)CONFIG_GPS_UART_NUM)
 #define UART_BUF_SIZE  512
-#define GPS_BAUD       9600
+#define GPS_BAUD       115200
 
 /* UBX protocol constants */
 #define UBX_SYNC1  0xB5
@@ -234,7 +234,7 @@ esp_err_t gps_ubx_init(void)
     vTaskDelay(pdMS_TO_TICKS(200));
 
     ESP_LOGI(TAG, "GPS UART%d initialised at %d baud, NAV-PVT enabled",
-             CONFIG_GPS_UART_NUM, GPS_BAUD);
+             (int)CONFIG_GPS_UART_NUM, GPS_BAUD);
     return ESP_OK;
 }
 
