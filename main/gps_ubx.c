@@ -249,10 +249,25 @@ esp_err_t gps_ubx_wait_fix(int timeout_s)
 
     ESP_LOGI(TAG, "Waiting up to %d s for 3D fix ...", timeout_s);
 
+#define RAW_CAPTURE 32
+    uint8_t raw_buf[RAW_CAPTURE];
+    uint32_t raw_count = 0;
+
     while (elapsed_ms < deadline_ms) {
         int n = uart_read_bytes(UART_NUM, &byte, 1, pdMS_TO_TICKS(200));
         if (n == 1) {
             total_bytes++;
+            /* Capture first RAW_CAPTURE bytes for hex dump.                 */
+            if (raw_count < RAW_CAPTURE) {
+                raw_buf[raw_count++] = byte;
+                if (raw_count == RAW_CAPTURE) {
+                    /* Print as hex so we can identify the protocol.         */
+                    char hex[RAW_CAPTURE * 3 + 1];
+                    for (int i = 0; i < RAW_CAPTURE; i++)
+                        snprintf(hex + i * 3, 4, "%02X ", raw_buf[i]);
+                    ESP_LOGI(TAG, "First %d bytes: %s", RAW_CAPTURE, hex);
+                }
+            }
             if (feed_byte(byte)) {
                 total_frames++;
                 if (s_pvt.fix_type >= 3) {
@@ -293,6 +308,12 @@ esp_err_t gps_ubx_wait_fix(int timeout_s)
         }
     }
 
+    if (raw_count > 0 && raw_count < RAW_CAPTURE) {
+        char hex[RAW_CAPTURE * 3 + 1];
+        for (uint32_t i = 0; i < raw_count; i++)
+            snprintf(hex + i * 3, 4, "%02X ", raw_buf[i]);
+        ESP_LOGI(TAG, "All %"PRIu32" bytes received: %s", raw_count, hex);
+    }
     ESP_LOGW(TAG, "GPS fix timeout after %d s "
              "(bytes=%"PRIu32" frames=%"PRIu32" last fix=%u sv=%u)",
              timeout_s, total_bytes, total_frames,
