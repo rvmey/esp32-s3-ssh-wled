@@ -3127,19 +3127,23 @@ static bool pf_touch_handler(int x, int y, screen_gesture_t gesture)
             (gesture == SCREEN_GESTURE_SWIPE_LEFT || gesture == SCREEN_GESTURE_SWIPE_RIGHT)) {
         int folder_idx = s_jpeg_folder_display_idx;
         if (folder_idx >= 0 && (size_t)folder_idx < s_jpeg_folder_count) {
-            int total = s_jpeg_folders[folder_idx].jpeg_count;
-            if (total > 1) {
-                int new_idx = s_jpeg_folder_image_idx;
+            /* Scan the directory fresh so newly saved files are always reachable. */
+            char tmp[MP3_MAX_FILE_LEN] = {0};
+            int actual_total = 0;
+            jpeg_get_nth_file(s_jpeg_folders[folder_idx].folder_path,
+                              0, tmp, sizeof(tmp), &actual_total);
+            s_jpeg_folders[folder_idx].jpeg_count = actual_total; /* keep in sync */
+            if (actual_total > 1) {
+                int new_idx;
                 if (gesture == SCREEN_GESTURE_SWIPE_LEFT) {
-                    new_idx = (new_idx + 1) % total;
+                    new_idx = (s_jpeg_folder_image_idx + 1) % actual_total;
                 } else {
-                    new_idx = (new_idx - 1 + total) % total;
+                    new_idx = (s_jpeg_folder_image_idx - 1 + actual_total) % actual_total;
                 }
                 char file_name[MP3_MAX_FILE_LEN] = {0};
-                int file_total = 0;
                 if (jpeg_get_nth_file(s_jpeg_folders[folder_idx].folder_path,
-                                      new_idx, file_name, sizeof(file_name), &file_total)
-                        && file_total > 0) {
+                                      new_idx, file_name, sizeof(file_name), NULL)
+                        && file_name[0]) {
                     char file_path[MP3_MAX_PATH_LEN + MP3_MAX_FILE_LEN + 4];
                     snprintf(file_path, sizeof(file_path), "%s/%s",
                              s_jpeg_folders[folder_idx].folder_path, file_name);
@@ -4902,6 +4906,10 @@ static void pf_event_handler(const char *event_name,
         }
 
     } else if (strcmp(s_trigger, "savepic") == 0) {
+        /* Preserve JPEG folder navigation state across savepic so swipe still works. */
+        bool prev_folder_active = s_jpeg_folder_display_active;
+        int  prev_folder_idx    = s_jpeg_folder_display_idx;
+        int  prev_image_idx     = s_jpeg_folder_image_idx;
         if (!s_jpeg_cache || s_jpeg_cache_len <= 0) {
             screen_draw_text("No image\nto save");
         } else if (!mount_sd_card_if_needed()) {
@@ -4931,6 +4939,9 @@ static void pf_event_handler(const char *event_name,
                 }
             }
         }
+        s_jpeg_folder_display_active = prev_folder_active;
+        s_jpeg_folder_display_idx    = prev_folder_idx;
+        s_jpeg_folder_image_idx      = prev_image_idx;
 
     } else if (strcmp(s_trigger, "folders") == 0) {
         if (!mount_sd_card_if_needed()) {
