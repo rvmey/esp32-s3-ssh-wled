@@ -3131,9 +3131,9 @@ static bool pf_touch_handler(int x, int y, screen_gesture_t gesture)
             if (total > 1) {
                 int new_idx = s_jpeg_folder_image_idx;
                 if (gesture == SCREEN_GESTURE_SWIPE_LEFT) {
-                    new_idx = (new_idx - 1 + total) % total;
-                } else {
                     new_idx = (new_idx + 1) % total;
+                } else {
+                    new_idx = (new_idx - 1 + total) % total;
                 }
                 char file_name[MP3_MAX_FILE_LEN] = {0};
                 int file_total = 0;
