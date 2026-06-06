@@ -5113,7 +5113,7 @@ static void pf_event_handler(const char *event_name,
         } else {
             int adc    = ((int)vbat_h << 4) | ((int)vbat_l & 0x0F);
             int vbat   = (int)((float)adc * 1.1f);   /* millivolts */
-            bool chg   = (pwr_status >> 6) & 0x01;
+            bool chg   = (pwr_status >> 2) & 0x01;  /* AXP192 reg 0x01 bit[2] = charging */
             int  level = (vbat - 3300) * 100 / 900;
             if (level < 0)   level = 0;
             if (level > 100) level = 100;
