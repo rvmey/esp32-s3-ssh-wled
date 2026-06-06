@@ -250,8 +250,10 @@ static esp_err_t bt_settings_post_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
-/* Start an HTTP settings server; block until form submitted or timeout_ms. */
-static void run_settings_window(int timeout_ms)
+/* Start an HTTP settings server; block until form submitted, hall triggered,
+ * or timeout_ms elapses. Returns true if the hall sensor fired (caller
+ * should start the tracking cycle rather than going straight to sleep).    */
+static bool run_settings_window(int timeout_ms)
 {
     s_settings_done = false;
 
@@ -262,7 +264,7 @@ static void run_settings_window(int timeout_ms)
     httpd_handle_t server = NULL;
     if (httpd_start(&server, &cfg) != ESP_OK) {
         ESP_LOGW(TAG, "Could not start settings server");
-        return;
+        return false;
     }
 
     static const httpd_uri_t u_get  = { "/",        HTTP_GET,  bt_settings_get_handler,  NULL };
@@ -285,6 +287,7 @@ static void run_settings_window(int timeout_ms)
     };
     gpio_config(&hall_cfg);
     int hall_last = gpio_get_level((gpio_num_t)CONFIG_TRACKER_HALL_GPIO);
+    bool hall_triggered = false;
 #endif
 
     int elapsed = 0;
@@ -296,18 +299,31 @@ static void run_settings_window(int timeout_ms)
         if (hall_now != hall_last) {
             hall_last = hall_now;
 #if CONFIG_TRACKER_HALL_ACTIVE_HIGH
-            if (hall_now) ESP_LOGI(TAG, "Hall GPIO %d: magnet detected", CONFIG_TRACKER_HALL_GPIO);
-            else          ESP_LOGI(TAG, "Hall GPIO %d: magnet removed",  CONFIG_TRACKER_HALL_GPIO);
+            bool detected = (hall_now == 1);
 #else
-            if (!hall_now) ESP_LOGI(TAG, "Hall GPIO %d: magnet detected", CONFIG_TRACKER_HALL_GPIO);
-            else           ESP_LOGI(TAG, "Hall GPIO %d: magnet removed",  CONFIG_TRACKER_HALL_GPIO);
+            bool detected = (hall_now == 0);
 #endif
+            if (detected) {
+                ESP_LOGI(TAG, "Hall GPIO %d: magnet detected — starting tracking",
+                         CONFIG_TRACKER_HALL_GPIO);
+                hall_triggered = true;
+                s_settings_done = true;  /* close window immediately */
+            } else {
+                ESP_LOGI(TAG, "Hall GPIO %d: magnet removed", CONFIG_TRACKER_HALL_GPIO);
+            }
         }
 #endif
     }
     httpd_stop(server);
+#if CONFIG_TRACKER_HALL_ENABLE
+    if (hall_triggered) {
+        ESP_LOGI(TAG, "Settings window closed (hall trigger)");
+        return true;
+    }
+#endif
     ESP_LOGI(TAG, "Settings window closed%s",
              s_settings_done ? " (saved)" : " (timeout)");
+    return false;
 }
 
 /* ── Hall sensor ─────────────────────────────────────────────────────────── */
@@ -571,10 +587,11 @@ void bike_tracker_run(void)
          * user can configure the wakeup source and secondary WiFi SSIDs.   */
         ESP_LOGI(TAG, "First boot / reset");
 
+        bool start_tracking = false;
         if (!wifi_has_stored_credentials()) {
             ESP_LOGI(TAG, "No WiFi credentials — starting Improv-WiFi");
             if (improv_wifi_start() == ESP_OK) {
-                run_settings_window(60000);
+                start_tracking = run_settings_window(60000);
                 esp_wifi_stop();
             } else {
                 ESP_LOGW(TAG, "Improv-WiFi failed (will retry next boot)");
@@ -582,12 +599,17 @@ void bike_tracker_run(void)
         } else {
             ESP_LOGI(TAG, "Connecting WiFi for settings window ...");
             if (wifi_connect() == ESP_OK) {
-                run_settings_window(CONFIG_TRACKER_INACTIVITY_TIMEOUT_S * 1000);
+                start_tracking = run_settings_window(
+                    CONFIG_TRACKER_INACTIVITY_TIMEOUT_S * 1000);
                 esp_wifi_stop();
             } else {
                 ESP_LOGW(TAG, "WiFi connect failed — waiting before sleep");
                 vTaskDelay(pdMS_TO_TICKS(CONFIG_TRACKER_INACTIVITY_TIMEOUT_S * 1000));
             }
+        }
+        if (start_tracking) {
+            ESP_LOGI(TAG, "Hall triggered during settings window — starting tracking cycle");
+            run_tracking_cycle();
         }
     }
 
