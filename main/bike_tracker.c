@@ -437,8 +437,11 @@ static void run_tracking_cycle(void)
 
 /* ── Entry point ─────────────────────────────────────────────────────────── */
 
+extern const char g_firmware_version[];
+
 void bike_tracker_run(void)
 {
+    ESP_LOGI(TAG, "bike_tracker v%s", g_firmware_version);
     ride_log_init();
 
     esp_sleep_wakeup_cause_t cause = esp_sleep_get_wakeup_cause();
