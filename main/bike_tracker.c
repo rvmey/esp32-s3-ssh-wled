@@ -308,6 +308,13 @@ static void IRAM_ATTR enter_deep_sleep(void)
              CONFIG_MPU6050_INT_GPIO);
 #endif
 
+    /* Log the hall pin level so boot-loop causes are visible in the log.  */
+#if CONFIG_TRACKER_HALL_ENABLE
+    ESP_LOGI(TAG, "Hall GPIO %d level before sleep: %d",
+             CONFIG_TRACKER_HALL_GPIO,
+             (int)rtc_gpio_get_level((gpio_num_t)CONFIG_TRACKER_HALL_GPIO));
+#endif
+
     /* Short delay to let log output flush before power-down.               */
     vTaskDelay(pdMS_TO_TICKS(50));
     esp_deep_sleep_start();
