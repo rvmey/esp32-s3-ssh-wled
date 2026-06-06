@@ -376,6 +376,8 @@ static TickType_t s_last_activity_tick = 0;
 /* Runtime sleep timeout in seconds; 0 = disabled.  Defaults to the Kconfig
  * value but can be overridden at runtime by the "sleeptimer" command. */
 static uint32_t   s_sleep_timeout_s    = CONFIG_CORE2_SLEEP_TIMEOUT_S;
+/* Set while the battery readout is on screen; tap refreshes the reading. */
+static volatile bool s_battery_display_active = false;
 #endif
 
 /* Pending run/save — set by the WS event task, consumed by the main loop */
@@ -544,6 +546,9 @@ static esp_err_t nvs_write_str(const char *key, const char *val);
 static esp_err_t nvs_erase_key_local(const char *key);
 static inline void mp3_request_ui_refresh(void);
 static bool pf_touch_handler(int x, int y, screen_gesture_t gesture);
+#if CONFIG_HARDWARE_CORE2
+static esp_err_t core2_axp_read_reg(uint8_t reg, uint8_t *out);
+#endif
 
 /* Installed only during wifi_connect() -- any tap aborts the retry loop. */
 static bool pf_wifi_skip_touch_handler(int x, int y, screen_gesture_t gesture)
@@ -3032,6 +3037,26 @@ static bool pf_touch_handler(int x, int y, screen_gesture_t gesture)
     (void)x; (void)y;
 #if CONFIG_HARDWARE_CORE2
     s_last_activity_tick = xTaskGetTickCount();
+
+    if (s_battery_display_active && gesture == SCREEN_GESTURE_TAP) {
+        uint8_t vbat_h = 0, vbat_l = 0, pwr_status = 0;
+        if (core2_axp_read_reg(0x78, &vbat_h) == ESP_OK &&
+            core2_axp_read_reg(0x79, &vbat_l) == ESP_OK &&
+            core2_axp_read_reg(0x00, &pwr_status) == ESP_OK) {
+            int adc   = ((int)vbat_h << 4) | ((int)vbat_l & 0x0F);
+            int vbat  = (int)((float)adc * 1.1f);
+            bool chg  = (pwr_status & 0x80) || (pwr_status & 0x20);
+            int level = (vbat - 3300) * 100 / 900;
+            if (level < 0)   level = 0;
+            if (level > 100) level = 100;
+            char scr[64];
+            snprintf(scr, sizeof(scr), "Battery: %d%%\n%d mV%s",
+                     level, vbat, chg ? "\nCharging" : "");
+            screen_draw_text(scr);
+            ESP_LOGI(TAG, "battery tap refresh: %d%% %d mV charging=%d", level, vbat, (int)chg);
+        }
+        return true;
+    }
 #endif
     if (!s_mp3.active || !s_mp3_ui_override_allowed) return false;
 
@@ -4637,6 +4662,10 @@ static void pf_event_handler(const char *event_name,
     ESP_LOGI(TAG, "message dispatch: trigger='%s' id='%s' params='%s'",
              s_trigger, s_id, s_params);
 
+#if CONFIG_HARDWARE_CORE2
+    s_battery_display_active = false;
+#endif
+
     if (strcmp(s_trigger, "text") == 0) {
         /* Discard any cached JPEG so orientation changes redraw text, not image */
         if (s_jpeg_cache) { free(s_jpeg_cache); s_jpeg_cache = NULL; s_jpeg_cache_len = 0; }
@@ -5104,16 +5133,18 @@ static void pf_event_handler(const char *event_name,
         esp_deep_sleep_start();
 
     } else if (strcmp(s_trigger, "battery") == 0) {
+        s_battery_display_active = false;
         uint8_t vbat_h = 0, vbat_l = 0, pwr_status = 0;
         bool read_ok = (core2_axp_read_reg(0x78, &vbat_h) == ESP_OK) &&
                        (core2_axp_read_reg(0x79, &vbat_l) == ESP_OK) &&
-                       (core2_axp_read_reg(0x01, &pwr_status) == ESP_OK);
+                       (core2_axp_read_reg(0x00, &pwr_status) == ESP_OK);
         if (!read_ok) {
             screen_draw_text("Battery read\nfailed");
         } else {
             int adc    = ((int)vbat_h << 4) | ((int)vbat_l & 0x0F);
             int vbat   = (int)((float)adc * 1.1f);   /* millivolts */
-            bool chg   = (pwr_status >> 2) & 0x01;  /* AXP192 reg 0x01 bit[2] = charging */
+            /* AXP192 reg 0x00: bit[7]=ACIN present, bit[5]=VBUS present */
+            bool chg   = (pwr_status & 0x80) || (pwr_status & 0x20);
             int  level = (vbat - 3300) * 100 / 900;
             if (level < 0)   level = 0;
             if (level > 100) level = 100;
@@ -5121,6 +5152,7 @@ static void pf_event_handler(const char *event_name,
             snprintf(scr, sizeof(scr), "Battery: %d%%\n%d mV%s",
                      level, vbat, chg ? "\nCharging" : "");
             screen_draw_text(scr);
+            s_battery_display_active = true;
             /* Pre-escaped JSON object for embedding in the command/result payload */
             snprintf(s_pending_result, sizeof(s_pending_result),
                      "{\\\"level\\\":%d,\\\"charging\\\":%s,\\\"voltage_mv\\\":%d}",
