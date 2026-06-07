@@ -3108,18 +3108,22 @@ static bool pf_touch_handler(int x, int y, screen_gesture_t gesture)
     s_last_activity_tick = xTaskGetTickCount();
 
     if (s_battery_display_active && gesture == SCREEN_GESTURE_TAP) {
-        uint8_t vbat_h = 0, vbat_l = 0;
+        uint8_t vbat_h = 0, vbat_l = 0, chg_status = 0;
         if (core2_axp_read_reg(0x78, &vbat_h) == ESP_OK &&
             core2_axp_read_reg(0x79, &vbat_l) == ESP_OK) {
+            (void)core2_axp_read_reg(0x01, &chg_status); /* bit6 = charging */
             int adc   = ((int)vbat_h << 4) | ((int)vbat_l & 0x0F);
             int vbat  = (int)((float)adc * 1.1f);
+            bool chg  = (chg_status & 0x40) != 0;
             int level = (vbat - 3300) * 100 / 900;
             if (level < 0)   level = 0;
             if (level > 100) level = 100;
             char scr[64];
-            snprintf(scr, sizeof(scr), "Battery: %d%%\n%d mV", level, vbat);
+            snprintf(scr, sizeof(scr), "Battery: %d%%\n%d mV%s",
+                     level, vbat, chg ? "\nCharging" : "");
             screen_draw_text(scr);
-            ESP_LOGI(TAG, "battery tap refresh: %d%% %d mV", level, vbat);
+            ESP_LOGI(TAG, "battery tap refresh: %d%% %d mV charging=%d (reg01=0x%02X)",
+                     level, vbat, (int)chg, chg_status);
         }
         return true;
     }
@@ -5311,26 +5315,31 @@ static void pf_event_handler(const char *event_name,
 
     } else if (strcmp(s_trigger, "battery") == 0) {
         s_battery_display_active = false;
-        uint8_t vbat_h = 0, vbat_l = 0;
+        uint8_t vbat_h = 0, vbat_l = 0, chg_status = 0;
         bool read_ok = (core2_axp_read_reg(0x78, &vbat_h) == ESP_OK) &&
                        (core2_axp_read_reg(0x79, &vbat_l) == ESP_OK);
+        /* AXP192 reg 0x01 bit6 = charging indication (1=charging, 0=done/not). */
+        (void)core2_axp_read_reg(0x01, &chg_status);
         if (!read_ok) {
             screen_draw_text("Battery read\nfailed");
         } else {
             int adc    = ((int)vbat_h << 4) | ((int)vbat_l & 0x0F);
             int vbat   = (int)((float)adc * 1.1f);   /* millivolts */
+            bool chg   = (chg_status & 0x40) != 0;
             int  level = (vbat - 3300) * 100 / 900;
             if (level < 0)   level = 0;
             if (level > 100) level = 100;
             char scr[64];
-            snprintf(scr, sizeof(scr), "Battery: %d%%\n%d mV", level, vbat);
+            snprintf(scr, sizeof(scr), "Battery: %d%%\n%d mV%s",
+                     level, vbat, chg ? "\nCharging" : "");
             screen_draw_text(scr);
             s_battery_display_active = true;
             snprintf(s_pending_result, sizeof(s_pending_result),
-                     "{\\\"level\\\":%d,\\\"voltage_mv\\\":%d}",
-                     level, vbat);
+                     "{\\\"level\\\":%d,\\\"charging\\\":%s,\\\"voltage_mv\\\":%d}",
+                     level, chg ? "true" : "false", vbat);
             s_pending_has_result = true;
-            ESP_LOGI(TAG, "battery: %d%% %d mV", level, vbat);
+            ESP_LOGI(TAG, "battery: %d%% %d mV charging=%d (reg01=0x%02X)",
+                     level, vbat, (int)chg, chg_status);
         }
 #endif
 
