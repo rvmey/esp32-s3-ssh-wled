@@ -3108,26 +3108,18 @@ static bool pf_touch_handler(int x, int y, screen_gesture_t gesture)
     s_last_activity_tick = xTaskGetTickCount();
 
     if (s_battery_display_active && gesture == SCREEN_GESTURE_TAP) {
-        uint8_t vbat_h = 0, vbat_l = 0, pwr = 0, chg_status = 0;
+        uint8_t vbat_h = 0, vbat_l = 0;
         if (core2_axp_read_reg(0x78, &vbat_h) == ESP_OK &&
             core2_axp_read_reg(0x79, &vbat_l) == ESP_OK) {
-            (void)core2_axp_read_reg(0x00, &pwr);        /* bit5 = VBUS present */
-            (void)core2_axp_read_reg(0x01, &chg_status); /* bit6 = charging    */
             int adc   = ((int)vbat_h << 4) | ((int)vbat_l & 0x0F);
             int vbat  = (int)((float)adc * 1.1f);
-            /* "Charging" = USB power connected (VBUS present) or current into
-             * battery. The dedicated charge bit drops to 0 once the cell is
-             * full, so VBUS presence is what matches "cable plugged in". */
-            bool chg  = (pwr & 0x20) || (chg_status & 0x40);
             int level = (vbat - 3300) * 100 / 900;
             if (level < 0)   level = 0;
             if (level > 100) level = 100;
             char scr[64];
-            snprintf(scr, sizeof(scr), "Battery: %d%%\n%d mV%s",
-                     level, vbat, chg ? "\nCharging" : "");
+            snprintf(scr, sizeof(scr), "Battery: %d%%\n%d mV", level, vbat);
             screen_draw_text(scr);
-            ESP_LOGI(TAG, "battery tap refresh: %d%% %d mV charging=%d (reg00=0x%02X reg01=0x%02X)",
-                     level, vbat, (int)chg, pwr, chg_status);
+            ESP_LOGI(TAG, "battery tap refresh: %d%% %d mV", level, vbat);
         }
         return true;
     }
@@ -4504,7 +4496,7 @@ static const pf_cmd_t s_pf_cmds[] = {
     { "reboot",    "reboot",    "false", "Reboot the device.", "\xF0\x9F\x94\x81" /* 🔁 */, NULL },
     { "sleeptimer","sleeptimer","true",  "Set minutes of inactivity before the device sleeps (0 = never). Example: '10'", "\xF0\x9F\x98\xB4" /* 😴 */, NULL },
     { "sleep",     "sleep",     "false", "Put the device into deep sleep immediately. Wake by touching the screen.", "\xF0\x9F\x92\xA4" /* 💤 */, NULL },
-    { "battery",   "battery",   "false", "Get the battery level of the user's Core2 device. Returns level (0-100), charging status, and voltage in mV.", "\xF0\x9F\x94\x8B" /* 🔋 */, "{{result}}" },
+    { "battery",   "battery",   "false", "Get the battery level of the user's Core2 device. Returns level (0-100) and voltage in mV.", "\xF0\x9F\x94\x8B" /* 🔋 */, "{{result}}" },
     { "listen",    "listen",    "false", "Start listening for a voice command on the user's Core2 device (records for 4 seconds then processes as an AI prompt).", "\xF0\x9F\x8E\xA4" /* 🎤 */, NULL },
 };
 #define PF_CMD_COUNT  (sizeof(s_pf_cmds) / sizeof(s_pf_cmds[0]))
@@ -5319,34 +5311,26 @@ static void pf_event_handler(const char *event_name,
 
     } else if (strcmp(s_trigger, "battery") == 0) {
         s_battery_display_active = false;
-        uint8_t vbat_h = 0, vbat_l = 0, pwr = 0, chg_status = 0;
+        uint8_t vbat_h = 0, vbat_l = 0;
         bool read_ok = (core2_axp_read_reg(0x78, &vbat_h) == ESP_OK) &&
                        (core2_axp_read_reg(0x79, &vbat_l) == ESP_OK);
-        (void)core2_axp_read_reg(0x00, &pwr);        /* bit5 = VBUS present */
-        (void)core2_axp_read_reg(0x01, &chg_status); /* bit6 = charging    */
         if (!read_ok) {
             screen_draw_text("Battery read\nfailed");
         } else {
             int adc    = ((int)vbat_h << 4) | ((int)vbat_l & 0x0F);
             int vbat   = (int)((float)adc * 1.1f);   /* millivolts */
-            /* "Charging" = USB power connected (VBUS present) or current into
-             * battery. The dedicated charge bit drops to 0 once the cell is
-             * full, so VBUS presence is what matches "cable plugged in". */
-            bool chg   = (pwr & 0x20) || (chg_status & 0x40);
             int  level = (vbat - 3300) * 100 / 900;
             if (level < 0)   level = 0;
             if (level > 100) level = 100;
             char scr[64];
-            snprintf(scr, sizeof(scr), "Battery: %d%%\n%d mV%s",
-                     level, vbat, chg ? "\nCharging" : "");
+            snprintf(scr, sizeof(scr), "Battery: %d%%\n%d mV", level, vbat);
             screen_draw_text(scr);
             s_battery_display_active = true;
             snprintf(s_pending_result, sizeof(s_pending_result),
-                     "{\\\"level\\\":%d,\\\"charging\\\":%s,\\\"voltage_mv\\\":%d}",
-                     level, chg ? "true" : "false", vbat);
+                     "{\\\"level\\\":%d,\\\"voltage_mv\\\":%d}",
+                     level, vbat);
             s_pending_has_result = true;
-            ESP_LOGI(TAG, "battery: %d%% %d mV charging=%d (reg00=0x%02X reg01=0x%02X)",
-                     level, vbat, (int)chg, pwr, chg_status);
+            ESP_LOGI(TAG, "battery: %d%% %d mV", level, vbat);
         }
 #endif
 
