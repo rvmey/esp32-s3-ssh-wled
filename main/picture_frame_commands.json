@@ -8,6 +8,14 @@
   "icon": "📝"
  },
  {
+  "trigger": "speak",
+  "command": "speak",
+  "voice": "speak",
+  "allowParams": "true",
+  "mcpToolDescription": "Speak text aloud through the Core2 speaker using text-to-speech. Example: 'Hello world!'",
+  "icon": "🔊"
+ },
+ {
   "trigger": "color",
   "command": "color",
   "voice": "color",

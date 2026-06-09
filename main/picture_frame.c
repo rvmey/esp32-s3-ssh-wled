@@ -397,6 +397,8 @@ static volatile bool s_pending_has_result  __attribute__((unused)) = false;
 static volatile bool s_pending_run        = false;
 static volatile bool s_pending_vibrate    __attribute__((unused)) = false;
 static volatile bool s_pending_voice_query __attribute__((unused)) = false;
+static volatile bool s_pending_speak       __attribute__((unused)) = false;
+static char          s_pending_speak_text[256] __attribute__((unused)) = {0};
 static int           s_pending_run_tries  __attribute__((unused)) = 0;
 static TickType_t    s_pending_run_retry_after __attribute__((unused)) = 0;
 
@@ -3522,6 +3524,133 @@ static bool core2_stt_transcribe(const uint8_t *wav, size_t wav_len,
     return ok;
 }
 
+#define CORE2_TTS_URL        "https://api.openai.com/v1/audio/speech"
+#define CORE2_TTS_MAX_BODY   (256 * 1024)
+#define CORE2_TTS_TIMEOUT_MS 30000
+#define TTS_TEMP_FILE        "/sdcard/tmp_tts.mp3"
+
+static bool core2_tts_speak(const char *text)
+{
+    if (!text || !text[0]) return false;
+
+    /* Build JSON body with text escaped for embedding in a JSON string */
+    size_t text_len = strlen(text);
+    char *json = malloc(text_len * 2 + 64);
+    if (!json) return false;
+    {
+        static const char prefix[] = "{\"model\":\"tts-1\",\"input\":\"";
+        static const char suffix[] = "\",\"voice\":\"alloy\"}";
+        char *p = json;
+        memcpy(p, prefix, sizeof(prefix) - 1); p += sizeof(prefix) - 1;
+        for (const char *t = text; *t; t++) {
+            if (*t == '"' || *t == '\\') { *p++ = '\\'; *p++ = *t; }
+            else if (*t == '\n')          { *p++ = '\\'; *p++ = 'n'; }
+            else if (*t == '\r')          { /* skip */ }
+            else                          { *p++ = *t; }
+        }
+        memcpy(p, suffix, sizeof(suffix)); /* includes NUL */
+    }
+
+    /* Suspend mp3 task and pause I2S while making HTTP call */
+    if (s_mp3.active && !s_mp3.paused) s_mp3.paused = true;
+    if (s_mp3_task) vTaskSuspend(s_mp3_task);
+    core2_audio_pause();
+
+    char api_key[CORE2_STT_KEY_MAX] = {0};
+    bool ok = false;
+    char *mp3_buf = NULL;
+    int mp3_len = 0;
+
+    if (!nvs_read_str(NVS_KEY_STT, api_key, sizeof(api_key)) || !api_key[0]) {
+        ESP_LOGW(TAG, "TTS: no API key configured");
+        screen_draw_text("TTS: no API key\nVisit device IP\nto configure");
+        goto tts_done;
+    }
+
+    {
+        char bearer[CORE2_STT_KEY_MAX + 10];
+        snprintf(bearer, sizeof(bearer), "Bearer %s", api_key);
+        int body_len = (int)strlen(json);
+
+        esp_http_client_config_t cfg = {
+            .url               = CORE2_TTS_URL,
+            .method            = HTTP_METHOD_POST,
+            .timeout_ms        = CORE2_TTS_TIMEOUT_MS,
+            .crt_bundle_attach = esp_crt_bundle_attach,
+            .buffer_size       = 4096,
+            .buffer_size_tx    = 4096,
+            .keep_alive_enable = false,
+        };
+        esp_http_client_handle_t client = esp_http_client_init(&cfg);
+        if (!client) goto tts_done;
+
+        esp_http_client_set_header(client, "Authorization", bearer);
+        esp_http_client_set_header(client, "Content-Type", "application/json");
+
+        if (esp_http_client_open(client, body_len) != ESP_OK) {
+            esp_http_client_cleanup(client);
+            goto tts_done;
+        }
+        esp_http_client_write(client, json, body_len);
+
+        int64_t cl = esp_http_client_fetch_headers(client);
+        int status = esp_http_client_get_status_code(client);
+        ESP_LOGI(TAG, "TTS: HTTP %d content-length=%lld", status, (long long)cl);
+
+        if (status == 200) {
+            int max_body = CORE2_TTS_MAX_BODY;
+            if (cl > 0 && cl < max_body) max_body = (int)cl;
+            mp3_buf = malloc(max_body);
+            if (mp3_buf) {
+                int total = 0, n;
+                while (total < max_body) {
+                    n = esp_http_client_read(client, mp3_buf + total, max_body - total);
+                    if (n <= 0) break;
+                    total += n;
+                }
+                mp3_len = total;
+                ok = (mp3_len > 0);
+            }
+        } else {
+            ESP_LOGW(TAG, "TTS: unexpected HTTP %d", status);
+        }
+        esp_http_client_close(client);
+        esp_http_client_cleanup(client);
+    }
+
+    if (ok) {
+        FILE *fp = fopen(TTS_TEMP_FILE, "wb");
+        if (fp) {
+            fwrite(mp3_buf, 1, (size_t)mp3_len, fp);
+            fclose(fp);
+            s_mp3.active        = true;
+            s_mp3.paused        = false;
+            s_mp3.folder_idx    = -1;   /* no folder — plays once then stops */
+            s_mp3.track_idx     = -1;
+            s_mp3.duration_ms   = 60000;
+            s_mp3.position_ms   = 0;
+            s_mp3.last_tick     = xTaskGetTickCount();
+            s_mp3.play_token++;
+            s_mp3_ui_override_allowed = false;
+            snprintf(s_mp3.file_path, sizeof(s_mp3.file_path), TTS_TEMP_FILE);
+            s_mp3.folder_name[0] = '\0';
+            snprintf(s_mp3.file_name, sizeof(s_mp3.file_name), "tts");
+            ESP_LOGI(TAG, "TTS: %d bytes -> playback started", mp3_len);
+        } else {
+            ESP_LOGW(TAG, "TTS: fopen(%s) failed — SD card present?", TTS_TEMP_FILE);
+            screen_draw_text("TTS: no SD card");
+            ok = false;
+        }
+    }
+
+tts_done:
+    free(json);
+    free(mp3_buf);
+    core2_audio_resume();
+    if (s_mp3_task) vTaskResume(s_mp3_task);
+    return ok;
+}
+
 static int core2_https_post_json(const char *url, const char *token,
                                  const char *json_body, char **resp_out)
 {
@@ -4483,6 +4612,7 @@ typedef struct {
 
 static const pf_cmd_t s_pf_cmds[] = {
     { "text",      "text",      "true",  "Update the display text. Example: 'Hello world!'",           "\xF0\x9F\x93\x9D" /* 📝 */, NULL },
+    { "speak",     "speak",     "true",  "Speak text aloud via TTS. Example: 'Hello world!'",           "\xF0\x9F\x94\x8A" /* 🔊 */, NULL },
     { "color",     "color",     "true",  "Change the display color. Example: 'red' or '#FF0000'", "\xF0\x9F\x94\xA4" /* 🔤 */, NULL },
     { "textcolor", "textcolor", "true",  "Change the text color. Example: 'blue' or '#0000FF'", "\xF0\x9F\x8E\xA8" /* 🎨 */, NULL },
     { "fontsize",  "fontsize",  "true",  "Change the font size (1-4). Example: '3'",                     "\xF0\x9F\x94\xA1" /* 🔡 */, NULL },
@@ -4849,6 +4979,13 @@ static void pf_event_handler(const char *event_name,
         s_pending_text_draw = true;
         s_pending_text_redraw_retries = 5;
         s_current_jpeg_url[0] = '\0';
+
+    } else if (strcmp(s_trigger, "speak") == 0) {
+#if CONFIG_HARDWARE_CORE2
+        strncpy(s_pending_speak_text, s_params, sizeof(s_pending_speak_text) - 1);
+        s_pending_speak_text[sizeof(s_pending_speak_text) - 1] = '\0';
+        s_pending_speak = true;
+#endif
 
     } else if (strcmp(s_trigger, "color") == 0) {
         uint8_t r = 0, g = 0, b = 0;
@@ -6277,6 +6414,10 @@ void picture_frame_run(void)
             if (s_pending_voice_query) {
                 s_pending_voice_query = false;
                 do_core2_voice_query();
+            }
+            if (s_pending_speak) {
+                s_pending_speak = false;
+                core2_tts_speak(s_pending_speak_text);
             }
 
 #if CONFIG_BT_ENABLED && CONFIG_BT_A2DP_ENABLE
