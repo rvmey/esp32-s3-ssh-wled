@@ -70,7 +70,7 @@ For any variant that uses a stable installer alias (e.g. `manifest-core2.json`),
 - Create/update the pinned manifest `docs/manifest-<variant>-x.y.z.json` with the same version and binary path
 - [docs/index.html](docs/index.html):
   - Update `fixedManifestMap` to point `manifest-<variant>.json` → `manifest-<variant>-x.y.z.json`
-  - Update `fixedVersionMap` for `manifest-<variant>.json` to `x.y.z`
+  - Update `fixedVersionMap` for `manifest-<variant>.json` to `x.y.z` — **edit the existing entry in place**; do NOT prepend a new one. JavaScript object literals use last-value-wins for duplicate keys, so prepending would be overridden by the old entry that remains at the end of the object.
   - Keep manifest fetches using `{ cache: 'no-store' }`
 - [docs/sw.js](docs/sw.js):
   - Update rewrite targets/comments to the new pinned manifest and versioned firmware binary
