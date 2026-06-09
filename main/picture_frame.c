@@ -3629,6 +3629,7 @@ static bool core2_tts_speak(const char *text)
             s_mp3.track_idx     = -1;
             s_mp3.duration_ms   = 60000;
             s_mp3.position_ms   = 0;
+            s_mp3.muted         = false;
             s_mp3.last_tick     = xTaskGetTickCount();
             s_mp3.play_token++;
             s_mp3_ui_override_allowed = false;
@@ -4981,6 +4982,17 @@ static void pf_event_handler(const char *event_name,
         s_current_jpeg_url[0] = '\0';
 
     } else if (strcmp(s_trigger, "speak") == 0) {
+        if (s_jpeg_cache) { free(s_jpeg_cache); s_jpeg_cache = NULL; s_jpeg_cache_len = 0; }
+        s_mp3_ui_override_allowed = false;
+        s_pending_jpeg = false;
+        s_pending_jpeg_redraw = false;
+        strncpy(s_last_text, s_params[0] ? s_params : " ", sizeof(s_last_text) - 1);
+        s_last_text[sizeof(s_last_text) - 1] = '\0';
+        strncpy(s_pending_text, s_last_text, sizeof(s_pending_text) - 1);
+        s_pending_text[sizeof(s_pending_text) - 1] = '\0';
+        s_pending_text_draw = true;
+        s_pending_text_redraw_retries = 5;
+        s_current_jpeg_url[0] = '\0';
 #if CONFIG_HARDWARE_CORE2
         strncpy(s_pending_speak_text, s_params, sizeof(s_pending_speak_text) - 1);
         s_pending_speak_text[sizeof(s_pending_speak_text) - 1] = '\0';
