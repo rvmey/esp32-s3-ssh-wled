@@ -16,13 +16,14 @@ CONFIG_SPIRAM=y
 CONFIG_SPIRAM_USE_MALLOC=y
 CONFIG_SPIRAM_IGNORE_NOTFOUND=y
 
-# Flash size commonly used by ESP32-2432S028R boards
-CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
-CONFIG_ESPTOOLPY_FLASHSIZE="16MB"
+# This board's actual flash chip is 4MB (probed at boot as 4096k), even
+# though some ESP32-2432S028R listings advertise 16MB.
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE="4MB"
 
-# Keep Core2 partition profile for feature parity
+# Dedicated partition table sized for the 4MB flash (Core2's table needs 5MB+)
 CONFIG_PARTITION_TABLE_CUSTOM=y
-CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions_core2.csv"
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions_cyd.csv"
 
 # Bluetooth classic stack (for headset/speaker discovery)
 CONFIG_BT_ENABLED=y

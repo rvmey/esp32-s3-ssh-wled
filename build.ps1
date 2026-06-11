@@ -173,6 +173,9 @@ function Test-VariantNeedsRebuild([PSCustomObject]$variant) {
         (Join-Path $PSScriptRoot $variant.Config),
         (Join-Path $PSScriptRoot 'main\CMakeLists.txt')
     )
+    # Custom partition table CSVs (referenced via CONFIG_PARTITION_TABLE_CUSTOM_FILENAME)
+    Get-ChildItem (Join-Path $PSScriptRoot 'partitions_*.csv') -ErrorAction SilentlyContinue |
+        ForEach-Object { $sources += $_.FullName }
     # All files under main/ and managed_components/ and patches/
     foreach ($dir in @('main', 'managed_components', 'patches')) {
         $full = Join-Path $PSScriptRoot $dir

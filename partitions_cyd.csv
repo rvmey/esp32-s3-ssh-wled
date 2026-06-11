@@ -1,0 +1,11 @@
+# Partition table for CYD variant (ESP32-2432S028R, 4 MB flash)
+#
+# Layout:
+#   nvs        24 KB — WiFi credentials, SSH host key, HTTP config
+#   phy_init    4 KB — RF calibration data (required by WiFi)
+#   factory   3 MB   — Application firmware
+#
+# Name,     Type, SubType,  Offset,   Size
+nvs,        data, nvs,      0x9000,   0x6000,
+phy_init,   data, phy,      0xF000,   0x1000,
+factory,    app,  factory,  0x10000,  0x300000,
