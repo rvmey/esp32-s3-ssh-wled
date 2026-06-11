@@ -279,6 +279,11 @@ static void pf_softap_provision(void)
 #include "core2_audio.h"
 #endif
 
+/* True only for the M5Stack Core2, which has the AXP192 PMU, an I2S
+ * speaker on GPIO2 (conflicts with CYD's LCD_DC), MPU6886 IMU, and a
+ * SK6812 LED bar. CYD reuses Core2's CONFIG_HARDWARE_CORE2 build for
+ * UI/command parity but lacks all of this peripheral hardware. */
+#define CONFIG_CORE2_HW (CONFIG_HARDWARE_CORE2 && !CONFIG_HARDWARE_CYD)
 
 static const char *TAG = "pf";
 extern const char g_firmware_version[];
@@ -381,6 +386,8 @@ static TickType_t s_last_activity_tick = 0;
 /* Runtime sleep timeout in seconds; 0 = disabled.  Defaults to the Kconfig
  * value but can be overridden at runtime by the "sleeptimer" command. */
 static uint32_t   s_sleep_timeout_s    = CONFIG_CORE2_SLEEP_TIMEOUT_S;
+#endif
+#if CONFIG_CORE2_HW
 /* Set while the battery readout is on screen; tap refreshes the reading. */
 static volatile bool s_battery_display_active = false;
 #endif
@@ -469,7 +476,7 @@ static bool s_sd_mount_warned __attribute__((unused)) = false;
 static volatile int32_t s_mp3_seek_target_ms = -1;
 
 /* ── Audio visualizer — Goertzel per-band energy → Core2 side LEDs ─────── */
-#if CONFIG_HARDWARE_CORE2
+#if CONFIG_CORE2_HW
 
 #define VIZ_BANDS      10
 #define VIZ_BLOCK      256   /* samples per analysis window */
@@ -556,14 +563,14 @@ static void viz_feed(const short *pcm, int total_samps, int channels, int fs)
     }
 }
 
-#endif /* CONFIG_HARDWARE_CORE2 (visualizer) */
+#endif /* CONFIG_CORE2_HW (visualizer) */
 
 static bool nvs_read_str(const char *key, char *out, size_t out_sz);
 static esp_err_t nvs_write_str(const char *key, const char *val);
 static esp_err_t nvs_erase_key_local(const char *key);
 static inline void mp3_request_ui_refresh(void);
 static bool pf_touch_handler(int x, int y, screen_gesture_t gesture);
-#if CONFIG_HARDWARE_CORE2
+#if CONFIG_CORE2_HW
 static esp_err_t core2_axp_read_reg(uint8_t reg, uint8_t *out);
 #endif
 
@@ -1266,7 +1273,7 @@ static void bt_a2dp_cb(esp_a2d_cb_event_t event, esp_a2d_cb_param_t *param)
             s_bt.connect_retries = 0;    /* reset — connection succeeded */
             s_bt_pending_reconnect = false;
             bt_pcm_clear();
-#if CONFIG_HARDWARE_CORE2
+#if CONFIG_CORE2_HW
             /* Hard handoff: stop local I2S speaker path while BT sink is active. */
             core2_audio_deinit();
 #endif
@@ -1754,7 +1761,7 @@ static void bt_cmd_pair_start(void) __attribute__((unused));
 static void bt_cmd_pair_start(void)
 {
     s_bt_hold_local_speaker = true;
-#if CONFIG_HARDWARE_CORE2
+#if CONFIG_CORE2_HW
     /* Free local speaker-task and I2S resources before Bluedroid startup. */
     core2_audio_deinit();
 #endif
@@ -1919,7 +1926,7 @@ static void bt_try_reconnect_on_boot(void)
     }
 
     s_bt_hold_local_speaker = true;
-#if CONFIG_HARDWARE_CORE2
+#if CONFIG_CORE2_HW
     /* Free local speaker resources before boot-time BT auto reconnect. */
     core2_audio_deinit();
 #endif
@@ -2406,7 +2413,7 @@ static void mp3_player_task(void *arg)
             bytes_left = 0;
             read_ptr = inbuf;
             speaker_last_rate = 0;
-#if CONFIG_HARDWARE_CORE2
+#if CONFIG_CORE2_HW
             if (s_mp3.visualizer) { s_viz_buf_pos = 0; core2_leds_off(); }
 #endif
 #if CONFIG_BT_ENABLED && CONFIG_BT_A2DP_ENABLE
@@ -2441,7 +2448,7 @@ static void mp3_player_task(void *arg)
         }
 
         if (s_mp3.paused) {
-#if CONFIG_HARDWARE_CORE2
+#if CONFIG_CORE2_HW
             if (s_mp3.visualizer) { s_viz_buf_pos = 0; core2_leds_off(); }
 #endif
             int32_t paused_seek_target = s_mp3_seek_target_ms;
@@ -2867,10 +2874,12 @@ static void mp3_player_task(void *arg)
             core2_audio_write_pcm(pcm, (size_t)fi.outputSamps, fi.nChans, s_mp3.muted ? 0 : s_mp3.volume);
         }
 
+#if CONFIG_CORE2_HW
         /* Visualizer: drive side LEDs with per-band frequency energy */
         if (s_mp3.visualizer && s_mp3.active && !s_mp3.paused) {
             viz_feed(pcm, fi.outputSamps, fi.nChans, fi.samprate);
         }
+#endif
 
         /* Position tracking and periodic UI refresh (Core2 path) */
         {
@@ -3018,7 +3027,7 @@ static void mp3_player_task(void *arg)
 static void mp3_ensure_task(void)
 {
     if (s_mp3_task) return;
-#if CONFIG_HARDWARE_CORE2
+#if CONFIG_CORE2_HW
     (void)core2_audio_init();
 #endif
     xTaskCreate(mp3_player_task, "mp3_play", 6144, NULL, 5, &s_mp3_task);
@@ -3107,7 +3116,8 @@ static bool pf_touch_handler(int x, int y, screen_gesture_t gesture)
     (void)x; (void)y;
 #if CONFIG_HARDWARE_CORE2
     s_last_activity_tick = xTaskGetTickCount();
-
+#endif
+#if CONFIG_CORE2_HW
     if (s_battery_display_active && gesture == SCREEN_GESTURE_TAP) {
         uint8_t vbat_h = 0, vbat_l = 0;
         if (core2_axp_read_reg(0x78, &vbat_h) == ESP_OK &&
@@ -3344,7 +3354,7 @@ static bool mp3_handle_track_end(void)
     return mp3_advance_track(1, "track ended");
 }
 
-#if CONFIG_HARDWARE_CORE2
+#if CONFIG_CORE2_HW
 #define CORE2_AXP_I2C_NUM   I2C_NUM_0
 #define CORE2_AXP_I2C_ADDR  0x34
 
@@ -3826,7 +3836,7 @@ static void core2_poll_pwr_key(void)
     ESP_LOGI(TAG, "PWR key short press detected — starting voice query");
     do_core2_voice_query();
 }
-#endif
+#endif /* CONFIG_CORE2_HW */
 
 static int mp3_find_folder_trigger(const char *trigger)
 {
@@ -3858,7 +3868,7 @@ static bool mount_sd_card_if_needed(void)
         return false;
     }
 
-#if CONFIG_HARDWARE_CORE2
+#if CONFIG_CORE2_HW
     /* Core2: SPI3 is already initialized for the LCD; SD CS = GPIO4.
      * Keep CS high and strengthen marginal bus lines. */
     gpio_set_direction(GPIO_NUM_4, GPIO_MODE_OUTPUT);
@@ -3928,14 +3938,14 @@ static bool mount_sd_card_if_needed(void)
 #endif
     const int freq_candidates_khz[] = {4000, 1000, 400, 200};
     esp_err_t err = ESP_FAIL;
-#if CONFIG_HARDWARE_CORE2
+#if CONFIG_CORE2_HW
     const int power_passes = 2;
 #else
     const int power_passes = 1;
 #endif
 
     for (int pass = 0; pass < power_passes && err != ESP_OK; pass++) {
-#if CONFIG_HARDWARE_CORE2
+#if CONFIG_CORE2_HW
         if (pass == 0) {
             core2_reassert_sd_power();
         } else {
@@ -3950,7 +3960,7 @@ static bool mount_sd_card_if_needed(void)
 
             sdspi_device_config_t slot_config = SDSPI_DEVICE_CONFIG_DEFAULT();
             slot_config.host_id = host_candidates[h];
-#if CONFIG_HARDWARE_CORE2
+#if CONFIG_CORE2_HW
             slot_config.gpio_cs = GPIO_NUM_4;
 #elif CONFIG_HARDWARE_CYD
             slot_config.gpio_cs = GPIO_NUM_5;  /* CYD TF_CS */
@@ -4994,7 +5004,7 @@ static void pf_event_handler(const char *event_name,
     ESP_LOGI(TAG, "message dispatch: trigger='%s' id='%s' params='%s'",
              s_trigger, s_id, s_params);
 
-#if CONFIG_HARDWARE_CORE2
+#if CONFIG_CORE2_HW
     s_battery_display_active = false;
 #endif
     s_jpeg_folder_display_active = false;
@@ -5025,7 +5035,7 @@ static void pf_event_handler(const char *event_name,
         s_pending_text_draw = true;
         s_pending_text_redraw_retries = 5;
         s_current_jpeg_url[0] = '\0';
-#if CONFIG_HARDWARE_CORE2
+#if CONFIG_CORE2_HW
         strncpy(s_pending_speak_text, s_params, sizeof(s_pending_speak_text) - 1);
         s_pending_speak_text[sizeof(s_pending_speak_text) - 1] = '\0';
         s_pending_speak = true;
@@ -5426,7 +5436,7 @@ static void pf_event_handler(const char *event_name,
         if (s_mp3.active) mp3_request_ui_refresh();
 
     } else if (strcmp(s_trigger, "visualizer") == 0) {
-#if CONFIG_HARDWARE_CORE2
+#if CONFIG_CORE2_HW
         s_mp3_ui_override_allowed = true;
         char mode[16] = {0};
         strncpy(mode, s_params, sizeof(mode) - 1);
@@ -5445,7 +5455,7 @@ static void pf_event_handler(const char *event_name,
 #endif
 
     } else if (strcmp(s_trigger, "ledcolor") == 0) {
-#if CONFIG_HARDWARE_CORE2
+#if CONFIG_CORE2_HW
         s_mp3.visualizer = false;
         if (strcasecmp(s_params, "off") == 0 || strcmp(s_params, "0") == 0) {
             core2_leds_off();
@@ -5489,7 +5499,9 @@ static void pf_event_handler(const char *event_name,
         rtc_gpio_pulldown_dis(GPIO_NUM_39);
         esp_sleep_enable_ext1_wakeup(1ULL << GPIO_NUM_39, ESP_EXT1_WAKEUP_ALL_LOW);
         esp_deep_sleep_start();
+#endif
 
+#if CONFIG_CORE2_HW
     } else if (strcmp(s_trigger, "battery") == 0) {
         s_battery_display_active = false;
         uint8_t vbat_h = 0, vbat_l = 0;
@@ -5516,7 +5528,7 @@ static void pf_event_handler(const char *event_name,
 #endif
 
     } else if (strcmp(s_trigger, "listen") == 0) {
-#if CONFIG_HARDWARE_CORE2
+#if CONFIG_CORE2_HW
         s_pending_voice_query = true;
 #endif
 
@@ -5927,7 +5939,7 @@ static void sd_apply_config_if_present(void)
     char password2[128] = {0};
     char ssid3[64]      = {0};
     char password3[128] = {0};
-#if CONFIG_HARDWARE_CORE2
+#if CONFIG_CORE2_HW
     char openai_key[256] = {0};
 #endif
 
@@ -5968,7 +5980,7 @@ static void sd_apply_config_if_present(void)
             snprintf(ssid3, sizeof(ssid3), "%s", val);
         else if (strcmp(key, "password3") == 0)
             snprintf(password3, sizeof(password3), "%s", val);
-#if CONFIG_HARDWARE_CORE2
+#if CONFIG_CORE2_HW
         else if (strcmp(key, "openai_key") == 0)
             snprintf(openai_key, sizeof(openai_key), "%s", val);
 #endif
@@ -6000,7 +6012,7 @@ static void sd_apply_config_if_present(void)
     }
 
 
-#if CONFIG_HARDWARE_CORE2
+#if CONFIG_CORE2_HW
     if (openai_key[0]) {
         esp_err_t err = nvs_write_str(NVS_KEY_STT, openai_key);
         if (err == ESP_OK)
@@ -6026,7 +6038,9 @@ void picture_frame_run(void)
 #if CONFIG_HARDWARE_CORE2
     {
         bool touch_wakeup = (esp_sleep_get_wakeup_causes() & ESP_SLEEP_WAKEUP_EXT1) != 0;
+#if CONFIG_CORE2_HW
         mpu6886_init();
+#endif
         if (touch_wakeup) {
             ESP_LOGI(TAG, "Woke from deep sleep via touch");
         }
@@ -6074,8 +6088,10 @@ void picture_frame_run(void)
     /* ── NVS: read hw_token and computer_id ─────────────────────────────── */
     bool have_token   = nvs_read_str(NVS_KEY_TOKEN,  s_hw_token,   sizeof(s_hw_token));
     bool have_comp_id = nvs_read_str(NVS_KEY_COMPID, s_computer_id, sizeof(s_computer_id));
-#if CONFIG_HARDWARE_CORE2
+#if CONFIG_CORE2_HW
     nvs_read_str(NVS_KEY_VOICE_CONV, s_voice_conv_id, sizeof(s_voice_conv_id));
+#endif
+#if CONFIG_HARDWARE_CORE2
     /* Start the config HTTP server so the STT API key (and WiFi networks) can
      * be configured at http://<device-ip>/ even when the device is already
      * paired.  The "pair code" section shows "-----" when not actively pairing. */
@@ -6099,11 +6115,13 @@ void picture_frame_run(void)
         if (nvs_read_u8(NVS_KEY_VOLUME, &volume)) {
             s_mp3.volume = (int)volume;
         }
-#if CONFIG_HARDWARE_CORE2
+#if CONFIG_CORE2_HW
         uint8_t visualizer = 0;
         if (nvs_read_u8(NVS_KEY_VISUALIZER, &visualizer)) {
             s_mp3.visualizer = (visualizer != 0);
         }
+#endif
+#if CONFIG_HARDWARE_CORE2
         uint8_t sleep_min = 0;
         if (nvs_read_u8(NVS_KEY_SLEEP_MIN, &sleep_min)) {
             s_sleep_timeout_s = (uint32_t)sleep_min * 60u;
@@ -6244,7 +6262,7 @@ void picture_frame_run(void)
         vTaskDelay(pdMS_TO_TICKS(1500));
     }
 
-#if CONFIG_HARDWARE_CORE2
+#if CONFIG_CORE2_HW
     /* Log and configure AXP192 power rails for SK6812 LED bar.
      * M5Core2 Axp.begin() enables EXTEN (bit 6, 5V boost) and LDO3.
      * Our screen init leaves EXTEN and LDO3 in their boot defaults; enable
@@ -6444,6 +6462,7 @@ void picture_frame_run(void)
             }
 
 #if CONFIG_HARDWARE_CORE2
+#if CONFIG_CORE2_HW
             if (s_pending_vibrate) {
                 s_pending_vibrate = false;
                 uint8_t vib_reg = 0;
@@ -6463,6 +6482,7 @@ void picture_frame_run(void)
                 s_pending_speak = false;
                 core2_tts_speak(s_pending_speak_text);
             }
+#endif
 
 #if CONFIG_BT_ENABLED && CONFIG_BT_A2DP_ENABLE
             if (s_avrc_pending_play_pause) {
@@ -6484,13 +6504,16 @@ void picture_frame_run(void)
                     }
                 }
             }
+#if CONFIG_CORE2_HW
             if (s_avrc_pending_voice) {
                 s_avrc_pending_voice = false;
                 ESP_LOGI(TAG, "avrc: long press → voice query (Core2 mic)");
                 do_core2_voice_query();
             }
 #endif
+#endif
 
+#if CONFIG_CORE2_HW
             {
                 /* Poll IMU every 2 s; reset idle timer on motion so the device
                  * stays awake while being held or moved. */
@@ -6503,6 +6526,7 @@ void picture_frame_run(void)
                     }
                 }
             }
+#endif
 
             if (s_sleep_timeout_s > 0 &&
                 !(s_mp3.active && !s_mp3.paused) &&
