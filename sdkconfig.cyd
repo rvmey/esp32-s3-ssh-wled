@@ -51,8 +51,11 @@ CONFIG_ESP_TLS_SKIP_SERVER_CERT_VERIFY=y
 CONFIG_MBEDTLS_SSL_IN_CONTENT_LEN=16384
 CONFIG_MBEDTLS_SSL_OUT_CONTENT_LEN=4096
 
-# Allocate mbedTLS buffers from SPIRAM to protect internal SRAM headroom.
-CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y
+# NOTE: do NOT enable CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC on this board. It
+# forces all mbedTLS allocations to use MALLOC_CAP_SPIRAM, which always
+# fails on boards with no PSRAM (psa_crypto_init() then aborts cpu_start
+# with "init function ... has failed (0xffffffff)"). mbedTLS buffers fall
+# back to internal SRAM instead.
 
 # Conservative watchdog and CPU settings matching existing ESP32 Core2 profile
 CONFIG_ESP_INT_WDT_TIMEOUT_MS=2000
