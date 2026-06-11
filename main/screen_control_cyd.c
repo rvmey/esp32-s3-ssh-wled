@@ -44,34 +44,26 @@ static const char *TAG = "screen_cyd";
 #define LCD_RST      CONFIG_CYD_LCD_RST_GPIO
 #define BL_GPIO      CONFIG_CYD_BACKLIGHT_GPIO
 
-/*
- * Logical dimensions in the default (landscape) orientation — used for
- * lcd_w()/lcd_h(), touch coordinate scaling, and text layout.
- */
-#define LCD_PHYS_W   320   /* logical width  in landscape orientation */
-#define LCD_PHYS_H   240   /* logical height in landscape orientation */
-#define LCD_MAX_DIM  320   /* longest logical dimension, for row-buf  */
+#define LCD_PHYS_W   320   /* panel physical width  (native landscape) */
+#define LCD_PHYS_H   240   /* panel physical height (native landscape) */
+#define LCD_MAX_DIM  320   /* longest physical dimension, for row-buf   */
 
 /*
- * This is a 240x320-native ILI9341 panel (the common ESP32-2432S028R
- * "CYD" panel), NOT a 320x240-native ILI9342C like M5Core2. The
- * controller's CASET/RASET address ranges are always 0-239 / 0-319
- * regardless of MADCTL, so the GRAM window and row buffer below are
- * sized 240x320 ("native"); the desired 320x240 landscape presentation
- * is produced by rotating logical (x,y) coordinates onto native
- * (column,row) coordinates in software (see native_to_logical()).
- * Sending CASET up to 319 (the old, ILI9342C-shaped assumption) is out
- * of range for this controller and produced a corrupted split-screen
- * image (left ~quarter noisy, right ~three-quarters blank/white).
+ * MADCTL value for native landscape orientation (MV=1, BGR=1).
+ *
+ * This is a 240x320-native ILI9341 panel (the common ESP32-2432S028R "CYD"
+ * panel). On ILI9341, the CASET/RASET valid ranges depend on the MV (row/
+ * column exchange) bit: with MV=0, CASET max=239 and RASET max=319; with
+ * MV=1 the axes swap, so CASET max=319 and RASET max=239. The 320x240
+ * landscape window below (ili_set_window(0,0,LCD_PHYS_W-1,LCD_PHYS_H-1) =
+ * CASET(0,319)/RASET(0,239)) is only valid with MV=1. The previous value
+ * 0x08 (MV=0) made CASET(0,319) out of range, corrupting GRAM addressing
+ * (split black/noise-left, white-right screen).
+ *
+ * If colours appear swapped (red <-> blue), clear the BGR bit (0x28->0x20).
+ * If the image is mirrored/flipped, try adding MX (0x68) or MY (0xA8).
  */
-#define LCD_NATIVE_W 240   /* native CASET range: columns 0..239 */
-#define LCD_NATIVE_H 320   /* native RASET range: rows    0..319 */
-
-/*
- * Base MADCTL value (BGR, no axis exchange/mirroring).
- * If colours appear swapped (red ↔ blue), clear the BGR bit (0x08→0x00).
- */
-#define MADCTL_VALUE  0x08
+#define MADCTL_LANDSCAPE  0x28   /* MV (row/col exchange) + BGR */
 
 /* ------------------------------------------------------------------ */
 /* Module state                                                        */
@@ -92,26 +84,9 @@ static screen_touch_handler_t s_touch_handler = NULL;
 static spi_device_handle_t s_touch_spi = NULL;
 static bool s_touch_i2c_ready = false;
 
-/* Logical width/height — NOTE: landscape is the default orientation */
+/* Logical width/height — NOTE: landscape is the native/default orientation */
 static inline int lcd_w(void) { return s_landscape ? LCD_PHYS_W : LCD_PHYS_H; }
 static inline int lcd_h(void) { return s_landscape ? LCD_PHYS_H : LCD_PHYS_W; }
-
-/*
- * Map a native GRAM (column, row) — column in [0,LCD_NATIVE_W), row in
- * [0,LCD_NATIVE_H) — to logical (x, y) pixel coordinates as returned by
- * lcd_w()/lcd_h(). Landscape (320x240 logical) is a 90-degree rotation of
- * the 240x320-native GRAM; portrait (240x320 logical) is the identity.
- */
-static inline void native_to_logical(int ncol, int nrow, int *lx, int *ly)
-{
-    if (s_landscape) {
-        *lx = nrow;
-        *ly = ncol;
-    } else {
-        *lx = ncol;
-        *ly = nrow;
-    }
-}
 
 static inline void touch_raw_to_logical(int raw_x, int raw_y,
                                         int *logical_x, int *logical_y)
@@ -125,7 +100,7 @@ static inline void touch_raw_to_logical(int raw_x, int raw_y,
     }
 }
 
-/* Row buffer — one native GRAM row = LCD_NATIVE_W × 2 bytes */
+/* Row buffer — one physical row = 320 × 2 bytes */
 static uint8_t s_row_buf[LCD_MAX_DIM * 2];
 
 static inline void cyd_backlight_set(bool on)
@@ -203,11 +178,11 @@ static void ili_set_window(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1)
     ili_cmd(0x2C);                        /* RAMWR */
 }
 
-/* Write one native GRAM row of `npixels` pixels (already in s_row_buf) */
-static void ili_write_row(int npixels)
+/* Write one physical row of LCD_PHYS_W pixels (already in s_row_buf) */
+static void ili_write_row(void)
 {
     spi_transaction_t t = {
-        .length    = (size_t)npixels * 2 * 8,
+        .length    = (size_t)LCD_PHYS_W * 2 * 8,
         .tx_buffer = s_row_buf,
         .user      = (void *)1,   /* DC = 1 */
     };
@@ -228,14 +203,14 @@ static void screen_fill(uint8_t r, uint8_t g, uint8_t b)
     uint8_t ph = (uint8_t)(px >> 8);
     uint8_t pl = (uint8_t)(px & 0xFF);
 
-    for (int i = 0; i < LCD_NATIVE_W * 2; i += 2) {
+    for (int i = 0; i < LCD_PHYS_W * 2; i += 2) {
         s_row_buf[i]     = ph;
         s_row_buf[i + 1] = pl;
     }
 
-    ili_set_window(0, 0, LCD_NATIVE_W - 1, LCD_NATIVE_H - 1);
-    for (int y = 0; y < LCD_NATIVE_H; y++) {
-        ili_write_row(LCD_NATIVE_W);
+    ili_set_window(0, 0, LCD_PHYS_W - 1, LCD_PHYS_H - 1);
+    for (int y = 0; y < LCD_PHYS_H; y++) {
+        ili_write_row();
         screen_full_redraw_yield(y);
     }
 
@@ -669,7 +644,7 @@ esp_err_t screen_init(void)
     ili_cmd(0x38);                              /* IDMOFF (idle off) */
 
     ili_cmd(0x3A); ili_data_byte(0x55);         /* COLMOD: RGB565    */
-    ili_cmd(0x36); ili_data_byte(MADCTL_VALUE);     /* MADCTL        */
+    ili_cmd(0x36); ili_data_byte(MADCTL_LANDSCAPE); /* MADCTL        */
     ili_cmd(0x21);                              /* INVERT_ON         */
 
     ili_cmd(0x29);                              /* DISPLAY_ON        */
@@ -911,27 +886,33 @@ void screen_draw_text(const char *text)
 
     int logical_w = lcd_w();
 
-    ili_set_window(0, 0, LCD_NATIVE_W - 1, LCD_NATIVE_H - 1);
-    for (int nrow = 0; nrow < LCD_NATIVE_H; nrow++) {
-        for (int i = 0; i < LCD_NATIVE_W * 2; i += 2) {
+    ili_set_window(0, 0, LCD_PHYS_W - 1, LCD_PHYS_H - 1);
+    for (int y = 0; y < LCD_PHYS_H; y++) {
+        for (int i = 0; i < LCD_PHYS_W * 2; i += 2) {
             s_row_buf[i]     = bg_h;
             s_row_buf[i + 1] = bg_l;
         }
 
-        for (int ncol = 0; ncol < LCD_NATIVE_W; ncol++) {
+        for (int x = 0; x < LCD_PHYS_W; x++) {
             int lx, ly;
-            native_to_logical(ncol, nrow, &lx, &ly);
+            if (s_landscape) {
+                lx = x;
+                ly = y;
+            } else {
+                lx = (LCD_PHYS_H - 1) - y;
+                ly = x;
+            }
 
             if (text_pixel_is_fg(lx, ly,
                     (const char (*)[TEXT_COLS_MAX + 1])&all_lines[first],
                     &all_len[first], num_visible, logical_w, start_y)) {
-                s_row_buf[ncol * 2]     = fg_h;
-                s_row_buf[ncol * 2 + 1] = fg_l;
+                s_row_buf[x * 2]     = fg_h;
+                s_row_buf[x * 2 + 1] = fg_l;
             }
         }
 
-        ili_write_row(LCD_NATIVE_W);
-        screen_full_redraw_yield(nrow);
+        ili_write_row();
+        screen_full_redraw_yield(y);
     }
 
     ESP_LOGI(TAG, "screen_draw_text: done");
@@ -987,7 +968,7 @@ void screen_reinit_display(void)
     { uint8_t d[] = {0x08, 0x82, 0x1D, 0x04}; ili_cmd(0xB6); ili_data(d, sizeof(d)); } /* DFUNCTR */
     ili_cmd(0x38);                              /* IDMOFF            */
     ili_cmd(0x3A); ili_data_byte(0x55);         /* COLMD: RGB565     */
-    ili_cmd(0x36); ili_data_byte(MADCTL_VALUE);      /* MADCTL (rotation is software-applied) */
+    ili_cmd(0x36); ili_data_byte(MADCTL_LANDSCAPE);  /* MADCTL (portrait is software-rotated) */
     ili_cmd(0x21);                              /* INVERT_ON         */
     ili_cmd(0x29);                              /* DISPLAY_ON        */
     xSemaphoreGive(s_draw_mutex);
@@ -1024,16 +1005,22 @@ void screen_draw_rgb565(const uint8_t *rgb565, int src_w, int src_h)
 
     const uint16_t *src = (const uint16_t *)rgb565;
 
-    ili_set_window(0, 0, LCD_NATIVE_W - 1, LCD_NATIVE_H - 1);
-    for (int nrow = 0; nrow < LCD_NATIVE_H; nrow++) {
-        for (int i = 0; i < LCD_NATIVE_W * 2; i += 2) {
+    ili_set_window(0, 0, LCD_PHYS_W - 1, LCD_PHYS_H - 1);
+    for (int y = 0; y < LCD_PHYS_H; y++) {
+        for (int i = 0; i < LCD_PHYS_W * 2; i += 2) {
             s_row_buf[i]     = bg_h;
             s_row_buf[i + 1] = bg_l;
         }
 
-        for (int ncol = 0; ncol < LCD_NATIVE_W; ncol++) {
+        for (int x = 0; x < LCD_PHYS_W; x++) {
             int lx, ly;
-            native_to_logical(ncol, nrow, &lx, &ly);
+            if (s_landscape) {
+                lx = x;
+                ly = y;
+            } else {
+                lx = (LCD_PHYS_H - 1) - y;
+                ly = x;
+            }
 
             if (lx < img_x0 || lx >= img_x0 + img_w ||
                 ly < img_y0 || ly >= img_y0 + img_h) {
@@ -1043,12 +1030,12 @@ void screen_draw_rgb565(const uint8_t *rgb565, int src_w, int src_h)
             int src_col = ((lx - img_x0) * src_w) / img_w;
             int src_row = ((ly - img_y0) * src_h) / img_h;
             uint16_t pixel = src[src_row * src_w + src_col];
-            s_row_buf[ncol * 2]     = (uint8_t)(pixel >> 8);
-            s_row_buf[ncol * 2 + 1] = (uint8_t)(pixel & 0xFF);
+            s_row_buf[x * 2]     = (uint8_t)(pixel >> 8);
+            s_row_buf[x * 2 + 1] = (uint8_t)(pixel & 0xFF);
         }
 
-        ili_write_row(LCD_NATIVE_W);
-        screen_full_redraw_yield(nrow);
+        ili_write_row();
+        screen_full_redraw_yield(y);
     }
 
     xSemaphoreGive(s_draw_mutex);
