@@ -8,9 +8,13 @@ CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
 # WebSocket receive buffer (must hold a full Socket.IO frame + overhead)
 CONFIG_WS_BUFFER_SIZE=8192
 
-# Common ESP32 WROVER-style memory setup for CYD-class boards
+# Common ESP32 WROVER-style memory setup for CYD-class boards.
+# Many ESP32-2432S028R boards have no PSRAM chip at all (PSRAM ID read
+# returns 0xffffffff), which aborts cpu_start and boot-loops unless we
+# allow booting without external RAM.
 CONFIG_SPIRAM=y
 CONFIG_SPIRAM_USE_MALLOC=y
+CONFIG_SPIRAM_IGNORE_NOTFOUND=y
 
 # Flash size commonly used by ESP32-2432S028R boards
 CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
