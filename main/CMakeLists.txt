@@ -36,6 +36,10 @@ elseif(CONFIG_HARDWARE_CORE2 OR CONFIG_HARDWARE_CYD)
         "picture_frame.c"
         "socketio.c"
         "http_pf_config.c")
+    if(CONFIG_HARDWARE_CYD)
+        list(REMOVE_ITEM VARIANT_SRCS "screen_control_core2.c")
+        list(APPEND VARIANT_SRCS "screen_control_cyd.c")
+    endif()
 else()
     set(VARIANT_SRCS "led_control.c")
 endif()
