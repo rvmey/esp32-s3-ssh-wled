@@ -19,7 +19,7 @@
 
 .PARAMETER Variant
     One or more variant names to build (devkitc, jc3248w535, bike_tracker,
-    picture_frame).  Defaults to all variants.  Examples:
+    picture_frame, core2, cyd).  Defaults to all variants.  Examples:
         .\build.ps1 -Variant devkitc
         .\build.ps1 -Variant devkitc, jc3248w535
 #>
@@ -99,6 +99,16 @@ $variants = @(
         PartitionBin  = 'partition-table-esp32.bin'
         OutputBin = 'esp32_core2_picture_frame.bin'
         Target    = 'esp32'          # classic ESP32-D0WDQ6-V3, not ESP32-S3
+    },
+    [PSCustomObject]@{
+        Name      = 'cyd'
+        Config    = 'sdkconfig.cyd'
+        BuildDir  = 'build_cyd'
+        Chip      = 'esp32'
+        BootloaderBin = 'bootloader-esp32.bin'
+        PartitionBin  = 'partition-table-esp32.bin'
+        OutputBin = 'esp32_cyd_picture_frame.bin'
+        Target    = 'esp32'          # ESP32-2432S028R (classic ESP32)
     }
 )
 
@@ -221,6 +231,11 @@ function Update-StableAliasPinning([PSCustomObject]$variant) {
             $aliasManifest = 'manifest-core2.json'
             $pinnedManifest = "manifest-core2-$($script:AppVersion).json"
             $appStem = 'esp32_core2_picture_frame'
+        }
+        'cyd' {
+            $aliasManifest = 'manifest-cyd.json'
+            $pinnedManifest = "manifest-cyd-$($script:AppVersion).json"
+            $appStem = 'esp32_cyd_picture_frame'
         }
         default {
             return

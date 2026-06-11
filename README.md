@@ -11,6 +11,7 @@ variant that matches your board.
 | [Picture Frame](Picture-Frame-TRIGGERcmd-Display.md) | Guition JC3248W535 | TRIGGERcmd Display |
 | [ATOM Echo](ATOM-Echo-TRIGGERcmd-Voice.md) | M5Stack ATOM Echo | TRIGGERcmd pairing + button-triggered voice commands |
 | [AtomS3 Lite](AtomS3-Lite-TRIGGERcmd-RGB-LED.md) | M5Stack AtomS3 Lite | TRIGGERcmd RGB LED control + bookmark URL button |
+| [TRIGGERcmd CYD](TRIGGERcmd-CYD-Display.md) | ESP32-2432S028R (Cheap Yellow Display) | TRIGGERcmd Display (Core2-compatible profile) |
 
 ---
 
