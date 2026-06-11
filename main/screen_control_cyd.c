@@ -658,7 +658,9 @@ esp_err_t screen_init(void)
 
     ili_cmd(0x3A); ili_data_byte(0x55);         /* COLMOD: RGB565    */
     ili_cmd(0x36); ili_data_byte(MADCTL_LANDSCAPE); /* MADCTL        */
-    ili_cmd(0x21);                              /* INVERT_ON         */
+    /* No INVERT_ON (0x21): this true ILI9341 panel renders inverted
+     * colours (black bg/white text shows as white bg/black text) when
+     * inversion is enabled, so leave it at its post-reset default. */
 
     ili_cmd(0x29);                              /* DISPLAY_ON        */
     vTaskDelay(pdMS_TO_TICKS(20));
@@ -959,7 +961,7 @@ void screen_reinit_display(void)
     ili9341_send_extended_init();
     ili_cmd(0x3A); ili_data_byte(0x55);         /* COLMOD: RGB565    */
     ili_cmd(0x36); ili_data_byte(MADCTL_LANDSCAPE);  /* MADCTL (portrait is software-rotated) */
-    ili_cmd(0x21);                              /* INVERT_ON         */
+    /* No INVERT_ON (0x21) — see screen_init() for why. */
     ili_cmd(0x29);                              /* DISPLAY_ON        */
     xSemaphoreGive(s_draw_mutex);
     cyd_backlight_set(true);
