@@ -38,17 +38,24 @@ CONFIG_BTDM_CTRL_MODE_BR_EDR_ONLY=y
 # CONFIG_BTDM_CTRL_MODE_BLE_ONLY is not set
 # CONFIG_BTDM_CTRL_MODE_BTDM is not set
 
-# TLS — full CA bundle (includes root for triggercmd.com)
+# TLS — CA bundle. Use the smaller "common" bundle (not FULL) on this
+# no-PSRAM board: the full ~200-cert bundle costs extra internal SRAM at
+# init time, and that plus the default 16KB SSL input buffer was enough to
+# make mbedtls_ssl_setup() fail with -0x008D (PSA_ERROR_INSUFFICIENT_MEMORY)
+# during the /pair HTTPS request. CMN still covers triggercmd.com's CA.
 CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
-CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_FULL=y
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_CMN=y
 CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_CROSS_SIGNED_VERIFY=y
 
 # TLS diagnostic mode for websocket attempt 4 (no-verify path)
 CONFIG_ESP_TLS_INSECURE=y
 CONFIG_ESP_TLS_SKIP_SERVER_CERT_VERIFY=y
 
-# Increase heap for TLS + HTTP client + JPEG decode buffers
-CONFIG_MBEDTLS_SSL_IN_CONTENT_LEN=16384
+# Reduced from the 16KB/4KB Core2 (PSRAM) defaults — on this board mbedTLS
+# buffers come out of internal SRAM (see CONFIG_MBEDTLS_INTERNAL_MEM_ALLOC
+# note below), and the 16KB IN buffer was the main contributor to the
+# mbedtls_ssl_setup() allocation failure above.
+CONFIG_MBEDTLS_SSL_IN_CONTENT_LEN=8192
 CONFIG_MBEDTLS_SSL_OUT_CONTENT_LEN=4096
 
 # NOTE: do NOT enable CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC on this board. It
