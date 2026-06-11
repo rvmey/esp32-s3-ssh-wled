@@ -18,6 +18,7 @@
 #include "sdkconfig.h"
 #include "driver/spi_master.h"
 #include "driver/gpio.h"
+#include "driver/i2c.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -70,10 +71,24 @@ static int               s_scroll_total = 0;
 
 static SemaphoreHandle_t s_draw_mutex   = NULL;
 static screen_touch_handler_t s_touch_handler = NULL;
+static spi_device_handle_t s_touch_spi = NULL;
+static bool s_touch_i2c_ready = false;
 
 /* Logical width/height — NOTE: landscape is the native/default orientation */
 static inline int lcd_w(void) { return s_landscape ? LCD_PHYS_W : LCD_PHYS_H; }
 static inline int lcd_h(void) { return s_landscape ? LCD_PHYS_H : LCD_PHYS_W; }
+
+static inline void touch_raw_to_logical(int raw_x, int raw_y,
+                                        int *logical_x, int *logical_y)
+{
+    if (s_landscape) {
+        *logical_x = raw_x;
+        *logical_y = raw_y;
+    } else {
+        *logical_x = (LCD_PHYS_H - 1) - raw_y;
+        *logical_y = raw_x;
+    }
+}
 
 /* Row buffer — one physical row = 320 × 2 bytes */
 static uint8_t s_row_buf[LCD_MAX_DIM * 2];
@@ -86,6 +101,13 @@ static inline void cyd_backlight_set(bool on)
 #else
     gpio_set_level(BL_GPIO, on ? 0 : 1);
 #endif
+}
+
+static int clamp_i(int v, int lo, int hi)
+{
+    if (v < lo) return lo;
+    if (v > hi) return hi;
+    return v;
 }
 
 static inline void screen_full_redraw_yield(int row)
@@ -340,6 +362,183 @@ static void apply_scroll_abs(int target)
     screen_draw_text(NULL);  /* redraw at new scroll position without resetting it */
 }
 
+static bool touch_read_point_physical(int *raw_x, int *raw_y)
+{
+#if CONFIG_CYD_TOUCH_XPT2046
+    if (!s_touch_spi) return false;
+
+    uint8_t tx_x[3] = { 0xD0, 0x00, 0x00 };
+    uint8_t tx_y[3] = { 0x90, 0x00, 0x00 };
+    uint8_t rx_x[3] = { 0 };
+    uint8_t rx_y[3] = { 0 };
+
+    xSemaphoreTake(s_draw_mutex, portMAX_DELAY);
+
+    spi_transaction_t t1 = {
+        .length    = 24,
+        .tx_buffer = tx_x,
+        .rx_buffer = rx_x,
+    };
+    if (spi_device_polling_transmit(s_touch_spi, &t1) != ESP_OK) {
+        xSemaphoreGive(s_draw_mutex);
+        return false;
+    }
+
+    spi_transaction_t t2 = {
+        .length    = 24,
+        .tx_buffer = tx_y,
+        .rx_buffer = rx_y,
+    };
+    if (spi_device_polling_transmit(s_touch_spi, &t2) != ESP_OK) {
+        xSemaphoreGive(s_draw_mutex);
+        return false;
+    }
+
+    xSemaphoreGive(s_draw_mutex);
+
+    int x = ((int)rx_x[1] << 8 | rx_x[2]) >> 3;
+    int y = ((int)rx_y[1] << 8 | rx_y[2]) >> 3;
+    if (x <= 0 || y <= 0) return false;
+
+#if CONFIG_CYD_XPT2046_SWAP_XY
+    int t = x;
+    x = y;
+    y = t;
+#endif
+
+#if CONFIG_CYD_XPT2046_INVERT_X
+    x = CONFIG_CYD_XPT2046_X_MAX - (x - CONFIG_CYD_XPT2046_X_MIN);
+#endif
+#if CONFIG_CYD_XPT2046_INVERT_Y
+    y = CONFIG_CYD_XPT2046_Y_MAX - (y - CONFIG_CYD_XPT2046_Y_MIN);
+#endif
+
+    int x_den = CONFIG_CYD_XPT2046_X_MAX - CONFIG_CYD_XPT2046_X_MIN;
+    int y_den = CONFIG_CYD_XPT2046_Y_MAX - CONFIG_CYD_XPT2046_Y_MIN;
+    if (x_den < 10 || y_den < 10) return false;
+
+    int sx = ((x - CONFIG_CYD_XPT2046_X_MIN) * (LCD_PHYS_W - 1)) / x_den;
+    int sy = ((y - CONFIG_CYD_XPT2046_Y_MIN) * (LCD_PHYS_H - 1)) / y_den;
+
+    *raw_x = clamp_i(sx, 0, LCD_PHYS_W - 1);
+    *raw_y = clamp_i(sy, 0, LCD_PHYS_H - 1);
+    return true;
+#elif CONFIG_CYD_TOUCH_CST816
+    if (!s_touch_i2c_ready) return false;
+
+    uint8_t reg = 0x01;
+    uint8_t buf[6] = {0};
+    esp_err_t err = i2c_master_write_read_device(
+        I2C_NUM_0,
+        CONFIG_CYD_CST816_I2C_ADDR,
+        &reg,
+        1,
+        buf,
+        sizeof(buf),
+        pdMS_TO_TICKS(20)
+    );
+    if (err != ESP_OK) return false;
+
+    int points = buf[1] & 0x0F;
+    if (points <= 0) return false;
+
+    int x = ((buf[2] & 0x0F) << 8) | buf[3];
+    int y = ((buf[4] & 0x0F) << 8) | buf[5];
+
+    *raw_x = clamp_i(x, 0, LCD_PHYS_W - 1);
+    *raw_y = clamp_i(y, 0, LCD_PHYS_H - 1);
+    return true;
+#else
+    (void)raw_x;
+    (void)raw_y;
+    return false;
+#endif
+}
+
+static void touch_poll_task(void *arg)
+{
+    (void)arg;
+
+    bool touching = false;
+    int start_scroll = 0;
+    int start_v = 0;
+    int start_lx = 0;
+    int start_ly = 0;
+    int last_lx = 0;
+    int last_ly = 0;
+    bool scroll_consumed = false;
+
+    for (;;) {
+        vTaskDelay(pdMS_TO_TICKS(CONFIG_CYD_TOUCH_POLL_MS));
+
+        int raw_x = 0;
+        int raw_y = 0;
+        bool have = touch_read_point_physical(&raw_x, &raw_y);
+
+        int lx = 0;
+        int ly = 0;
+        if (have) {
+            touch_raw_to_logical(raw_x, raw_y, &lx, &ly);
+        }
+
+        int raw_v = s_landscape ? raw_y : raw_x;
+        int sign = -1;
+
+        if (have && !touching) {
+            touching = true;
+            start_scroll = s_scroll_line;
+            start_v = raw_v;
+            start_lx = lx;
+            start_ly = ly;
+            last_lx = lx;
+            last_ly = ly;
+            scroll_consumed = false;
+        } else if (have) {
+            int row_h = 16 * s_font_scale;
+            if (row_h == 0) continue;
+
+            int delta_lines = sign * (raw_v - start_v) / row_h;
+            if (delta_lines != 0) {
+                scroll_consumed = true;
+                apply_scroll_abs(start_scroll + delta_lines);
+            }
+            last_lx = lx;
+            last_ly = ly;
+        } else if (touching) {
+            if (s_touch_handler) {
+                int dx = last_lx - start_lx;
+                int dy = last_ly - start_ly;
+                int abs_dx = dx < 0 ? -dx : dx;
+                int abs_dy = dy < 0 ? -dy : dy;
+
+                if (abs_dx <= CONFIG_CYD_TOUCH_TAP_THRESHOLD &&
+                    abs_dy <= CONFIG_CYD_TOUCH_TAP_THRESHOLD) {
+                    if (!scroll_consumed) {
+                        (void)s_touch_handler(last_lx, last_ly, SCREEN_GESTURE_TAP);
+                    }
+                } else {
+                    screen_gesture_t g;
+                    bool vertical;
+
+                    if (abs_dx >= abs_dy) {
+                        g = (dx > 0) ? SCREEN_GESTURE_SWIPE_RIGHT : SCREEN_GESTURE_SWIPE_LEFT;
+                        vertical = false;
+                    } else {
+                        g = (dy > 0) ? SCREEN_GESTURE_SWIPE_DOWN : SCREEN_GESTURE_SWIPE_UP;
+                        vertical = true;
+                    }
+
+                    if (!vertical || !text_is_scrollable() ||
+                        (abs_dx >= CONFIG_CYD_TOUCH_SWIPE_THRESHOLD || abs_dy >= CONFIG_CYD_TOUCH_SWIPE_THRESHOLD)) {
+                        (void)s_touch_handler(last_lx, last_ly, g);
+                    }
+                }
+            }
+            touching = false;
+        }
+    }
+}
+
 /* ------------------------------------------------------------------ */
 /* Public API                                                          */
 /* ------------------------------------------------------------------ */
@@ -444,6 +643,50 @@ esp_err_t screen_init(void)
 
     ESP_LOGI(TAG, "ILI9342C ready (%d x %d @ %d MHz SPI)",
              lcd_w(), lcd_h(), LCD_CLK_HZ / 1000000);
+
+#if CONFIG_CYD_TOUCH_XPT2046
+    if (CONFIG_CYD_XPT2046_CS_GPIO >= 0) {
+        spi_device_interface_config_t tdev = {
+            .clock_speed_hz = CONFIG_CYD_XPT2046_CLK_HZ,
+            .mode           = 0,
+            .spics_io_num   = CONFIG_CYD_XPT2046_CS_GPIO,
+            .queue_size     = 1,
+        };
+        esp_err_t terr = spi_bus_add_device(LCD_HOST, &tdev, &s_touch_spi);
+        if (terr == ESP_OK) {
+            ESP_LOGI(TAG, "XPT2046 touch enabled (CS=%d)", CONFIG_CYD_XPT2046_CS_GPIO);
+            xTaskCreate(touch_poll_task, "cyd_touch", 3072, NULL, 4, NULL);
+        } else {
+            ESP_LOGW(TAG, "XPT2046 init failed: %s", esp_err_to_name(terr));
+        }
+    }
+#elif CONFIG_CYD_TOUCH_CST816
+    if (CONFIG_CYD_CST816_I2C_SDA_GPIO >= 0 && CONFIG_CYD_CST816_I2C_SCL_GPIO >= 0) {
+        i2c_config_t i2c_cfg = {
+            .mode = I2C_MODE_MASTER,
+            .sda_io_num = CONFIG_CYD_CST816_I2C_SDA_GPIO,
+            .scl_io_num = CONFIG_CYD_CST816_I2C_SCL_GPIO,
+            .sda_pullup_en = GPIO_PULLUP_ENABLE,
+            .scl_pullup_en = GPIO_PULLUP_ENABLE,
+            .master.clk_speed = 400000,
+        };
+        esp_err_t ierr = i2c_param_config(I2C_NUM_0, &i2c_cfg);
+        if (ierr == ESP_OK) {
+            ierr = i2c_driver_install(I2C_NUM_0, I2C_MODE_MASTER, 0, 0, 0);
+            if (ierr == ESP_ERR_INVALID_STATE) ierr = ESP_OK;
+        }
+        if (ierr == ESP_OK) {
+            s_touch_i2c_ready = true;
+            ESP_LOGI(TAG, "CST816 touch enabled (SDA=%d SCL=%d addr=0x%02X)",
+                     CONFIG_CYD_CST816_I2C_SDA_GPIO,
+                     CONFIG_CYD_CST816_I2C_SCL_GPIO,
+                     CONFIG_CYD_CST816_I2C_ADDR);
+            xTaskCreate(touch_poll_task, "cyd_touch", 3072, NULL, 4, NULL);
+        } else {
+            ESP_LOGW(TAG, "CST816 init failed: %s", esp_err_to_name(ierr));
+        }
+    }
+#endif
 
     return ESP_OK;
 }

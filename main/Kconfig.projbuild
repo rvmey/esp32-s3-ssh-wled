@@ -178,6 +178,20 @@ menu "ESP32 SSH LED Configuration"
     menu "CYD Settings"
         depends on HARDWARE_CYD
 
+        choice CYD_TOUCH_CONTROLLER
+            prompt "Touch controller"
+            default CYD_TOUCH_NONE
+
+            config CYD_TOUCH_NONE
+                bool "None"
+
+            config CYD_TOUCH_XPT2046
+                bool "XPT2046 (SPI resistive)"
+
+            config CYD_TOUCH_CST816
+                bool "CST816 (I2C capacitive)"
+        endchoice
+
         config CYD_LCD_MOSI_GPIO
             int "LCD MOSI GPIO"
             default 13
@@ -216,6 +230,89 @@ menu "ESP32 SSH LED Configuration"
         config CYD_BACKLIGHT_ACTIVE_HIGH
             bool "Backlight active HIGH"
             default y
+
+        config CYD_TOUCH_POLL_MS
+            int "Touch poll interval (ms)"
+            default 20
+            range 5 100
+
+        config CYD_TOUCH_SWIPE_THRESHOLD
+            int "Swipe threshold (pixels)"
+            default 20
+            range 4 120
+
+        config CYD_TOUCH_TAP_THRESHOLD
+            int "Tap threshold (pixels)"
+            default 12
+            range 2 60
+
+        config CYD_XPT2046_CS_GPIO
+            int "XPT2046 CS GPIO"
+            default 33
+            range -1 48
+            depends on CYD_TOUCH_XPT2046
+
+        config CYD_XPT2046_CLK_HZ
+            int "XPT2046 SPI clock (Hz)"
+            default 2000000
+            range 100000 4000000
+            depends on CYD_TOUCH_XPT2046
+
+        config CYD_XPT2046_X_MIN
+            int "XPT2046 raw X min"
+            default 200
+            range 0 4095
+            depends on CYD_TOUCH_XPT2046
+
+        config CYD_XPT2046_X_MAX
+            int "XPT2046 raw X max"
+            default 3900
+            range 0 4095
+            depends on CYD_TOUCH_XPT2046
+
+        config CYD_XPT2046_Y_MIN
+            int "XPT2046 raw Y min"
+            default 200
+            range 0 4095
+            depends on CYD_TOUCH_XPT2046
+
+        config CYD_XPT2046_Y_MAX
+            int "XPT2046 raw Y max"
+            default 3900
+            range 0 4095
+            depends on CYD_TOUCH_XPT2046
+
+        config CYD_XPT2046_SWAP_XY
+            bool "XPT2046 swap X and Y"
+            default y
+            depends on CYD_TOUCH_XPT2046
+
+        config CYD_XPT2046_INVERT_X
+            bool "XPT2046 invert X"
+            default n
+            depends on CYD_TOUCH_XPT2046
+
+        config CYD_XPT2046_INVERT_Y
+            bool "XPT2046 invert Y"
+            default n
+            depends on CYD_TOUCH_XPT2046
+
+        config CYD_CST816_I2C_SDA_GPIO
+            int "CST816 SDA GPIO"
+            default 32
+            range -1 48
+            depends on CYD_TOUCH_CST816
+
+        config CYD_CST816_I2C_SCL_GPIO
+            int "CST816 SCL GPIO"
+            default 33
+            range -1 48
+            depends on CYD_TOUCH_CST816
+
+        config CYD_CST816_I2C_ADDR
+            hex "CST816 I2C address"
+            default 0x15
+            depends on CYD_TOUCH_CST816
     endmenu
 
     config WIFI_SSID

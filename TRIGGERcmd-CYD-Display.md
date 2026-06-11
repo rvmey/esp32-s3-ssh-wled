@@ -31,3 +31,7 @@ Output firmware path:
 - CYD board-to-board wiring can vary by vendor. Use menuconfig under
   ESP32 SSH LED Configuration -> CYD Settings to adjust LCD SPI pins,
   optional LCD reset pin, and backlight GPIO polarity.
+- Touch is optional and configurable in CYD Settings:
+  - None
+  - XPT2046 (SPI resistive)
+  - CST816 (I2C capacitive)
