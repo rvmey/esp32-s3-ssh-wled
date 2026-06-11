@@ -175,6 +175,49 @@ menu "ESP32 SSH LED Configuration"
                 on GPIO 39) wakes the device.  Set to 0 to disable auto-sleep.
     endmenu
 
+    menu "CYD Settings"
+        depends on HARDWARE_CYD
+
+        config CYD_LCD_MOSI_GPIO
+            int "LCD MOSI GPIO"
+            default 13
+            range -1 48
+
+        config CYD_LCD_MISO_GPIO
+            int "LCD MISO GPIO (-1 if unused)"
+            default -1
+            range -1 48
+
+        config CYD_LCD_SCLK_GPIO
+            int "LCD SCLK GPIO"
+            default 14
+            range -1 48
+
+        config CYD_LCD_CS_GPIO
+            int "LCD CS GPIO"
+            default 15
+            range -1 48
+
+        config CYD_LCD_DC_GPIO
+            int "LCD DC GPIO"
+            default 2
+            range -1 48
+
+        config CYD_LCD_RST_GPIO
+            int "LCD reset GPIO (-1 = no dedicated reset pin)"
+            default -1
+            range -1 48
+
+        config CYD_BACKLIGHT_GPIO
+            int "Backlight GPIO (-1 = unmanaged)"
+            default 21
+            range -1 48
+
+        config CYD_BACKLIGHT_ACTIVE_HIGH
+            bool "Backlight active HIGH"
+            default y
+    endmenu
+
     config WIFI_SSID
         string "WiFi SSID"
         default "MyWifi"

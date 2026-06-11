@@ -15,6 +15,7 @@
 
 #include "screen_control.h"
 
+#include "sdkconfig.h"
 #include "driver/spi_master.h"
 #include "driver/gpio.h"
 #include "esp_log.h"
@@ -34,11 +35,13 @@ static const char *TAG = "screen_cyd";
 /* ESP32 SPI master on this setup rejects >26.666MHz for the LCD device. */
 #define LCD_CLK_HZ   (26 * 1000 * 1000)
 
-#define LCD_MOSI     13
-#define LCD_MISO     -1
-#define LCD_CLK      14
-#define LCD_CS       15
-#define LCD_DC        2
+#define LCD_MOSI     CONFIG_CYD_LCD_MOSI_GPIO
+#define LCD_MISO     CONFIG_CYD_LCD_MISO_GPIO
+#define LCD_CLK      CONFIG_CYD_LCD_SCLK_GPIO
+#define LCD_CS       CONFIG_CYD_LCD_CS_GPIO
+#define LCD_DC       CONFIG_CYD_LCD_DC_GPIO
+#define LCD_RST      CONFIG_CYD_LCD_RST_GPIO
+#define BL_GPIO      CONFIG_CYD_BACKLIGHT_GPIO
 
 #define LCD_PHYS_W   320   /* panel physical width  (native landscape) */
 #define LCD_PHYS_H   240   /* panel physical height (native landscape) */
@@ -74,6 +77,16 @@ static inline int lcd_h(void) { return s_landscape ? LCD_PHYS_H : LCD_PHYS_W; }
 
 /* Row buffer — one physical row = 320 × 2 bytes */
 static uint8_t s_row_buf[LCD_MAX_DIM * 2];
+
+static inline void cyd_backlight_set(bool on)
+{
+    if (BL_GPIO < 0) return;
+#if CONFIG_CYD_BACKLIGHT_ACTIVE_HIGH
+    gpio_set_level(BL_GPIO, on ? 1 : 0);
+#else
+    gpio_set_level(BL_GPIO, on ? 0 : 1);
+#endif
+}
 
 static inline void screen_full_redraw_yield(int row)
 {
@@ -335,6 +348,15 @@ esp_err_t screen_init(void)
 {
     s_draw_mutex = xSemaphoreCreateMutex();
 
+    if (BL_GPIO >= 0) {
+        gpio_config_t bl_cfg = {
+            .pin_bit_mask = BIT64(BL_GPIO),
+            .mode         = GPIO_MODE_OUTPUT,
+        };
+        gpio_config(&bl_cfg);
+        cyd_backlight_set(false);
+    }
+
     /* ── DC pin (GPIO output) ────────────────────────────────────────── */
     gpio_config_t dc_cfg = {
         .pin_bit_mask = BIT64(LCD_DC),
@@ -342,6 +364,18 @@ esp_err_t screen_init(void)
     };
     gpio_config(&dc_cfg);
     gpio_set_level(LCD_DC, 1);
+
+    if (LCD_RST >= 0) {
+        gpio_config_t rst_cfg = {
+            .pin_bit_mask = BIT64(LCD_RST),
+            .mode         = GPIO_MODE_OUTPUT,
+        };
+        gpio_config(&rst_cfg);
+        gpio_set_level(LCD_RST, 0);
+        vTaskDelay(pdMS_TO_TICKS(20));
+        gpio_set_level(LCD_RST, 1);
+        vTaskDelay(pdMS_TO_TICKS(50));
+    }
 
     /* ── SPI bus ─────────────────────────────────────────────────────── */
     spi_bus_config_t bus = {
@@ -406,6 +440,7 @@ esp_err_t screen_init(void)
     vTaskDelay(pdMS_TO_TICKS(20));
 
     screen_off();   /* clear GRAM before backlight is visible */
+    cyd_backlight_set(true);
 
     ESP_LOGI(TAG, "ILI9342C ready (%d x %d @ %d MHz SPI)",
              lcd_w(), lcd_h(), LCD_CLK_HZ / 1000000);
@@ -429,8 +464,7 @@ void screen_off(void)
 
 void screen_backlight_off(void)
 {
-    /* CYD backlight control is board-dependent; keep this as a no-op until
-     * a dedicated backlight GPIO policy is configured. */
+    cyd_backlight_set(false);
 }
 
 void screen_get_color(uint8_t *r, uint8_t *g, uint8_t *b)
@@ -635,6 +669,13 @@ void screen_reinit_display(void)
     /* Re-send the display init sequence without PMU reset control. */
     ESP_LOGI(TAG, "screen_reinit_display: re-initializing CYD SPI panel");
 
+    if (LCD_RST >= 0) {
+        gpio_set_level(LCD_RST, 0);
+        vTaskDelay(pdMS_TO_TICKS(20));
+        gpio_set_level(LCD_RST, 1);
+        vTaskDelay(pdMS_TO_TICKS(50));
+    }
+
     xSemaphoreTake(s_draw_mutex, portMAX_DELAY);
 
     ili_cmd(0x01);                              /* SW_RESET          */
@@ -676,6 +717,7 @@ void screen_reinit_display(void)
     ili_cmd(0x21);                              /* INVERT_ON         */
     ili_cmd(0x29);                              /* DISPLAY_ON        */
     xSemaphoreGive(s_draw_mutex);
+    cyd_backlight_set(true);
 
     ESP_LOGI(TAG, "screen_reinit_display: done");
 }

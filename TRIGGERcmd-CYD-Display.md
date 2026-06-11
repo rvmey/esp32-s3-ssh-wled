@@ -28,5 +28,6 @@ Output firmware path:
 
 - This is a new board profile that currently follows the Core2 runtime feature
   set for parity.
-- CYD board-to-board wiring can vary by vendor; if your panel, touch, or audio
-  wiring differs, board-specific driver tuning may be needed in a follow-up.
+- CYD board-to-board wiring can vary by vendor. Use menuconfig under
+  ESP32 SSH LED Configuration -> CYD Settings to adjust LCD SPI pins,
+  optional LCD reset pin, and backlight GPIO polarity.
