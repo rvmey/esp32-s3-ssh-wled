@@ -25,12 +25,12 @@
 #include "tcmd_atom_echo.h"
 #elif CONFIG_HARDWARE_ATOMS3_LITE
 #include "tcmd_atoms3_lite.h"
-#elif CONFIG_HARDWARE_CORE2
+#elif CONFIG_HARDWARE_CORE2 || CONFIG_HARDWARE_CYD
 #include "picture_frame.h"
 #include "screen_control.h"
 #endif
 
-#define APP_VERSION "2.0.390"
+#define APP_VERSION "2.0.391"
 const char g_firmware_version[] = APP_VERSION;
 
 static const char *TAG = "main";
@@ -48,7 +48,7 @@ static inline void hw_init(void)
     screen_init();
 #elif CONFIG_HARDWARE_TCMD_ATOM_ECHO
     /* no-op: tcmd_atom_echo_run() manages its own peripherals */
-#elif CONFIG_HARDWARE_CORE2
+#elif CONFIG_HARDWARE_CORE2 || CONFIG_HARDWARE_CYD
     screen_init();
 #endif
 }
@@ -65,7 +65,7 @@ static inline void hw_set_color(uint8_t r, uint8_t g, uint8_t b)
     screen_set_color(r, g, b);
 #elif CONFIG_HARDWARE_TCMD_ATOM_ECHO
     (void)r; (void)g; (void)b;
-#elif CONFIG_HARDWARE_CORE2
+#elif CONFIG_HARDWARE_CORE2 || CONFIG_HARDWARE_CYD
     screen_set_color(r, g, b);
 #endif
 }
@@ -82,7 +82,7 @@ static inline void hw_off(void)
     screen_off();
 #elif CONFIG_HARDWARE_TCMD_ATOM_ECHO
     /* no-op */
-#elif CONFIG_HARDWARE_CORE2
+#elif CONFIG_HARDWARE_CORE2 || CONFIG_HARDWARE_CYD
     screen_off();
 #endif
 }
@@ -118,7 +118,7 @@ void app_main(void)
      * This call never returns. */
     tcmd_atoms3_lite_run();
     return;
-#elif CONFIG_HARDWARE_CORE2
+#elif CONFIG_HARDWARE_CORE2 || CONFIG_HARDWARE_CYD
     /* Core2 picture frame manages its own WiFi / Socket.IO loop.
      * This call never returns. */
     picture_frame_run();

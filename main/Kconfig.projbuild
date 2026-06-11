@@ -27,6 +27,9 @@ menu "ESP32 SSH LED Configuration"
 
         config HARDWARE_CORE2
             bool "TRIGGERcmd Core2 Display (M5Stack Core2 for AWS, ILI9342C 320x240 SPI)"
+
+        config HARDWARE_CYD
+            bool "TRIGGERcmd CYD Display (ESP32-2432S028R, Core2-compatible profile)"
     endchoice
 
 
@@ -160,7 +163,7 @@ menu "ESP32 SSH LED Configuration"
     endmenu
 
     menu "Core2 Settings"
-        depends on HARDWARE_CORE2
+        depends on HARDWARE_CORE2 || HARDWARE_CYD
 
         config CORE2_SLEEP_TIMEOUT_S
             int "Deep-sleep idle timeout (seconds; 0 = disabled)"

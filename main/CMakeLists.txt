@@ -26,7 +26,7 @@ elseif(CONFIG_HARDWARE_ATOMS3_LITE)
         "tcmd_atoms3_lite.c"
         "atoms3_led.c"
         "socketio.c")
-elseif(CONFIG_HARDWARE_CORE2)
+elseif(CONFIG_HARDWARE_CORE2 OR CONFIG_HARDWARE_CYD)
     set(VARIANT_SRCS
         "screen_control_core2.c"
         "core2_audio.c"
@@ -42,7 +42,8 @@ endif()
 
 # SSH/HTTP server sources are not needed for bike-tracker, picture-frame, atom-echo, or atoms3-lite
 if(NOT CONFIG_HARDWARE_BIKE_TRACKER AND NOT CONFIG_HARDWARE_PICTURE_FRAME
-   AND NOT CONFIG_HARDWARE_TCMD_ATOM_ECHO AND NOT CONFIG_HARDWARE_CORE2
+    AND NOT CONFIG_HARDWARE_TCMD_ATOM_ECHO AND NOT CONFIG_HARDWARE_CORE2
+    AND NOT CONFIG_HARDWARE_CYD
    AND NOT CONFIG_HARDWARE_ATOMS3_LITE)
     set(SSH_SRCS "ssh_server.c" "http_config.c")
 else()
@@ -51,7 +52,7 @@ endif()
 
 # improv_wifi uses driver/usb_serial_jtag.h which is ESP32-S3 only;
 # ATOM Echo, Core2, and AtomS3 Lite handle their own provisioning via SoftAP.
-if(CONFIG_HARDWARE_TCMD_ATOM_ECHO OR CONFIG_HARDWARE_CORE2 OR CONFIG_HARDWARE_ATOMS3_LITE)
+if(CONFIG_HARDWARE_TCMD_ATOM_ECHO OR CONFIG_HARDWARE_CORE2 OR CONFIG_HARDWARE_CYD OR CONFIG_HARDWARE_ATOMS3_LITE)
     set(IMPROV_SRCS "")
 else()
     set(IMPROV_SRCS "improv_wifi.c")
@@ -75,3 +76,11 @@ idf_component_register(
 target_compile_definitions(__idf_main PRIVATE
     WOLFSSL_USER_SETTINGS
 )
+
+# CYD intentionally reuses the Core2 runtime path for command parity while
+# keeping a distinct Kconfig variant symbol and build profile.
+if(CONFIG_HARDWARE_CYD)
+    target_compile_definitions(__idf_main PRIVATE
+        CONFIG_HARDWARE_CORE2=1
+    )
+endif()

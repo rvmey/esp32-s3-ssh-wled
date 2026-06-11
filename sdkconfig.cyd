@@ -1,5 +1,5 @@
 # Hardware variant: TRIGGERcmd CYD (ESP32-2432S028R), using Core2-compatible display profile
-CONFIG_HARDWARE_CORE2=y
+CONFIG_HARDWARE_CYD=y
 
 # Console: UART0 (classic ESP32)
 CONFIG_ESP_CONSOLE_UART_DEFAULT=y
