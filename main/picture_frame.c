@@ -4409,9 +4409,16 @@ static int https_get_simple(const char *url, char **body)
     esp_http_client_handle_t client = esp_http_client_init(&cfg);
     if (!client) return -1;
 
+    ESP_LOGI(TAG, "https_get_simple: heap before connect: free=%u largest=%u",
+             (unsigned int)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+             (unsigned int)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
+
     esp_err_t ret = esp_http_client_open(client, 0);
     if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "https_get_simple open failed: %s", esp_err_to_name(ret));
+        ESP_LOGE(TAG, "https_get_simple open failed: %s (heap free=%u largest=%u)",
+                 esp_err_to_name(ret),
+                 (unsigned int)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+                 (unsigned int)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
         esp_http_client_cleanup(client);
         return -1;
     }
