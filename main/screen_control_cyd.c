@@ -189,6 +189,43 @@ static void ili_write_row(void)
     ESP_ERROR_CHECK(spi_device_polling_transmit(s_spi, &t));
 }
 
+/*
+ * Standard ILI9341 power/gamma init sequence (Adafruit_ILI9341-style),
+ * sent between SLEEP_OUT and COLMOD/MADCTL/DISPLAY_ON.
+ *
+ * The previous sequence opened with 0xC8/{0xFF,0x93,0x42} (SETEXTC), an
+ * ILI9342C-specific "extended command" unlock, followed by ILI9342C-format
+ * 0xB0/0xF6 registers and packed gamma tables. On this board's true ILI9341
+ * controller, 0xC8 is not a recognized command and corrupted the rest of
+ * the init sequence regardless of MADCTL, producing an all-white screen.
+ */
+static void ili9341_send_extended_init(void)
+{
+    { uint8_t d[] = {0x03, 0x80, 0x02};             ili_cmd(0xEF); ili_data(d, sizeof(d)); }
+    { uint8_t d[] = {0x00, 0xC1, 0x30};             ili_cmd(0xCF); ili_data(d, sizeof(d)); }
+    { uint8_t d[] = {0x64, 0x03, 0x12, 0x81};       ili_cmd(0xED); ili_data(d, sizeof(d)); }
+    { uint8_t d[] = {0x85, 0x00, 0x78};             ili_cmd(0xE8); ili_data(d, sizeof(d)); }
+    { uint8_t d[] = {0x39, 0x2C, 0x00, 0x34, 0x02}; ili_cmd(0xCB); ili_data(d, sizeof(d)); }
+    { uint8_t d[] = {0x20};                         ili_cmd(0xF7); ili_data(d, sizeof(d)); }
+    { uint8_t d[] = {0x00, 0x00};                   ili_cmd(0xEA); ili_data(d, sizeof(d)); }
+    { uint8_t d[] = {0x23};                         ili_cmd(0xC0); ili_data(d, sizeof(d)); } /* PWCTR1  */
+    { uint8_t d[] = {0x10};                         ili_cmd(0xC1); ili_data(d, sizeof(d)); } /* PWCTR2  */
+    { uint8_t d[] = {0x3E, 0x28};                   ili_cmd(0xC5); ili_data(d, sizeof(d)); } /* VMCTR1  */
+    { uint8_t d[] = {0x86};                         ili_cmd(0xC7); ili_data(d, sizeof(d)); } /* VMCTR2  */
+    { uint8_t d[] = {0x00, 0x18};                   ili_cmd(0xB1); ili_data(d, sizeof(d)); } /* FRMCTR1 */
+    { uint8_t d[] = {0x08, 0x82, 0x27};             ili_cmd(0xB6); ili_data(d, sizeof(d)); } /* DFUNCTR */
+    { uint8_t d[] = {0x00};                         ili_cmd(0xF2); ili_data(d, sizeof(d)); } /* 3GAMMA off */
+    ili_cmd(0x26); ili_data_byte(0x01);                                                       /* GAMMA SET */
+    {
+        uint8_t d[] = {0x0F,0x31,0x2B,0x0C,0x0E,0x08,0x4E,0xF1,0x37,0x07,0x10,0x03,0x0E,0x09,0x00};
+        ili_cmd(0xE0); ili_data(d, sizeof(d)); /* GMCTRP1 */
+    }
+    {
+        uint8_t d[] = {0x00,0x0E,0x14,0x03,0x11,0x07,0x31,0xC1,0x48,0x08,0x0F,0x0C,0x31,0x36,0x0F};
+        ili_cmd(0xE1); ili_data(d, sizeof(d)); /* GMCTRN1 */
+    }
+}
+
 /* ------------------------------------------------------------------ */
 /* Internal fill                                                       */
 /* ------------------------------------------------------------------ */
@@ -617,31 +654,7 @@ esp_err_t screen_init(void)
     ili_cmd(0x11);                              /* SLEEP_OUT         */
     vTaskDelay(pdMS_TO_TICKS(120));
 
-    /* ILI9342C extended init sequence (matches known-good Core2 panel bring-up). */
-    { uint8_t d[] = {0xFF, 0x93, 0x42}; ili_cmd(0xC8); ili_data(d, sizeof(d)); } /* SETEXTC */
-    { uint8_t d[] = {0x12, 0x12};       ili_cmd(0xC0); ili_data(d, sizeof(d)); } /* PWCTR1  */
-    { uint8_t d[] = {0x03};             ili_cmd(0xC1); ili_data(d, sizeof(d)); } /* PWCTR2  */
-    { uint8_t d[] = {0xF2};             ili_cmd(0xC5); ili_data(d, sizeof(d)); } /* VMCTR1  */
-    { uint8_t d[] = {0xE0};             ili_cmd(0xB0); ili_data(d, sizeof(d)); }
-    { uint8_t d[] = {0x01, 0x00, 0x00}; ili_cmd(0xF6); ili_data(d, sizeof(d)); }
-    {
-        uint8_t d[] = {
-            0x00, 0x0C, 0x11, 0x04, 0x11,
-            0x08, 0x37, 0x89, 0x4C, 0x06,
-            0x0C, 0x0A, 0x2E, 0x34, 0x0F
-        };
-        ili_cmd(0xE0); ili_data(d, sizeof(d)); /* GMCTRP1 */
-    }
-    {
-        uint8_t d[] = {
-            0x00, 0x0B, 0x11, 0x05, 0x13,
-            0x09, 0x33, 0x67, 0x48, 0x07,
-            0x0E, 0x0B, 0x2E, 0x33, 0x0F
-        };
-        ili_cmd(0xE1); ili_data(d, sizeof(d)); /* GMCTRN1 */
-    }
-    { uint8_t d[] = {0x08, 0x82, 0x1D, 0x04}; ili_cmd(0xB6); ili_data(d, sizeof(d)); } /* DFUNCTR */
-    ili_cmd(0x38);                              /* IDMOFF (idle off) */
+    ili9341_send_extended_init();
 
     ili_cmd(0x3A); ili_data_byte(0x55);         /* COLMOD: RGB565    */
     ili_cmd(0x36); ili_data_byte(MADCTL_LANDSCAPE); /* MADCTL        */
@@ -943,31 +956,8 @@ void screen_reinit_display(void)
     vTaskDelay(pdMS_TO_TICKS(120));
 
     xSemaphoreTake(s_draw_mutex, portMAX_DELAY);
-    { uint8_t d[] = {0xFF, 0x93, 0x42}; ili_cmd(0xC8); ili_data(d, sizeof(d)); } /* SETEXTC */
-    { uint8_t d[] = {0x12, 0x12};       ili_cmd(0xC0); ili_data(d, sizeof(d)); } /* PWCTR1  */
-    { uint8_t d[] = {0x03};             ili_cmd(0xC1); ili_data(d, sizeof(d)); } /* PWCTR2  */
-    { uint8_t d[] = {0xF2};             ili_cmd(0xC5); ili_data(d, sizeof(d)); } /* VMCTR1  */
-    { uint8_t d[] = {0xE0};             ili_cmd(0xB0); ili_data(d, sizeof(d)); }
-    { uint8_t d[] = {0x01, 0x00, 0x00}; ili_cmd(0xF6); ili_data(d, sizeof(d)); }
-    {
-        uint8_t d[] = {
-            0x00, 0x0C, 0x11, 0x04, 0x11,
-            0x08, 0x37, 0x89, 0x4C, 0x06,
-            0x0C, 0x0A, 0x2E, 0x34, 0x0F
-        };
-        ili_cmd(0xE0); ili_data(d, sizeof(d)); /* GMCTRP1 */
-    }
-    {
-        uint8_t d[] = {
-            0x00, 0x0B, 0x11, 0x05, 0x13,
-            0x09, 0x33, 0x67, 0x48, 0x07,
-            0x0E, 0x0B, 0x2E, 0x33, 0x0F
-        };
-        ili_cmd(0xE1); ili_data(d, sizeof(d)); /* GMCTRN1 */
-    }
-    { uint8_t d[] = {0x08, 0x82, 0x1D, 0x04}; ili_cmd(0xB6); ili_data(d, sizeof(d)); } /* DFUNCTR */
-    ili_cmd(0x38);                              /* IDMOFF            */
-    ili_cmd(0x3A); ili_data_byte(0x55);         /* COLMD: RGB565     */
+    ili9341_send_extended_init();
+    ili_cmd(0x3A); ili_data_byte(0x55);         /* COLMOD: RGB565    */
     ili_cmd(0x36); ili_data_byte(MADCTL_LANDSCAPE);  /* MADCTL (portrait is software-rotated) */
     ili_cmd(0x21);                              /* INVERT_ON         */
     ili_cmd(0x29);                              /* DISPLAY_ON        */

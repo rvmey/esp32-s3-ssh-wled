@@ -265,7 +265,6 @@ static void pf_softap_provision(void)
 #include "core2_leds.h"
 #include "socketio.h"
 #include "http_pf_config.h"
-#include "triggercmd_ca.h"   /* embedded Go Daddy Root G2 cert for triggercmd.com */
 #include "jpeg_decoder.h"
 #include "esp_heap_caps.h"
 #include "esp_vfs_fat.h"
@@ -3870,6 +3869,28 @@ static bool mount_sd_card_if_needed(void)
     gpio_set_drive_capability(GPIO_NUM_4, GPIO_DRIVE_CAP_3);
     gpio_set_drive_capability(GPIO_NUM_18, GPIO_DRIVE_CAP_3);
     gpio_set_drive_capability(GPIO_NUM_23, GPIO_DRIVE_CAP_3);
+#elif CONFIG_HARDWARE_CYD
+    /* CYD (ESP32-2432S028R): onboard microSD slot is on its own SPI bus
+     * (SPI2/HSPI), separate from the LCD's SPI3. Pins per the common
+     * ESP32-2432S028R schematic: MOSI=23, MISO=19, SCLK=18, CS=5. */
+    gpio_set_direction(GPIO_NUM_5, GPIO_MODE_OUTPUT);
+    gpio_set_level(GPIO_NUM_5, 1);
+    {
+        spi_bus_config_t sd_bus = {
+            .mosi_io_num   = GPIO_NUM_23,
+            .miso_io_num   = GPIO_NUM_19,
+            .sclk_io_num   = GPIO_NUM_18,
+            .quadwp_io_num = GPIO_NUM_NC,
+            .quadhd_io_num = GPIO_NUM_NC,
+            .max_transfer_sz = 4096,
+        };
+        esp_err_t bus_err = spi_bus_initialize(SPI2_HOST, &sd_bus, SPI_DMA_CH_AUTO);
+        if (bus_err != ESP_OK && bus_err != ESP_ERR_INVALID_STATE) {
+            ESP_LOGE(TAG, "sd: SPI2 init failed: %s", esp_err_to_name(bus_err));
+            if (spi_locked) screen_spi_unlock();
+            return false;
+        }
+    }
 #else
     /* JC3248W535: built-in TF slot on dedicated SPI3 pins (schematic SD_Car block).
      * SPI3 is not used by the LCD (which is on SPI2), so initialize it here. */
@@ -3900,7 +3921,11 @@ static bool mount_sd_card_if_needed(void)
         .allocation_unit_size = 16 * 1024,
     };
 
+#if CONFIG_HARDWARE_CYD
+    const spi_host_device_t host_candidates[] = {SPI2_HOST};
+#else
     const spi_host_device_t host_candidates[] = {SPI3_HOST};
+#endif
     const int freq_candidates_khz[] = {4000, 1000, 400, 200};
     esp_err_t err = ESP_FAIL;
 #if CONFIG_HARDWARE_CORE2
@@ -3927,6 +3952,8 @@ static bool mount_sd_card_if_needed(void)
             slot_config.host_id = host_candidates[h];
 #if CONFIG_HARDWARE_CORE2
             slot_config.gpio_cs = GPIO_NUM_4;
+#elif CONFIG_HARDWARE_CYD
+            slot_config.gpio_cs = GPIO_NUM_5;  /* CYD TF_CS */
 #else
             slot_config.gpio_cs = GPIO_NUM_10;  /* JC3248W535 TF_CS */
 #endif
@@ -4219,10 +4246,13 @@ static int https_get_auth(const char *url, const char *token, char **body)
         .method   = HTTP_METHOD_GET,
         .timeout_ms = 15000,
     };
-    /* TLS: embedded GoDaddy cert for prod; crt_bundle for other HTTPS; plain HTTP needs nothing */
-    if (strstr(TCMD_BASE_URL, "triggercmd.com")) {
-        cfg.cert_pem = TRIGGERCMD_CA_PEM;
-    } else if (strncmp(TCMD_BASE_URL, "https://", 8) == 0) {
+    /* TLS: skip server cert verification for triggercmd.com — avoids the
+     * mbedtls_x509_crt_parse heap cost of loading a CA cert on no-PSRAM
+     * boards (relies on CONFIG_ESP_TLS_SKIP_SERVER_CERT_VERIFY, enabled for
+     * all variants using this file); crt_bundle for other HTTPS hosts;
+     * plain HTTP needs nothing. */
+    if (strncmp(TCMD_BASE_URL, "https://", 8) == 0 &&
+        !strstr(TCMD_BASE_URL, "triggercmd.com")) {
         cfg.crt_bundle_attach = esp_crt_bundle_attach;
     }
 
@@ -4292,9 +4322,8 @@ static int https_post_form(const char *url, const char *token,
         .method     = HTTP_METHOD_POST,
         .timeout_ms = 15000,
     };
-    if (strstr(TCMD_BASE_URL, "triggercmd.com")) {
-        cfg.cert_pem = TRIGGERCMD_CA_PEM;
-    } else if (strncmp(TCMD_BASE_URL, "https://", 8) == 0) {
+    if (strncmp(TCMD_BASE_URL, "https://", 8) == 0 &&
+        !strstr(TCMD_BASE_URL, "triggercmd.com")) {
         cfg.crt_bundle_attach = esp_crt_bundle_attach;
     }
 
@@ -4357,10 +4386,13 @@ static int https_get_simple(const char *url, char **body)
         .method     = HTTP_METHOD_GET,
         .timeout_ms = 15000,
     };
-    /* TLS: embedded GoDaddy cert for prod; crt_bundle for other HTTPS; plain HTTP needs nothing */
-    if (strstr(TCMD_BASE_URL, "triggercmd.com")) {
-        cfg.cert_pem = TRIGGERCMD_CA_PEM;
-    } else if (strncmp(TCMD_BASE_URL, "https://", 8) == 0) {
+    /* TLS: skip server cert verification for triggercmd.com — avoids the
+     * mbedtls_x509_crt_parse heap cost of loading a CA cert on no-PSRAM
+     * boards (relies on CONFIG_ESP_TLS_SKIP_SERVER_CERT_VERIFY, enabled for
+     * all variants using this file); crt_bundle for other HTTPS hosts;
+     * plain HTTP needs nothing. */
+    if (strncmp(TCMD_BASE_URL, "https://", 8) == 0 &&
+        !strstr(TCMD_BASE_URL, "triggercmd.com")) {
         cfg.crt_bundle_attach = esp_crt_bundle_attach;
     }
 
