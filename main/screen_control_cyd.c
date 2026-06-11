@@ -564,7 +564,8 @@ esp_err_t screen_init(void)
     gpio_config(&dc_cfg);
     gpio_set_level(LCD_DC, 1);
 
-    if (LCD_RST >= 0) {
+#if CONFIG_CYD_LCD_RST_GPIO >= 0
+    {
         gpio_config_t rst_cfg = {
             .pin_bit_mask = BIT64(LCD_RST),
             .mode         = GPIO_MODE_OUTPUT,
@@ -575,6 +576,7 @@ esp_err_t screen_init(void)
         gpio_set_level(LCD_RST, 1);
         vTaskDelay(pdMS_TO_TICKS(50));
     }
+#endif
 
     /* ── SPI bus ─────────────────────────────────────────────────────── */
     spi_bus_config_t bus = {

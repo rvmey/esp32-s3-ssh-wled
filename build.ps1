@@ -279,11 +279,11 @@ function Update-StableAliasPinning([PSCustomObject]$variant) {
             1
         )
 
-        if ($index -match ("'" + [regex]::Escape($aliasManifest) + "': '\\d+\\.\\d+\\.\\d+'")) {
+        if ($index -match ("'" + [regex]::Escape($aliasManifest) + "': '\d+\.\d+\.\d+'")) {
             # Replace ALL occurrences (count 0 = unlimited) so stale duplicates are also updated.
             $index = [regex]::Replace(
                 $index,
-                "'" + [regex]::Escape($aliasManifest) + "': '\\d+\\.\\d+\\.\\d+'",
+                "'" + [regex]::Escape($aliasManifest) + "': '\d+\.\d+\.\d+'",
                 "'" + $aliasManifest + "': '" + $script:AppVersion + "'",
                 0
             )
