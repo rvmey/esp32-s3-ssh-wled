@@ -4671,22 +4671,35 @@ typedef struct {
 
 static const pf_cmd_t s_pf_cmds[] = {
     { "text",      "text",      "true",  "Update the display text. Example: 'Hello world!'",           "\xF0\x9F\x93\x9D" /* 📝 */, NULL },
+#if !CONFIG_HARDWARE_CYD
+    /* speak needs the Core2 speaker (TTS) — on the no-PSRAM CYD it would only
+     * echo the text, so it is not registered there. */
     { "speak",     "speak",     "true",  "Speak text aloud via TTS. Example: 'Hello world!'",           "\xF0\x9F\x94\x8A" /* 🔊 */, NULL },
+#endif
     { "color",     "color",     "true",  "Change the display color. Example: 'red' or '#FF0000'", "\xF0\x9F\x94\xA4" /* 🔤 */, NULL },
     { "textcolor", "textcolor", "true",  "Change the text color. Example: 'blue' or '#0000FF'", "\xF0\x9F\x8E\xA8" /* 🎨 */, NULL },
     { "fontsize",  "fontsize",  "true",  "Change the font size (1-4). Example: '3'",                     "\xF0\x9F\x94\xA1" /* 🔡 */, NULL },
     { "landscape", "landscape", "false", "Set the display to landscape orientation.",                        "\xE2\x86\x94\xEF\xB8\x8F" /* ↔️ */, NULL },
     { "portrait",  "portrait",  "false", "Set the display to portrait orientation.",                         "\xE2\x86\x95\xEF\xB8\x8F" /* ↕️ */, NULL },
+#if !CONFIG_HARDWARE_CYD
+    /* Image commands need PSRAM (≈150KB RGB565 decode buffer) and, for web
+     * URLs, a second TLS context — neither is available on the CYD. */
     { "jpeg",      "jpeg",      "true",  "Display a JPEG picture for the user when they say something like, 'Picture of a cat'. Use loremflickr.com by default. If multiple words (Example: cat,dog), use a comma. The command parameter should always be a URL like this: 'https://loremflickr.com/320/240/dog,cat/all' or this if single word: https://loremflickr.com/320/240/dog", "\xF0\x9F\x96\xBC\xEF\xB8\x8F" /* 🖼️ */, NULL },
+#endif
     { "save",      "save",      "false", "Save the screen settings to non-volatile memory.", "\xF0\x9F\x92\xBE" /* 💾 */, NULL },
+#if !CONFIG_HARDWARE_CYD
     { "savepic",   "savepic",   "false", "Save the currently displayed JPEG to the SD card in the 'pictures' folder.", "\xF0\x9F\x93\xB7" /* 📷 */, NULL },
+#endif
     { "folders",   "folders",   "false", "List the folders on the SD card.", "\xF0\x9F\x93\x82" /* 📂 */, "{{result}}" },
     { "files",     "files",     "true",  "List files in a folder on the SD card. Example: 'music'", "\xF0\x9F\x93\x84" /* 📄 */, "{{result}}" },
     { "reboot",    "reboot",    "false", "Reboot the device.", "\xF0\x9F\x94\x81" /* 🔁 */, NULL },
     { "sleeptimer","sleeptimer","true",  "Set minutes of inactivity before the device sleeps (0 = never). Example: '10'", "\xF0\x9F\x98\xB4" /* 😴 */, NULL },
     { "sleep",     "sleep",     "false", "Put the device into deep sleep immediately. Wake by touching the screen.", "\xF0\x9F\x92\xA4" /* 💤 */, NULL },
+#if !CONFIG_HARDWARE_CYD
+    /* battery (AXP192) and listen (microphone) are Core2-only hardware. */
     { "battery",   "battery",   "false", "Get the battery level of the user's Core2 device. Returns level (0-100) and voltage in mV.", "\xF0\x9F\x94\x8B" /* 🔋 */, "{{result}}" },
     { "listen",    "listen",    "false", "Start listening for a voice command on the user's Core2 device (records for 4 seconds then processes as an AI prompt).", "\xF0\x9F\x8E\xA4" /* 🎤 */, NULL },
+#endif
 };
 #define PF_CMD_COUNT  (sizeof(s_pf_cmds) / sizeof(s_pf_cmds[0]))
 
@@ -5026,45 +5039,16 @@ static void sync_all_commands_ws(void)
         return;
     }
 
+    /* CYD registers only the display/system commands (s_pf_cmds, already
+     * trimmed for CONFIG_HARDWARE_CYD). The MP3/Bluetooth media commands
+     * (s_pf_media_cmds), the dynamic MP3-folder commands, and the dynamic
+     * JPEG-folder commands are intentionally NOT registered: this no-PSRAM
+     * board has no working audio path (BT A2DP needs a 256KB PCM ring it
+     * can't allocate) and cannot decode/display images (~150KB RGB565 buffer,
+     * plus web fetch needs a 2nd TLS context). See cyd_commands.json. */
+
     for (size_t i = 0; i < PF_CMD_COUNT; i++) {
         sync_command_ws(&s_pf_cmds[i]);
-        vTaskDelay(pdMS_TO_TICKS(60));
-    }
-
-    for (size_t i = 0; i < PF_MEDIA_CMD_COUNT; i++) {
-        sync_command_ws(&s_pf_media_cmds[i]);
-        vTaskDelay(pdMS_TO_TICKS(60));
-    }
-
-    for (size_t i = 0; i < s_mp3_folder_count; i++) {
-        char desc[320];
-        snprintf(desc, sizeof(desc),
-                 "Play mp3 files in the %s folder. If the parameter is a number from 1 to 100 to specify one of the mp3 files, otherwise, this command will play the first mp3 file, or a random file in the folder if shuffle mode is on.",
-                 s_mp3_folders[i].trigger);
-        pf_cmd_t dyn_cmd = {
-            .trigger = s_mp3_folders[i].trigger,
-            .voice = s_mp3_folders[i].trigger,
-            .allow_params = "true",
-            .mcp_desc = desc,
-            .icon = "\xF0\x9F\x8E\xB6", /* 🎶 */
-        };
-        sync_command_ws(&dyn_cmd);
-        vTaskDelay(pdMS_TO_TICKS(60));
-    }
-
-    for (size_t i = 0; i < s_jpeg_folder_count; i++) {
-        char desc[320];
-        snprintf(desc, sizeof(desc),
-                 "Display jpeg files in the %s folder. If the parameter is a number from 1 to 100, it specifies one of the jpeg files, otherwise, this command will display the first jpeg file.",
-                 s_jpeg_folders[i].trigger);
-        pf_cmd_t dyn_cmd = {
-            .trigger = s_jpeg_folders[i].trigger,
-            .voice = s_jpeg_folders[i].trigger,
-            .allow_params = "true",
-            .mcp_desc = desc,
-            .icon = "\xF0\x9F\x96\xBC\xEF\xB8\x8F", /* 🖼️ */
-        };
-        sync_command_ws(&dyn_cmd);
         vTaskDelay(pdMS_TO_TICKS(60));
     }
 

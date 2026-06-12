@@ -1,0 +1,100 @@
+[
+ {
+  "trigger": "text",
+  "command": "text",
+  "voice": "text",
+  "allowParams": "true",
+  "mcpToolDescription": "Update the display text on the user's CYD device. Example: 'Hello world!'",
+  "icon": "📝"
+ },
+ {
+  "trigger": "color",
+  "command": "color",
+  "voice": "color",
+  "allowParams": "true",
+  "mcpToolDescription": "Change the display background color on the user's CYD device. Example: 'red' or '#FF0000'",
+  "icon": "🔤"
+ },
+ {
+  "trigger": "textcolor",
+  "command": "textcolor",
+  "voice": "textcolor",
+  "allowParams": "true",
+  "mcpToolDescription": "Change the text color on the user's CYD device. Example: 'blue' or '#0000FF'",
+  "icon": "🎨"
+ },
+ {
+  "trigger": "fontsize",
+  "command": "fontsize",
+  "voice": "fontsize",
+  "allowParams": "true",
+  "mcpToolDescription": "Change the font size on the user's CYD device (1-4). Example: '3'",
+  "icon": "🔡"
+ },
+ {
+  "trigger": "landscape",
+  "command": "landscape",
+  "voice": "landscape",
+  "allowParams": "false",
+  "mcpToolDescription": "Set the display to landscape orientation.",
+  "icon": "↔️"
+ },
+ {
+  "trigger": "portrait",
+  "command": "portrait",
+  "voice": "portrait",
+  "allowParams": "false",
+  "mcpToolDescription": "Set the display to portrait orientation.",
+  "icon": "↕️"
+ },
+ {
+  "trigger": "save",
+  "command": "save",
+  "voice": "save",
+  "allowParams": "false",
+  "mcpToolDescription": "Save the screen settings (color, text, orientation, font size) to non-volatile memory.",
+  "icon": "💾"
+ },
+ {
+  "trigger": "folders",
+  "command": "folders",
+  "voice": "folders",
+  "allowParams": "false",
+  "voiceReply": "{{result}}",
+  "mcpToolDescription": "List the folders on the SD card.",
+  "icon": "📂"
+ },
+ {
+  "trigger": "files",
+  "command": "files",
+  "voice": "files",
+  "allowParams": "true",
+  "voiceReply": "{{result}}",
+  "mcpToolDescription": "List files in a folder on the SD card. Example: 'music'",
+  "icon": "📄"
+ },
+ {
+  "trigger": "reboot",
+  "command": "reboot",
+  "voice": "reboot",
+  "allowParams": "false",
+  "mcpToolDescription": "Reboot the device.",
+  "icon": "🔁"
+ },
+ {
+  "trigger": "sleeptimer",
+  "command": "sleeptimer",
+  "voice": "sleeptimer",
+  "allowParams": "true",
+  "mcpToolDescription": "Set minutes of inactivity before the device sleeps (0 = never). Example: '10'",
+  "icon": "😴"
+ },
+ {
+  "trigger": "sleep",
+  "command": "sleep",
+  "voice": "sleep",
+  "allowParams": "false",
+  "mcpToolDescription": "Put the device into deep sleep immediately. Wake by touching the screen.",
+  "icon": "💤"
+ }
+]
