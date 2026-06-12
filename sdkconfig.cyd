@@ -69,8 +69,18 @@ CONFIG_ESP_TLS_SKIP_SERVER_CERT_VERIFY=y
 # parse window. It auto-selects MBEDTLS_ASYMMETRIC_CONTENT_LEN; IN/OUT below
 # act as ceilings, not fixed allocations. FREE_CONFIG_DATA frees key/DHM data
 # after handshake (safe: esp-tls builds a fresh config per connection).
+# v2.0.424: even after the WS connects and subscribes, the FIRST write after
+# being idle re-allocates the dynamic OUT buffer at its full ceiling + TLS
+# record overhead (OUT_CONTENT_LEN=4096 -> alloc(4437)). That single write is
+# just the 1-byte EIO pong ("3") replying to the server's EIO ping ("2"), but
+# by ~20s after connect (mp3/jpeg folder scans, config server start, display
+# restore all having run) the largest contiguous block has dropped below
+# 4437B, so the pong write fails, killing the WS. Our largest outbound
+# payload (socketio_vpost JSON, e.g. computer/save or cmd/save bodies) is
+# well under 1KB, so 2048 (-> ~2389B alloc) is ample headroom for every
+# record we actually send and much more likely to fit a fragmented heap.
 CONFIG_MBEDTLS_SSL_IN_CONTENT_LEN=8192
-CONFIG_MBEDTLS_SSL_OUT_CONTENT_LEN=4096
+CONFIG_MBEDTLS_SSL_OUT_CONTENT_LEN=2048
 CONFIG_MBEDTLS_DYNAMIC_BUFFER=y
 CONFIG_MBEDTLS_DYNAMIC_FREE_CONFIG_DATA=y
 
