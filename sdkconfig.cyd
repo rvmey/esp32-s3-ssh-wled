@@ -136,9 +136,14 @@ CONFIG_ESP32_DEFAULT_CPU_FREQ_240=y
 # pf_enter_deep_sleep_with_touch_wake().
 CONFIG_CYD_TOUCH_XPT2046=y
 
-# v2.0.436: XPT2046 shares the LCD's SPI3 bus; T_DO (MISO) is wired to
-# GPIO12 (the LCD's otherwise-unused MISO line). Set explicitly -- the
-# Kconfig default changed 39 -> 12 in v2.0.435, but a stale value baked
-# into build_cyd/sdkconfig from an earlier build silently overrode the new
-# default, leaving touch reads on the wrong (unconnected) pin.
-CONFIG_CYD_XPT2046_MISO_GPIO=12
+# v2.0.438: XPT2046 is read via bit-banged (software) SPI on its own pins
+# -- MOSI=32, MISO=39, SCLK=25, CS=33 -- since these don't match either the
+# LCD's SPI3 bus (13/-/14/15) or the SD card's SPI2 bus (23/19/18/5), and the
+# ESP32 only has two general-purpose hardware SPI hosts. Set explicitly so a
+# future Kconfig default change can't silently leave a stale value behind
+# (see project_cyd_xpt2046_separate_spi_bus memory for the v2.0.434-437
+# history of this setting).
+CONFIG_CYD_XPT2046_MOSI_GPIO=32
+CONFIG_CYD_XPT2046_MISO_GPIO=39
+CONFIG_CYD_XPT2046_SCLK_GPIO=25
+CONFIG_CYD_XPT2046_CS_GPIO=33

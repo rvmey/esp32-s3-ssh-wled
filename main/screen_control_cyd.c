@@ -6,11 +6,14 @@
  * Core2 implementation.
  *
  * Default wiring used here matches common ESP32-2432S028R layouts:
- *   LCD:   MOSI=GPIO13  SCK=GPIO14  CS=GPIO15  DC=GPIO2
- *   Touch: shares the LCD's MOSI/SCK, MISO=GPIO12, CS=GPIO33 (own CS line,
- *          same SPI bus as the LCD)
- *   SD card (onboard microSD slot) is on its own SPI2/HSPI bus, separate
- *   from this LCD+touch SPI3/VSPI bus.
+ *   LCD:   MOSI=GPIO13  SCK=GPIO14  CS=GPIO15  DC=GPIO2  (SPI3/VSPI, hardware)
+ *   Touch: XPT2046 on its own pins -- MOSI=GPIO32 MISO=GPIO39 SCLK=GPIO25
+ *          CS=GPIO33 -- read via bit-banged (software) SPI, since these pins
+ *          don't match either the LCD's or the SD card's SPI buses and the
+ *          ESP32 only has two general-purpose hardware SPI hosts.
+ *   SD card (onboard microSD slot) is on its own SPI2/HSPI bus
+ *          (MOSI=23/MISO=19/SCLK=18/CS=5), separate from the LCD's SPI3/VSPI
+ *          bus and from touch's bit-banged pins.
  *
  * Orientation:
  *   Landscape 320x240 is the default to mirror Core2 command behavior.
@@ -23,6 +26,7 @@
 #include "driver/gpio.h"
 #include "driver/i2c.h"
 #include "esp_log.h"
+#include "esp_rom_sys.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/semphr.h"
@@ -72,6 +76,13 @@ static const char *TAG = "screen_cyd";
 /* Module state                                                        */
 /* ------------------------------------------------------------------ */
 
+#if CONFIG_CYD_TOUCH_XPT2046
+#define XPT_MOSI CONFIG_CYD_XPT2046_MOSI_GPIO
+#define XPT_MISO CONFIG_CYD_XPT2046_MISO_GPIO
+#define XPT_SCLK CONFIG_CYD_XPT2046_SCLK_GPIO
+#define XPT_CS   CONFIG_CYD_XPT2046_CS_GPIO
+#endif
+
 static spi_device_handle_t s_spi         = NULL;
 static uint8_t             s_r, s_g, s_b;
 static uint8_t             s_fr = 0xFF, s_fg = 0xFF, s_fb = 0xFF;
@@ -84,7 +95,7 @@ static int               s_scroll_total = 0;
 
 static SemaphoreHandle_t s_draw_mutex   = NULL;
 static screen_touch_handler_t s_touch_handler = NULL;
-static spi_device_handle_t s_touch_spi = NULL;
+static bool s_touch_xpt_ready = false;
 static bool s_touch_i2c_ready = false;
 
 /* Logical width/height — NOTE: landscape is the native/default orientation */
@@ -412,42 +423,58 @@ static void apply_scroll_abs(int target)
     screen_draw_text(NULL);  /* redraw at new scroll position without resetting it */
 }
 
+#if CONFIG_CYD_TOUCH_XPT2046
+/* Bit-banged (software) SPI transfer to the XPT2046 touch controller.
+ *
+ * The XPT2046 on common ESP32-2432S028R boards is wired to its own pins,
+ * separate from both the LCD's SPI bus and the onboard SD card's SPI bus --
+ * with only two general-purpose SPI hosts on the ESP32 and both already
+ * taken, touch is read via plain GPIO toggling instead of a hardware SPI
+ * device. Sends an 8-bit command (MSB first) then clocks in 16 bits of
+ * response (MSB first); the 12-bit ADC result is in bits [14:3] of the
+ * response, i.e. (response >> 3).
+ */
+static uint16_t xpt2046_xfer16(uint8_t cmd)
+{
+    uint16_t result = 0;
+
+    gpio_set_level(XPT_CS, 0);
+
+    for (int i = 7; i >= 0; i--) {
+        gpio_set_level(XPT_MOSI, (cmd >> i) & 1);
+        esp_rom_delay_us(2);
+        gpio_set_level(XPT_SCLK, 1);
+        esp_rom_delay_us(2);
+        gpio_set_level(XPT_SCLK, 0);
+    }
+
+    for (int i = 0; i < 16; i++) {
+        esp_rom_delay_us(2);
+        gpio_set_level(XPT_SCLK, 1);
+        esp_rom_delay_us(2);
+        result <<= 1;
+        if (gpio_get_level(XPT_MISO)) result |= 1;
+        gpio_set_level(XPT_SCLK, 0);
+    }
+
+    gpio_set_level(XPT_CS, 1);
+
+    return result;
+}
+#endif
+
 static bool touch_read_point_physical(int *raw_x, int *raw_y)
 {
 #if CONFIG_CYD_TOUCH_XPT2046
-    if (!s_touch_spi) return false;
-
-    uint8_t tx_x[3] = { 0xD0, 0x00, 0x00 };
-    uint8_t tx_y[3] = { 0x90, 0x00, 0x00 };
-    uint8_t rx_x[3] = { 0 };
-    uint8_t rx_y[3] = { 0 };
+    if (!s_touch_xpt_ready) return false;
 
     xSemaphoreTake(s_draw_mutex, portMAX_DELAY);
-
-    spi_transaction_t t1 = {
-        .length    = 24,
-        .tx_buffer = tx_x,
-        .rx_buffer = rx_x,
-    };
-    if (spi_device_polling_transmit(s_touch_spi, &t1) != ESP_OK) {
-        xSemaphoreGive(s_draw_mutex);
-        return false;
-    }
-
-    spi_transaction_t t2 = {
-        .length    = 24,
-        .tx_buffer = tx_y,
-        .rx_buffer = rx_y,
-    };
-    if (spi_device_polling_transmit(s_touch_spi, &t2) != ESP_OK) {
-        xSemaphoreGive(s_draw_mutex);
-        return false;
-    }
-
+    uint16_t rx_x = xpt2046_xfer16(0xD0);
+    uint16_t rx_y = xpt2046_xfer16(0x90);
     xSemaphoreGive(s_draw_mutex);
 
-    int x = ((int)rx_x[1] << 8 | rx_x[2]) >> 3;
-    int y = ((int)rx_y[1] << 8 | rx_y[2]) >> 3;
+    int x = rx_x >> 3;
+    int y = rx_y >> 3;
     if (x <= 0 || y <= 0) return false;
 
 #if CONFIG_CYD_XPT2046_SWAP_XY
@@ -634,18 +661,12 @@ esp_err_t screen_init(void)
 #endif
 
     /* ── SPI bus ─────────────────────────────────────────────────────── */
-    /* The LCD doesn't use MISO (LCD_MISO defaults to -1), but on
-     * ESP32-2432S028R boards the XPT2046 touch controller shares this same
-     * SPI bus (MOSI/SCLK) via its own CS line and needs the bus's MISO pin
-     * wired to its T_DO line. */
-#if CONFIG_CYD_TOUCH_XPT2046
-    int bus_miso = CONFIG_CYD_XPT2046_MISO_GPIO;
-#else
-    int bus_miso = LCD_MISO;
-#endif
+    /* The LCD doesn't use MISO (LCD_MISO defaults to -1). The XPT2046 touch
+     * controller (if enabled) is on its own pins, read via bit-banged GPIO
+     * below -- it does not share this bus. */
     spi_bus_config_t bus = {
         .mosi_io_num   = LCD_MOSI,
-        .miso_io_num   = bus_miso,
+        .miso_io_num   = LCD_MISO,
         .sclk_io_num   = LCD_CLK,
         .quadwp_io_num = -1,
         .quadhd_io_num = -1,
@@ -689,21 +710,25 @@ esp_err_t screen_init(void)
              lcd_w(), lcd_h(), LCD_CLK_HZ / 1000000);
 
 #if CONFIG_CYD_TOUCH_XPT2046
-    if (CONFIG_CYD_XPT2046_CS_GPIO >= 0) {
-        spi_device_interface_config_t tdev = {
-            .clock_speed_hz = CONFIG_CYD_XPT2046_CLK_HZ,
-            .mode           = 0,
-            .spics_io_num   = CONFIG_CYD_XPT2046_CS_GPIO,
-            .queue_size     = 1,
+    if (XPT_CS >= 0 && XPT_MOSI >= 0 && XPT_SCLK >= 0 && XPT_MISO >= 0) {
+        gpio_config_t out_cfg = {
+            .pin_bit_mask = BIT64(XPT_CS) | BIT64(XPT_MOSI) | BIT64(XPT_SCLK),
+            .mode         = GPIO_MODE_OUTPUT,
         };
-        esp_err_t terr = spi_bus_add_device(LCD_HOST, &tdev, &s_touch_spi);
-        if (terr == ESP_OK) {
-            ESP_LOGI(TAG, "XPT2046 touch enabled (shared LCD bus, MISO=%d CS=%d)",
-                     CONFIG_CYD_XPT2046_MISO_GPIO, CONFIG_CYD_XPT2046_CS_GPIO);
-            xTaskCreate(touch_poll_task, "cyd_touch", 3072, NULL, 4, NULL);
-        } else {
-            ESP_LOGW(TAG, "XPT2046 init failed: %s", esp_err_to_name(terr));
-        }
+        gpio_config(&out_cfg);
+        gpio_config_t in_cfg = {
+            .pin_bit_mask = BIT64(XPT_MISO),
+            .mode         = GPIO_MODE_INPUT,
+        };
+        gpio_config(&in_cfg);
+        gpio_set_level(XPT_CS, 1);
+        gpio_set_level(XPT_SCLK, 0);
+        gpio_set_level(XPT_MOSI, 0);
+
+        s_touch_xpt_ready = true;
+        ESP_LOGI(TAG, "XPT2046 touch enabled (bit-banged: MOSI=%d MISO=%d SCLK=%d CS=%d)",
+                 XPT_MOSI, XPT_MISO, XPT_SCLK, XPT_CS);
+        xTaskCreate(touch_poll_task, "cyd_touch", 3072, NULL, 4, NULL);
     }
 #elif CONFIG_CYD_TOUCH_CST816
     if (CONFIG_CYD_CST816_I2C_SDA_GPIO >= 0 && CONFIG_CYD_CST816_I2C_SCL_GPIO >= 0) {
