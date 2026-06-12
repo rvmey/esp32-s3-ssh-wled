@@ -51,11 +51,15 @@ CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_CROSS_SIGNED_VERIFY=y
 CONFIG_ESP_TLS_INSECURE=y
 CONFIG_ESP_TLS_SKIP_SERVER_CERT_VERIFY=y
 
-# Reduced from the 16KB/4KB Core2 (PSRAM) defaults — on this board mbedTLS
-# buffers come out of internal SRAM (see CONFIG_MBEDTLS_INTERNAL_MEM_ALLOC
-# note below), and the 16KB IN buffer was the main contributor to the
-# mbedtls_ssl_setup() allocation failure above.
-CONFIG_MBEDTLS_SSL_IN_CONTENT_LEN=8192
+# IN buffer matches the working Core2 (PSRAM) value. The 8KB IN buffer
+# previously used here (to fix the -0x008D ssl_setup allocation failure)
+# may be too small to hold the full TLS Certificate handshake message from
+# triggercmd.com, leading to a -0x3B00 (MBEDTLS_ERR_PK_INVALID_PUBKEY)
+# failure while parsing the certificate's public key during /pair. Now that
+# CONFIG_CORE2_HW frees enough internal heap on this board (~40KB free,
+# ~26KB largest block at /pair time), 16KB should fit without reintroducing
+# the ssl_setup failure.
+CONFIG_MBEDTLS_SSL_IN_CONTENT_LEN=16384
 CONFIG_MBEDTLS_SSL_OUT_CONTENT_LEN=4096
 
 # NOTE: do NOT enable CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC on this board. It
