@@ -543,6 +543,8 @@ static void touch_poll_task(void *arg)
             last_lx = lx;
             last_ly = ly;
             scroll_consumed = false;
+            ESP_LOGI(TAG, "touch down: raw=(%d,%d) logical=(%d,%d) scrollable=%d",
+                     raw_x, raw_y, lx, ly, (int)text_is_scrollable());
         } else if (have) {
             int row_h = 16 * s_font_scale;
             if (row_h == 0) continue;
@@ -555,12 +557,14 @@ static void touch_poll_task(void *arg)
             last_lx = lx;
             last_ly = ly;
         } else if (touching) {
-            if (s_touch_handler) {
-                int dx = last_lx - start_lx;
-                int dy = last_ly - start_ly;
-                int abs_dx = dx < 0 ? -dx : dx;
-                int abs_dy = dy < 0 ? -dy : dy;
+            int dx = last_lx - start_lx;
+            int dy = last_ly - start_ly;
+            int abs_dx = dx < 0 ? -dx : dx;
+            int abs_dy = dy < 0 ? -dy : dy;
+            ESP_LOGI(TAG, "touch up: delta=(%d,%d) scroll_consumed=%d scroll_line=%d",
+                     dx, dy, (int)scroll_consumed, s_scroll_line);
 
+            if (s_touch_handler) {
                 if (abs_dx <= CONFIG_CYD_TOUCH_TAP_THRESHOLD &&
                     abs_dy <= CONFIG_CYD_TOUCH_TAP_THRESHOLD) {
                     if (!scroll_consumed) {
