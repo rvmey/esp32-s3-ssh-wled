@@ -4409,16 +4409,25 @@ static int https_get_simple(const char *url, char **body)
     esp_http_client_handle_t client = esp_http_client_init(&cfg);
     if (!client) return -1;
 
-    ESP_LOGI(TAG, "https_get_simple: heap before connect: free=%u largest=%u",
+    /* DIAG: mbedtls_calloc (used by MBEDTLS_DYNAMIC_BUFFER) goes through
+     * heap_caps_malloc_default(), which requires MALLOC_CAP_8BIT. On ESP32
+     * (no PSRAM), spare IRAM is added to the MALLOC_CAP_INTERNAL pool as
+     * 32-bit-only memory (no MALLOC_CAP_8BIT) — so the INTERNAL "largest"
+     * figure can look much bigger than what calloc() can actually use.
+     * Log both to see whether that's why alloc(5473) fails despite a large
+     * INTERNAL block. */
+    ESP_LOGI(TAG, "https_get_simple: heap before connect: free=%u largest=%u (8bit largest=%u)",
              (unsigned int)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
-             (unsigned int)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
+             (unsigned int)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
+             (unsigned int)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
 
     esp_err_t ret = esp_http_client_open(client, 0);
     if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "https_get_simple open failed: %s (heap free=%u largest=%u)",
+        ESP_LOGE(TAG, "https_get_simple open failed: %s (heap free=%u largest=%u 8bit largest=%u)",
                  esp_err_to_name(ret),
                  (unsigned int)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
-                 (unsigned int)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
+                 (unsigned int)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
+                 (unsigned int)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
         esp_http_client_cleanup(client);
         return -1;
     }
