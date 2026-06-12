@@ -5102,6 +5102,48 @@ static bool parse_color(const char *s, uint8_t *r, uint8_t *g, uint8_t *b)
     return false;
 }
 
+#if CONFIG_HARDWARE_CORE2
+/* Configure the touch-controller interrupt line as an EXT1 deep-sleep wake
+ * source, then enter deep sleep. On Core2 this is the FT6336U INT (GPIO 39,
+ * active-low, with a PCB pull-up so the internal pulls stay disabled). On
+ * CYD it is the XPT2046 T_IRQ line at CONFIG_CYD_XPT2046_IRQ_GPIO, which is
+ * board-dependent and may have no external pull-up, so the internal pull-up
+ * is enabled there. If no wake GPIO is configured for this board, deep sleep
+ * is entered with no wake source (until reset/power-cycle) rather than risk
+ * an immediate wake from a floating pin. */
+static void pf_enter_deep_sleep_with_touch_wake(void)
+{
+    screen_backlight_off();
+
+#if CONFIG_CORE2_HW
+    gpio_num_t wake_gpio = GPIO_NUM_39;
+    bool enable_internal_pullup = false;
+#elif CONFIG_HARDWARE_CYD && CONFIG_CYD_TOUCH_XPT2046 && CONFIG_CYD_XPT2046_IRQ_GPIO >= 0
+    gpio_num_t wake_gpio = (gpio_num_t)CONFIG_CYD_XPT2046_IRQ_GPIO;
+    bool enable_internal_pullup = true;
+#else
+    gpio_num_t wake_gpio = GPIO_NUM_NC;
+    bool enable_internal_pullup = false;
+#endif
+
+    if (wake_gpio >= 0) {
+        rtc_gpio_init(wake_gpio);
+        rtc_gpio_set_direction(wake_gpio, RTC_GPIO_MODE_INPUT_ONLY);
+        if (enable_internal_pullup) {
+            rtc_gpio_pullup_en(wake_gpio);
+        } else {
+            rtc_gpio_pullup_dis(wake_gpio);
+        }
+        rtc_gpio_pulldown_dis(wake_gpio);
+        esp_sleep_enable_ext1_wakeup(1ULL << wake_gpio, ESP_EXT1_WAKEUP_ALL_LOW);
+    } else {
+        ESP_LOGW(TAG, "No touch-wake GPIO configured -- deep sleep until reset");
+    }
+
+    esp_deep_sleep_start();
+}
+#endif /* CONFIG_HARDWARE_CORE2 */
+
 /* ── Socket.IO event handler ────────────────────────────────────────────── */
 
 static void pf_event_handler(const char *event_name,
@@ -5621,13 +5663,7 @@ static void pf_event_handler(const char *event_name,
 
     } else if (strcmp(s_trigger, "sleep") == 0) {
         ESP_LOGI(TAG, "sleep command — entering deep sleep");
-        screen_backlight_off();
-        rtc_gpio_init(GPIO_NUM_39);
-        rtc_gpio_set_direction(GPIO_NUM_39, RTC_GPIO_MODE_INPUT_ONLY);
-        rtc_gpio_pullup_dis(GPIO_NUM_39);
-        rtc_gpio_pulldown_dis(GPIO_NUM_39);
-        esp_sleep_enable_ext1_wakeup(1ULL << GPIO_NUM_39, ESP_EXT1_WAKEUP_ALL_LOW);
-        esp_deep_sleep_start();
+        pf_enter_deep_sleep_with_touch_wake();
 #endif
 
 #if CONFIG_CORE2_HW
@@ -6792,16 +6828,8 @@ void picture_frame_run(void)
                     pdMS_TO_TICKS(s_sleep_timeout_s * 1000u)) {
                 ESP_LOGI(TAG, "Idle timeout (%d s) — entering deep sleep",
                          CONFIG_CORE2_SLEEP_TIMEOUT_S);
-                screen_backlight_off();
-                /* MPU6886 INT is not wired to the ESP32 on Core2.
-                 * Wake via FT6336U touch INT (GPIO 39, active-low, PCB pull-up). */
-                rtc_gpio_init(GPIO_NUM_39);
-                rtc_gpio_set_direction(GPIO_NUM_39, RTC_GPIO_MODE_INPUT_ONLY);
-                rtc_gpio_pullup_dis(GPIO_NUM_39);
-                rtc_gpio_pulldown_dis(GPIO_NUM_39);
-                esp_sleep_enable_ext1_wakeup(1ULL << GPIO_NUM_39,
-                                             ESP_EXT1_WAKEUP_ALL_LOW);
-                esp_deep_sleep_start();
+                /* MPU6886 INT is not wired to the ESP32 on Core2. */
+                pf_enter_deep_sleep_with_touch_wake();
             }
 #endif
 

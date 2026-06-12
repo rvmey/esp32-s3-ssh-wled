@@ -171,8 +171,10 @@ menu "ESP32 SSH LED Configuration"
             range 0 7200
             help
                 Seconds of inactivity (no touch, no TRIGGERcmd command) before
-                the Core2 enters deep sleep.  Touching the screen (FT6336U INT
-                on GPIO 39) wakes the device.  Set to 0 to disable auto-sleep.
+                the device enters deep sleep.  On Core2, touching the screen
+                (FT6336U INT on GPIO 39) wakes the device.  On CYD, touch-wake
+                uses CONFIG_CYD_XPT2046_IRQ_GPIO above.  Set to 0 to disable
+                auto-sleep.
     endmenu
 
     menu "CYD Settings"
@@ -251,6 +253,20 @@ menu "ESP32 SSH LED Configuration"
             default 33
             range -1 48
             depends on CYD_TOUCH_XPT2046
+
+        config CYD_XPT2046_IRQ_GPIO
+            int "XPT2046 T_IRQ GPIO (-1 = none)"
+            default 36
+            range -1 48
+            depends on CYD_TOUCH_XPT2046
+            help
+                XPT2046 touch-interrupt line, used to wake the device from
+                deep sleep on touch (see "sleep" command and the idle-sleep
+                timeout below). Goes low while the screen is touched. 36 is
+                the common wiring for ESP32-2432S028R boards, but CYD
+                board-to-board wiring varies -- set to -1 if T_IRQ is not
+                connected, which disables touch-wake (deep sleep then lasts
+                until reset/power-cycle).
 
         config CYD_XPT2046_CLK_HZ
             int "XPT2046 SPI clock (Hz)"
