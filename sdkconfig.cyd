@@ -129,3 +129,9 @@ CONFIG_LWIP_TCP_WND_DEFAULT=2880
 CONFIG_ESP_INT_WDT_TIMEOUT_MS=2000
 CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
 CONFIG_ESP32_DEFAULT_CPU_FREQ_240=y
+
+# v2.0.428: XPT2046 resistive touch (standard ESP32-2432S028R wiring:
+# T_CS=GPIO33, T_IRQ=GPIO36). Also lets "sleep" wake on touch via T_IRQ
+# (CONFIG_CYD_XPT2046_IRQ_GPIO, default 36) -- see picture_frame.c
+# pf_enter_deep_sleep_with_touch_wake().
+CONFIG_CYD_TOUCH_XPT2046=y
