@@ -4143,6 +4143,11 @@ static void restore_display_state_from_nvs(void)
 {
     uint8_t saved = 0;
     if (!nvs_read_u8(NVS_KEY_SAVED, &saved) || saved != 1) {
+        /* Nothing saved yet (e.g. right after pairing) — show the idle
+         * status so the screen doesn't stay stuck on "Syncing commands...". */
+        strncpy(s_last_text, "Connected!\nWaiting for\ncommands...", sizeof(s_last_text) - 1);
+        s_last_text[sizeof(s_last_text) - 1] = '\0';
+        screen_draw_text(s_last_text);
         return;
     }
 
