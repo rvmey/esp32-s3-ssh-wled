@@ -238,11 +238,6 @@ menu "ESP32 SSH LED Configuration"
             default 20
             range 5 100
 
-        config CYD_TOUCH_SWIPE_THRESHOLD
-            int "Swipe threshold (pixels)"
-            default 20
-            range 4 120
-
         config CYD_TOUCH_TAP_THRESHOLD
             int "Tap threshold (pixels)"
             default 12
@@ -253,6 +248,32 @@ menu "ESP32 SSH LED Configuration"
             default 33
             range -1 48
             depends on CYD_TOUCH_XPT2046
+
+        config CYD_XPT2046_MOSI_GPIO
+            int "XPT2046 MOSI (T_DIN) GPIO"
+            default 32
+            range -1 48
+            depends on CYD_TOUCH_XPT2046
+            help
+                The XPT2046 on ESP32-2432S028R boards is wired to its own
+                SPI bus, separate from the ILI9341 LCD bus. 32 is the common
+                T_DIN wiring for these boards.
+
+        config CYD_XPT2046_MISO_GPIO
+            int "XPT2046 MISO (T_DO) GPIO"
+            default 39
+            range -1 48
+            depends on CYD_TOUCH_XPT2046
+            help
+                39 is the common T_DO wiring for ESP32-2432S028R boards.
+
+        config CYD_XPT2046_SCLK_GPIO
+            int "XPT2046 SCLK (T_CLK) GPIO"
+            default 25
+            range -1 48
+            depends on CYD_TOUCH_XPT2046
+            help
+                25 is the common T_CLK wiring for ESP32-2432S028R boards.
 
         config CYD_XPT2046_IRQ_GPIO
             int "XPT2046 T_IRQ GPIO (-1 = none)"

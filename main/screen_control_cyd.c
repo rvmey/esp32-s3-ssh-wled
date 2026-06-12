@@ -6,8 +6,8 @@
  * Core2 implementation.
  *
  * Default wiring used here matches common ESP32-2432S028R layouts:
- *   MOSI=GPIO13  SCK=GPIO14  CS=GPIO15  DC=GPIO2
- *   MISO is not used by this driver path.
+ *   LCD:   MOSI=GPIO13  SCK=GPIO14  CS=GPIO15  DC=GPIO2  (MISO unused)
+ *   Touch: MOSI=GPIO32  SCK=GPIO25  CS=GPIO33  MISO=GPIO39 (own SPI bus)
  *
  * Orientation:
  *   Landscape 320x240 is the default to mirror Core2 command behavior.
@@ -35,6 +35,11 @@ static const char *TAG = "screen_cyd";
 #define LCD_HOST     SPI3_HOST
 /* ESP32 SPI master on this setup rejects >26.666MHz for the LCD device. */
 #define LCD_CLK_HZ   (26 * 1000 * 1000)
+
+/* XPT2046 touch lives on its own SPI bus (separate MOSI/MISO/SCLK from the
+ * LCD on ESP32-2432S028R boards), wired to the other general-purpose SPI
+ * controller on the classic ESP32. */
+#define TOUCH_HOST   SPI2_HOST
 
 #define LCD_MOSI     CONFIG_CYD_LCD_MOSI_GPIO
 #define LCD_MISO     CONFIG_CYD_LCD_MISO_GPIO
@@ -575,8 +580,9 @@ static void touch_poll_task(void *arg)
                         vertical = true;
                     }
 
-                    if (!vertical || !text_is_scrollable() ||
-                        (abs_dx >= CONFIG_CYD_TOUCH_SWIPE_THRESHOLD || abs_dy >= CONFIG_CYD_TOUCH_SWIPE_THRESHOLD)) {
+                    /* When text overflows the screen, vertical swipes scroll the
+                     * content — don't also send them to the app touch handler. */
+                    if (!vertical || !text_is_scrollable()) {
                         (void)s_touch_handler(last_lx, last_ly, g);
                     }
                 }
@@ -673,15 +679,28 @@ esp_err_t screen_init(void)
 
 #if CONFIG_CYD_TOUCH_XPT2046
     if (CONFIG_CYD_XPT2046_CS_GPIO >= 0) {
-        spi_device_interface_config_t tdev = {
-            .clock_speed_hz = CONFIG_CYD_XPT2046_CLK_HZ,
-            .mode           = 0,
-            .spics_io_num   = CONFIG_CYD_XPT2046_CS_GPIO,
-            .queue_size     = 1,
+        spi_bus_config_t touch_bus = {
+            .mosi_io_num   = CONFIG_CYD_XPT2046_MOSI_GPIO,
+            .miso_io_num   = CONFIG_CYD_XPT2046_MISO_GPIO,
+            .sclk_io_num   = CONFIG_CYD_XPT2046_SCLK_GPIO,
+            .quadwp_io_num = -1,
+            .quadhd_io_num = -1,
+            .max_transfer_sz = 8,
         };
-        esp_err_t terr = spi_bus_add_device(LCD_HOST, &tdev, &s_touch_spi);
+        esp_err_t terr = spi_bus_initialize(TOUCH_HOST, &touch_bus, SPI_DMA_CH_AUTO);
+        if (terr == ESP_OK || terr == ESP_ERR_INVALID_STATE) {
+            spi_device_interface_config_t tdev = {
+                .clock_speed_hz = CONFIG_CYD_XPT2046_CLK_HZ,
+                .mode           = 0,
+                .spics_io_num   = CONFIG_CYD_XPT2046_CS_GPIO,
+                .queue_size     = 1,
+            };
+            terr = spi_bus_add_device(TOUCH_HOST, &tdev, &s_touch_spi);
+        }
         if (terr == ESP_OK) {
-            ESP_LOGI(TAG, "XPT2046 touch enabled (CS=%d)", CONFIG_CYD_XPT2046_CS_GPIO);
+            ESP_LOGI(TAG, "XPT2046 touch enabled (MOSI=%d MISO=%d SCLK=%d CS=%d)",
+                     CONFIG_CYD_XPT2046_MOSI_GPIO, CONFIG_CYD_XPT2046_MISO_GPIO,
+                     CONFIG_CYD_XPT2046_SCLK_GPIO, CONFIG_CYD_XPT2046_CS_GPIO);
             xTaskCreate(touch_poll_task, "cyd_touch", 3072, NULL, 4, NULL);
         } else {
             ESP_LOGW(TAG, "XPT2046 init failed: %s", esp_err_to_name(terr));
