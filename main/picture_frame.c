@@ -6311,12 +6311,15 @@ void picture_frame_run(void)
     core2_leds_init();
 #endif
 
-    rebuild_mp3_folder_index();
-    rebuild_jpeg_folder_index();
-
-    /* Keep cloud commands aligned with built-in and dynamic MP3-folder triggers. */
-    pf_status_draw("Syncing commands...");
-    sync_all_commands(true);
+    /* NOTE: on CYD (no PSRAM) the folder-index rebuilds and the ~30 HTTPS
+     * command-sync POSTs are deferred until AFTER the first websocket connects
+     * (see the !restored_display_state block below). They fragment the 8-bit
+     * heap enough that the persistent Socket.IO TLS handshake's alloc(5473)
+     * cert-record buffer could no longer find a contiguous block. Connecting
+     * the websocket first lets it use the fresh post-reboot heap (the same
+     * state in which /pair succeeds), then sync runs with the WS holding only
+     * ~6KB. Core2 has PSRAM and is unaffected either way, but the shared order
+     * is harmless there. */
 
     /* ── Connect + subscribe loop ────────────────────────────────────────── */
     bool restored_display_state = false;
@@ -6335,6 +6338,14 @@ void picture_frame_run(void)
         if (!restored_display_state) {
             restore_display_state_from_nvs();
             restored_display_state = true;
+
+            /* WS is up on the fresh heap — now do the memory-heavy boot work
+             * that we deferred so it wouldn't fragment the heap before the
+             * handshake: folder-index rebuilds + the HTTPS command sync. */
+            rebuild_mp3_folder_index();
+            rebuild_jpeg_folder_index();
+            pf_status_draw("Syncing commands...");
+            sync_all_commands(true);
 
 #if CONFIG_HARDWARE_CYD
             /* CYD only: now that the Socket.IO TLS session is up, it's safe to
