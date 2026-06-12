@@ -32,6 +32,22 @@ static const char *TAG = "socketio";
 #define SIO_ACK_BIT             BIT1
 #define SIO_CONNECT_TIMEOUT_MS  10000
 
+/* Write timeout for every outbound WS text frame (EIO ping/pong, vget/vpost).
+ *
+ * esp_websocket_client treats a write that doesn't complete within this window
+ * as a fatal transport error and ABORTS the whole connection. On the no-PSRAM
+ * CYD the TCP send buffer is trimmed to 2880 bytes to save internal RAM (see
+ * the pacing note in picture_frame.c sync_all_commands_ws), so a write issued
+ * while the buffer is still draining the previous frame + the server's ack can
+ * momentarily find no room and block in poll_write. At the old 3000 ms ceiling
+ * that transient back-pressure tore the socket down ~20-25 s into every
+ * connection (on the unpaced run/save report and the 20 s keepalive ping),
+ * forcing a reconnect cycle. TCP ACKs that drain the send buffer are serviced
+ * by lwIP independently of this call, so a longer wait lets the buffer clear
+ * and the write succeed instead of dropping the connection. Kept below the
+ * read-side network_timeout_ms (20000) configured for the same socket. */
+#define SIO_WS_WRITE_TIMEOUT_MS 12000
+
 /* ── State ──────────────────────────────────────────────────────────────── */
 
 static esp_websocket_client_handle_t s_client    = NULL;
@@ -78,13 +94,13 @@ static void ws_event_handler(void *arg, esp_event_base_t base,
         /* EIO open: "0{…}" */
         if (p[0] == '0') {
             ESP_LOGI(TAG, "EIO open received; sending SIO connect (40)");
-            esp_websocket_client_send_text(s_client, "40", 2, pdMS_TO_TICKS(3000));
+            esp_websocket_client_send_text(s_client, "40", 2, pdMS_TO_TICKS(SIO_WS_WRITE_TIMEOUT_MS));
             break;
         }
 
         /* EIO ping: "2" */
         if (n == 1 && p[0] == '2') {
-            esp_websocket_client_send_text(s_client, "3", 1, pdMS_TO_TICKS(3000));
+            esp_websocket_client_send_text(s_client, "3", 1, pdMS_TO_TICKS(SIO_WS_WRITE_TIMEOUT_MS));
             break;
         }
 
@@ -371,7 +387,7 @@ esp_err_t socketio_send_vget(const char *path, const char *auth_token)
     ESP_LOGI(TAG, "Sending vget: %.150s", msg);
 
     int len = (int)strlen(msg);
-    int sent = esp_websocket_client_send_text(s_client, msg, len, pdMS_TO_TICKS(3000));
+    int sent = esp_websocket_client_send_text(s_client, msg, len, pdMS_TO_TICKS(SIO_WS_WRITE_TIMEOUT_MS));
     return (sent >= 0) ? ESP_OK : ESP_FAIL;
 }
 
@@ -394,7 +410,7 @@ esp_err_t socketio_send_vpost(const char *path,
     }
 
     ESP_LOGI(TAG, "Sending vpost: %s", path);
-    int sent = esp_websocket_client_send_text(s_client, msg, n, pdMS_TO_TICKS(3000));
+    int sent = esp_websocket_client_send_text(s_client, msg, n, pdMS_TO_TICKS(SIO_WS_WRITE_TIMEOUT_MS));
     return (sent >= 0) ? ESP_OK : ESP_FAIL;
 }
 
@@ -439,6 +455,6 @@ void socketio_send_eio_ping(void)
     /* EIO v2/v3 client-initiated keepalive: client sends "2", server replies "3".
      * Sails.js 0.12 / socket.io 1.x will close the socket after pingTimeout (60 s)
      * if it receives no ping from the client. */
-    esp_websocket_client_send_text(s_client, "2", 1, pdMS_TO_TICKS(3000));
+    esp_websocket_client_send_text(s_client, "2", 1, pdMS_TO_TICKS(SIO_WS_WRITE_TIMEOUT_MS));
     ESP_LOGD(TAG, "EIO ping sent");
 }
