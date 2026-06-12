@@ -74,18 +74,31 @@ CONFIG_MBEDTLS_SSL_OUT_CONTENT_LEN=4096
 CONFIG_MBEDTLS_DYNAMIC_BUFFER=y
 CONFIG_MBEDTLS_DYNAMIC_FREE_CONFIG_DATA=y
 
-# DIAG (v2.0.412): standalone heap tracing to find what permanently
-# fragments the heap during the first /pair HTTPS connection (largest
-# contiguous block drops 26624 -> 14848 right after it, never recovers,
-# and is too small for the ~5473-byte cert-chain record on later calls).
-# Stack depth 6: depth 2 still only reached heap_caps_malloc_default /
-# pvPortMalloc (allocator wrappers). Need ~6 frames to reach the real
-# lwip/mbedtls/esp-tls caller of the 12 survivors that persist after the
-# first /pair GET and fragment largest-free-block 21504 -> 12288. Used in
-# HEAP_TRACE_LEAKS mode (see picture_frame.c) so only unfreed allocations
-# remain in the buffer at dump time.
-CONFIG_HEAP_TRACING_STANDALONE=y
-CONFIG_HEAP_TRACING_STACK_DEPTH=6
+# v2.0.415: even with DYNAMIC_BUFFER, /pair handshakes after the first one
+# failed with "Dynamic Impl: alloc(5473 bytes) failed". Heap-trace LEAKS
+# diagnosis (v2.0.413/414, since removed) found the first TLS handshake
+# leaves ~418 bytes of UNAVOIDABLE one-time subsystem warm-up alive — the
+# HW-SHA engine lock queues (2x 84B FreeRTOS queues from
+# esp_sha_try_lock_engine -> xQueueGenericCreate), lwip memp pool blocks,
+# and a WiFi/coex TX buffer — which land near the TOP of the 111KB heap
+# region and cap the largest contiguous block from ~21KB down to ~12-13KB,
+# just below the handshake's peak need (5473B cert-record RX buffer + the
+# 3-cert-chain parse copies). Two levers to clear that threshold:
+#
+# 1) Disable HW-SHA so mbedTLS uses software SHA and never creates the
+#    esp_sha engine-lock queues (removes that survivor class entirely;
+#    handshake is a few ms slower, no correctness impact — wolfSSH already
+#    uses software crypto via the wolfssl user_settings patches).
+CONFIG_MBEDTLS_HARDWARE_SHA=n
+#
+# 2) Trim WiFi/lwip buffers to raise the baseline largest contiguous block
+#    well above the ~17KB handshake peak so warm-up fragmentation no longer
+#    matters. App traffic is small JSON, so halving the WiFi dynamic TX
+#    buffer pool and the TCP windows (5760 -> 2880 = 2x MSS) costs no
+#    real-world throughput here.
+CONFIG_ESP_WIFI_DYNAMIC_TX_BUFFER_NUM=16
+CONFIG_LWIP_TCP_SND_BUF_DEFAULT=2880
+CONFIG_LWIP_TCP_WND_DEFAULT=2880
 
 # NOTE: do NOT enable CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC on this board. It
 # forces all mbedTLS allocations to use MALLOC_CAP_SPIRAM, which always

@@ -43,7 +43,6 @@
 #include "esp_crt_bundle.h"
 #include "esp_timer.h"
 #include "esp_sntp.h"
-#include "esp_heap_trace.h"
 
 #include "wifi_manager.h"
 #include "improv_wifi.h"
@@ -6156,32 +6155,7 @@ void picture_frame_run(void)
             char pair_url[192];
             snprintf(pair_url, sizeof(pair_url),
                      "%s/pair?model=TCMDCORE2", TCMD_BASE_URL);
-
-            /* DIAG (v2.0.412): trace every alloc/free during the FIRST /pair
-             * GET to find what permanently fragments the heap afterwards
-             * (largest contiguous block drops ~26624 -> ~14848 and never
-             * recovers, which is later too small for the cert-chain record). */
-            static bool s_pair_heap_trace_done = false;
-            bool do_heap_trace = !s_pair_heap_trace_done;
-            if (do_heap_trace) {
-                static heap_trace_record_t s_pair_heap_trace_buf[128];
-                heap_trace_init_standalone(s_pair_heap_trace_buf,
-                                            sizeof(s_pair_heap_trace_buf) / sizeof(s_pair_heap_trace_buf[0]));
-                /* LEAKS mode: freed records are removed from the buffer, so at
-                 * dump time only allocations that OUTLIVED the GET remain —
-                 * exactly the persistent state that fragments the heap. */
-                heap_trace_start(HEAP_TRACE_LEAKS);
-            }
-
             int pair_len = https_get_simple(pair_url, &pair_body);
-
-            if (do_heap_trace) {
-                heap_trace_stop();
-                ESP_LOGW(TAG, "=== heap trace LEAKS: survivors of first /pair GET ===");
-                heap_trace_dump();
-                ESP_LOGW(TAG, "=== end heap trace LEAKS ===");
-                s_pair_heap_trace_done = true;
-            }
 
             if (pair_len <= 0 || !pair_body) {
                 ESP_LOGE(TAG, "GET /pair failed — retrying in 10s");
