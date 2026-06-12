@@ -6455,7 +6455,6 @@ void picture_frame_run(void)
         TickType_t last_ping_tick = xTaskGetTickCount();
 
         if (!restored_display_state) {
-            restore_display_state_from_nvs();
             restored_display_state = true;
 
             /* WS is up on the fresh heap — now do the memory-heavy boot work
@@ -6484,6 +6483,18 @@ void picture_frame_run(void)
              * session is established; BT startup can otherwise starve mbedTLS
              * allocation during the reboot path. */
             bt_try_reconnect_on_boot();
+
+            /* The "Syncing commands..." status above was the last thing drawn;
+             * now that the one-time boot work is done, return to the idle
+             * status, then let any saved display state (color/text/jpeg) draw
+             * over it. (restore_display_state_from_nvs() draws nothing when
+             * there is no saved state, e.g. right after pairing.) */
+            if (s_mp3.active) {
+                mp3_request_ui_refresh();
+            } else {
+                pf_status_draw("Connected!\nWaiting for\ncommands...");
+            }
+            restore_display_state_from_nvs();
         }
 
         while (true) {
