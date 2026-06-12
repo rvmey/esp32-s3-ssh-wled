@@ -6104,7 +6104,12 @@ static esp_err_t cyd_create_computer_over_ws(void)
 }
 #endif /* CONFIG_HARDWARE_CYD */
 
-static esp_err_t connect_and_subscribe(void)
+/* initial_connect: true for the very first connection attempt at boot.
+ * In that case the "Connected!" status is skipped here — the boot-time
+ * !restored_display_state block (after this returns) will draw either the
+ * restored display state or fall back to the same "Connected!" text, so
+ * drawing it here too would just be an extra redundant draw. */
+static esp_err_t connect_and_subscribe(bool initial_connect)
 {
     if (!s_mp3.active) pf_status_draw("Connecting to server...");
 
@@ -6149,7 +6154,7 @@ static esp_err_t connect_and_subscribe(void)
 
     if (s_mp3.active) {
         mp3_request_ui_refresh();
-    } else {
+    } else if (!initial_connect) {
         pf_status_draw("Connected!\nWaiting for\ncommands...");
     }
     return ESP_OK;
@@ -6550,7 +6555,7 @@ void picture_frame_run(void)
     bool restored_display_state = false;
 
     while (true) {
-        esp_err_t ret = connect_and_subscribe();
+        esp_err_t ret = connect_and_subscribe(!restored_display_state);
         if (ret != ESP_OK) {
             if (!s_mp3.active) pf_status_draw("Server connect\nfailed\nRetrying in 10s");
             vTaskDelay(pdMS_TO_TICKS(10000));
@@ -6601,14 +6606,12 @@ void picture_frame_run(void)
             bt_try_reconnect_on_boot();
 
             /* The "Syncing commands..." status above was the last thing drawn;
-             * now that the one-time boot work is done, return to the idle
-             * status, then let any saved display state (color/text/jpeg) draw
-             * over it. (restore_display_state_from_nvs() draws nothing when
-             * there is no saved state, e.g. right after pairing.) */
+             * now that the one-time boot work is done, let any saved display
+             * state (color/text/jpeg) draw over it. restore_display_state_from_nvs()
+             * falls back to "Connected!\nWaiting for\ncommands..." itself when
+             * there is no saved state, e.g. right after pairing. */
             if (s_mp3.active) {
                 mp3_request_ui_refresh();
-            } else {
-                pf_status_draw("Connected!\nWaiting for\ncommands...");
             }
             restore_display_state_from_nvs();
         }
