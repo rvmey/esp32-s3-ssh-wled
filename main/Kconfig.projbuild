@@ -249,31 +249,18 @@ menu "ESP32 SSH LED Configuration"
             range -1 48
             depends on CYD_TOUCH_XPT2046
 
-        config CYD_XPT2046_MOSI_GPIO
-            int "XPT2046 MOSI (T_DIN) GPIO"
-            default 32
-            range -1 48
-            depends on CYD_TOUCH_XPT2046
-            help
-                The XPT2046 on ESP32-2432S028R boards is wired to its own
-                SPI bus, separate from the ILI9341 LCD bus. 32 is the common
-                T_DIN wiring for these boards.
-
         config CYD_XPT2046_MISO_GPIO
             int "XPT2046 MISO (T_DO) GPIO"
-            default 39
+            default 12
             range -1 48
             depends on CYD_TOUCH_XPT2046
             help
-                39 is the common T_DO wiring for ESP32-2432S028R boards.
-
-        config CYD_XPT2046_SCLK_GPIO
-            int "XPT2046 SCLK (T_CLK) GPIO"
-            default 25
-            range -1 48
-            depends on CYD_TOUCH_XPT2046
-            help
-                25 is the common T_CLK wiring for ESP32-2432S028R boards.
+                The XPT2046 shares the LCD's SPI bus (MOSI=CYD_LCD_MOSI_GPIO,
+                SCLK=CYD_LCD_SCLK_GPIO) with its own CS line
+                (CYD_XPT2046_CS_GPIO), but the LCD itself doesn't use MISO so
+                CYD_LCD_MISO_GPIO defaults to -1. This setting supplies the
+                bus's MISO pin so touch reads work. 12 is the common T_DO
+                wiring for ESP32-2432S028R boards (shared with TFT_MISO).
 
         config CYD_XPT2046_IRQ_GPIO
             int "XPT2046 T_IRQ GPIO (-1 = none)"
