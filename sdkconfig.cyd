@@ -25,16 +25,23 @@ CONFIG_ESPTOOLPY_FLASHSIZE="4MB"
 CONFIG_PARTITION_TABLE_CUSTOM=y
 CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions_cyd.csv"
 
-# Bluetooth classic stack (for headset/speaker discovery)
-CONFIG_BT_ENABLED=y
-CONFIG_BT_BLUEDROID_ENABLED=y
-CONFIG_BT_CLASSIC_ENABLED=y
-CONFIG_BT_A2DP_ENABLE=y
-CONFIG_BT_SSP_ENABLED=y
+# v2.0.426: Bluetooth fully disabled on CYD. All BT/A2DP/MP3 commands were
+# already removed for this no-PSRAM variant in v2.0.421 (see
+# cyd_commands.json / s_pf_cmds), so the stack was dead weight -- Bluedroid
+# pins ~50KB+ of internal RAM at boot (see
+# project_cyd_tls_oom_dynamic_buffer memory) that we'd rather give back to
+# mbedTLS's dynamic TLS buffers. picture_frame.c already has
+# `#if CONFIG_BT_A2DP_ENABLE ... #else ... #endif` no-op stubs for every BT
+# function, so this should compile cleanly without further code changes.
+# CONFIG_BT_ENABLED is not set
+# CONFIG_BT_BLUEDROID_ENABLED is not set
+# CONFIG_BT_CLASSIC_ENABLED is not set
+# CONFIG_BT_A2DP_ENABLE is not set
+# CONFIG_BT_SSP_ENABLED is not set
 # CONFIG_BT_BLE_ENABLED is not set
 # CONFIG_BT_GOEPC_ENABLED is not set
-CONFIG_BT_ALLOCATION_FROM_SPIRAM_FIRST=y
-CONFIG_BTDM_CTRL_MODE_BR_EDR_ONLY=y
+# CONFIG_BT_ALLOCATION_FROM_SPIRAM_FIRST is not set
+# CONFIG_BTDM_CTRL_MODE_BR_EDR_ONLY is not set
 # CONFIG_BTDM_CTRL_MODE_BLE_ONLY is not set
 # CONFIG_BTDM_CTRL_MODE_BTDM is not set
 
