@@ -365,7 +365,7 @@ esp_err_t socketio_send_vpost(const char *path,
     if (!s_client || !s_connected) return ESP_ERR_INVALID_STATE;
     if (!path || !auth_token || !data_json_object) return ESP_ERR_INVALID_ARG;
 
-    char msg[1024];
+    char msg[1536];
     int n = snprintf(msg, sizeof(msg),
                      "421[\"post\",{\"url\":\"%s\","
                      "\"headers\":{\"Authorization\":\"Bearer %s\"},"

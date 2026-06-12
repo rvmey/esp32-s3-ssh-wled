@@ -4953,6 +4953,125 @@ static void sync_all_commands(bool remove_stale_mp3)
     if (list_body) free(list_body);
 }
 
+#if CONFIG_HARDWARE_CYD
+/* ── CYD command sync over the websocket ────────────────────────────────────
+ * The no-PSRAM CYD cannot hold two TLS contexts at once: once the persistent
+ * Socket.IO websocket is connected the internal heap is too fragmented for a
+ * second (HTTPS) TLS handshake — and the websocket must connect FIRST to get
+ * the only un-fragmented heap window. So command registration is routed over
+ * the already-open websocket via Sails virtual POST (socketio_send_vpost),
+ * needing no extra TLS handshake. cmd/save is an idempotent upsert, so every
+ * command is saved unconditionally (no list diff). Stale-command removal is
+ * skipped on CYD (it would require fetching+reassembling the command list over
+ * the small WS buffer); Core2 (PSRAM) keeps the HTTPS list-based sync above. */
+
+static char *json_escape_append(char *dst, char *end, const char *src)
+{
+    while (src && *src && dst < end - 1) {
+        unsigned char c = (unsigned char)*src++;
+        if (c == '"' || c == '\\') {
+            if (dst < end - 2) { *dst++ = '\\'; *dst++ = (char)c; }
+            else break;
+        } else if (c < 0x20) {
+            /* control chars not expected in command metadata — drop */
+            continue;
+        } else {
+            *dst++ = (char)c;
+        }
+    }
+    return dst;
+}
+
+static char *lit_append(char *dst, char *end, const char *s)
+{
+    while (*s && dst < end - 1) *dst++ = *s++;
+    return dst;
+}
+
+static void sync_command_ws(const pf_cmd_t *cmd)
+{
+    if (!cmd || !cmd->trigger || !cmd->trigger[0]) return;
+
+    char data[768];
+    char *d = data;
+    char *e = data + sizeof(data);
+
+    d = lit_append(d, e, "{\"name\":\"");
+    d = json_escape_append(d, e, cmd->trigger);
+    d = lit_append(d, e, "\",\"computer\":\"");
+    d = json_escape_append(d, e, s_computer_id);
+    d = lit_append(d, e, "\",\"voice\":\"");
+    d = json_escape_append(d, e, cmd->voice ? cmd->voice : "");
+    d = lit_append(d, e, "\",\"voiceReply\":\"");
+    d = json_escape_append(d, e, cmd->voice_reply ? cmd->voice_reply : "");
+    d = lit_append(d, e, "\",\"allowParams\":\"");
+    d = json_escape_append(d, e, cmd->allow_params ? cmd->allow_params : "false");
+    d = lit_append(d, e, "\",\"mcpToolDescription\":\"");
+    d = json_escape_append(d, e, cmd->mcp_desc ? cmd->mcp_desc : "");
+    d = lit_append(d, e, "\",\"icon\":\"");
+    d = json_escape_append(d, e, cmd->icon ? cmd->icon : "");
+    d = lit_append(d, e, "\"}");
+    *d = '\0';
+
+    esp_err_t r = socketio_send_vpost(
+        "/api/command/save?__sails_io_sdk_version=0.11.0", s_hw_token, data);
+    ESP_LOGI(TAG, "cmd/save(ws) '%s' -> %s", cmd->trigger, esp_err_to_name(r));
+}
+
+static void sync_all_commands_ws(void)
+{
+    if (!s_computer_id[0] || !s_hw_token[0]) return;
+    if (!socketio_connected()) {
+        ESP_LOGW(TAG, "ws command sync skipped: socket not connected");
+        return;
+    }
+
+    for (size_t i = 0; i < PF_CMD_COUNT; i++) {
+        sync_command_ws(&s_pf_cmds[i]);
+        vTaskDelay(pdMS_TO_TICKS(60));
+    }
+
+    for (size_t i = 0; i < PF_MEDIA_CMD_COUNT; i++) {
+        sync_command_ws(&s_pf_media_cmds[i]);
+        vTaskDelay(pdMS_TO_TICKS(60));
+    }
+
+    for (size_t i = 0; i < s_mp3_folder_count; i++) {
+        char desc[320];
+        snprintf(desc, sizeof(desc),
+                 "Play mp3 files in the %s folder. If the parameter is a number from 1 to 100 to specify one of the mp3 files, otherwise, this command will play the first mp3 file, or a random file in the folder if shuffle mode is on.",
+                 s_mp3_folders[i].trigger);
+        pf_cmd_t dyn_cmd = {
+            .trigger = s_mp3_folders[i].trigger,
+            .voice = s_mp3_folders[i].trigger,
+            .allow_params = "true",
+            .mcp_desc = desc,
+            .icon = "\xF0\x9F\x8E\xB6", /* 🎶 */
+        };
+        sync_command_ws(&dyn_cmd);
+        vTaskDelay(pdMS_TO_TICKS(60));
+    }
+
+    for (size_t i = 0; i < s_jpeg_folder_count; i++) {
+        char desc[320];
+        snprintf(desc, sizeof(desc),
+                 "Display jpeg files in the %s folder. If the parameter is a number from 1 to 100, it specifies one of the jpeg files, otherwise, this command will display the first jpeg file.",
+                 s_jpeg_folders[i].trigger);
+        pf_cmd_t dyn_cmd = {
+            .trigger = s_jpeg_folders[i].trigger,
+            .voice = s_jpeg_folders[i].trigger,
+            .allow_params = "true",
+            .mcp_desc = desc,
+            .icon = "\xF0\x9F\x96\xBC\xEF\xB8\x8F", /* 🖼️ */
+        };
+        sync_command_ws(&dyn_cmd);
+        vTaskDelay(pdMS_TO_TICKS(60));
+    }
+
+    ESP_LOGI(TAG, "ws command sync complete");
+}
+#endif /* CONFIG_HARDWARE_CYD */
+
 /* ── Color parser ──────────────────────────────────────────────────────── */
 
 static bool parse_color(const char *s, uint8_t *r, uint8_t *g, uint8_t *b)
@@ -6341,11 +6460,17 @@ void picture_frame_run(void)
 
             /* WS is up on the fresh heap — now do the memory-heavy boot work
              * that we deferred so it wouldn't fragment the heap before the
-             * handshake: folder-index rebuilds + the HTTPS command sync. */
+             * handshake: folder-index rebuilds + the command sync. */
             rebuild_mp3_folder_index();
             rebuild_jpeg_folder_index();
             pf_status_draw("Syncing commands...");
+#if CONFIG_HARDWARE_CYD
+            /* No-PSRAM: register commands over the open websocket (no second
+             * TLS context). See sync_all_commands_ws() above. */
+            sync_all_commands_ws();
+#else
             sync_all_commands(true);
+#endif
 
 #if CONFIG_HARDWARE_CYD
             /* CYD only: now that the Socket.IO TLS session is up, it's safe to
