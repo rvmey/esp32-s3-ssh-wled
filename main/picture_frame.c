@@ -6071,7 +6071,7 @@ static esp_err_t cyd_create_computer_over_ws(void)
     esp_read_mac(mac, ESP_MAC_WIFI_STA);
     char computer_name[COMPUTER_NAME_LEN];
     snprintf(computer_name, sizeof(computer_name),
-             "TCMDCORE2-%02X%02X%02X%02X%02X%02X",
+             "TCMDCYD-%02X%02X%02X%02X%02X%02X",
              mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
 
     ESP_LOGI(TAG, "Creating computer over WS: %s", computer_name);
