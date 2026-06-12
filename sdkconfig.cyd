@@ -74,6 +74,14 @@ CONFIG_MBEDTLS_SSL_OUT_CONTENT_LEN=4096
 CONFIG_MBEDTLS_DYNAMIC_BUFFER=y
 CONFIG_MBEDTLS_DYNAMIC_FREE_CONFIG_DATA=y
 
+# DIAG (v2.0.412): standalone heap tracing to find what permanently
+# fragments the heap during the first /pair HTTPS connection (largest
+# contiguous block drops 26624 -> 14848 right after it, never recovers,
+# and is too small for the ~5473-byte cert-chain record on later calls).
+# Stack depth 1 keeps the record struct small (~4KB for 128 records).
+CONFIG_HEAP_TRACING_STANDALONE=y
+CONFIG_HEAP_TRACING_STACK_DEPTH=1
+
 # NOTE: do NOT enable CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC on this board. It
 # forces all mbedTLS allocations to use MALLOC_CAP_SPIRAM, which always
 # fails on boards with no PSRAM (psa_crypto_init() then aborts cpu_start
