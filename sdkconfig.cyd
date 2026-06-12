@@ -51,25 +51,28 @@ CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_CROSS_SIGNED_VERIFY=y
 CONFIG_ESP_TLS_INSECURE=y
 CONFIG_ESP_TLS_SKIP_SERVER_CERT_VERIFY=y
 
-# Reduced from the 16KB/4KB Core2 (PSRAM) defaults — on this board mbedTLS
-# buffers come out of internal SRAM (see CONFIG_MBEDTLS_INTERNAL_MEM_ALLOC
-# note below), and the 16KB IN buffer was the main contributor to the
-# mbedtls_ssl_setup() allocation failure above. (Tried reverting to 16KB in
-# 2.0.406 to chase a separate -0x3B00 handshake error; that brought back the
-# -0x008D ssl_setup failure despite ~40KB free / ~26KB largest block, so 8KB
-# stays.)
+# Dynamic mbedTLS TX/RX buffers — the real fix for the /pair TLS failure on
+# this no-PSRAM board. Diagnostic builds (2.0.407/408, mbedTLS debug + pk_rsa
+# instrumentation) proved the server's RSA leaf pubkey imports fine via PSA
+# (3x set_pubkey, key_len=270, all succeed); the handshake then dies inside
+# mbedtls_x509_crt_parse_der() with -141 / -0x008D = PSA_ERROR_INSUFFICIENT_
+# MEMORY while parsing the 3-cert chain. Earlier this surfaced one alloc
+# sooner as -0x3B00 (psa_import_key OOM masked to PK_INVALID_PUBKEY). Root
+# cause is internal-SRAM exhaustion: Core2 has PSRAM, the CYD does not, and
+# BT-Classic/A2DP/Bluedroid already pins ~50KB+ of internal RAM, leaving only
+# ~39KB free / ~20-26KB largest block at handshake time.
+#
+# MBEDTLS_DYNAMIC_BUFFER stops pre-allocating the full IN+OUT buffers at
+# ssl_setup and instead allocates the RX buffer to the actual record size on
+# demand (freeing it once the upper layer consumes the data) and frees the TX
+# buffer when idle — freeing ~8-12KB of contiguous heap during the cert-chain
+# parse window. It auto-selects MBEDTLS_ASYMMETRIC_CONTENT_LEN; IN/OUT below
+# act as ceilings, not fixed allocations. FREE_CONFIG_DATA frees key/DHM data
+# after handshake (safe: esp-tls builds a fresh config per connection).
 CONFIG_MBEDTLS_SSL_IN_CONTENT_LEN=8192
 CONFIG_MBEDTLS_SSL_OUT_CONTENT_LEN=4096
-
-# Diagnostic: enable mbedTLS debug logging (tag "mbedtls") to capture the
-# handshake state and certificate-parsing details around the -0x3B00
-# (MBEDTLS_ERR_PK_INVALID_PUBKEY) failure on /pair. LOG_MAXIMUM_LEVEL is
-# raised to DEBUG so the ESP_LOGD calls in mbedtls_esp_debug() are compiled
-# in; LOG_DEFAULT_LEVEL stays INFO so other components stay quiet.
-CONFIG_MBEDTLS_DEBUG=y
-CONFIG_MBEDTLS_DEBUG_LEVEL_DEBUG=y
-# CONFIG_LOG_MAXIMUM_EQUALS_DEFAULT is not set
-CONFIG_LOG_MAXIMUM_LEVEL_DEBUG=y
+CONFIG_MBEDTLS_DYNAMIC_BUFFER=y
+CONFIG_MBEDTLS_DYNAMIC_FREE_CONFIG_DATA=y
 
 # NOTE: do NOT enable CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC on this board. It
 # forces all mbedTLS allocations to use MALLOC_CAP_SPIRAM, which always
