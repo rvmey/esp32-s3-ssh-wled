@@ -5047,9 +5047,19 @@ static void sync_all_commands_ws(void)
      * can't allocate) and cannot decode/display images (~150KB RGB565 buffer,
      * plus web fetch needs a 2nd TLS context). See cyd_commands.json. */
 
+    /* Pace the sends. The CYD's TCP windows are trimmed to 2880 bytes (to save
+     * internal RAM), so a rapid burst of ~12 vposts plus the server's ~460-byte
+     * acks for each one can fill the send buffer faster than it drains — the WS
+     * client's write then times out and drops the connection (which this board
+     * usually can't re-establish). 350ms between sends lets each ack arrive and
+     * be consumed before the next request. */
     for (size_t i = 0; i < PF_CMD_COUNT; i++) {
+        if (!socketio_connected()) {
+            ESP_LOGW(TAG, "ws command sync aborted: socket dropped");
+            return;
+        }
         sync_command_ws(&s_pf_cmds[i]);
-        vTaskDelay(pdMS_TO_TICKS(60));
+        vTaskDelay(pdMS_TO_TICKS(350));
     }
 
     ESP_LOGI(TAG, "ws command sync complete");
@@ -6460,12 +6470,22 @@ void picture_frame_run(void)
              * handshake: folder-index rebuilds + the command sync. */
             rebuild_mp3_folder_index();
             rebuild_jpeg_folder_index();
-            pf_status_draw("Syncing commands...");
 #if CONFIG_HARDWARE_CYD
             /* No-PSRAM: register commands over the open websocket (no second
-             * TLS context). See sync_all_commands_ws() above. */
-            sync_all_commands_ws();
+             * TLS context). cmd/save CREATES a new record each call (it is not
+             * an upsert — every call returns "Created successfully" with a new
+             * id), and the CYD can't fetch+diff the existing command list over
+             * its tiny WS buffer. So to avoid duplicating every command on each
+             * reboot, sync ONLY right after the computer is freshly created
+             * (a new computer has no commands yet). have_comp_id is the value
+             * read from NVS at boot, so !have_comp_id == "created this boot".
+             * On a normal reboot the commands are already registered. */
+            if (!have_comp_id) {
+                pf_status_draw("Syncing commands...");
+                sync_all_commands_ws();
+            }
 #else
+            pf_status_draw("Syncing commands...");
             sync_all_commands(true);
 #endif
 
