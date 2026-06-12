@@ -5196,7 +5196,9 @@ static void pf_event_handler(const char *event_name,
         strncpy(s_pending_text, s_last_text, sizeof(s_pending_text) - 1);
         s_pending_text[sizeof(s_pending_text) - 1] = '\0';
         s_pending_text_draw = true;
+#if CONFIG_CORE2_HW
         s_pending_text_redraw_retries = 5;
+#endif
         s_current_jpeg_url[0] = '\0';
 
     } else if (strcmp(s_trigger, "speak") == 0) {
@@ -5209,7 +5211,9 @@ static void pf_event_handler(const char *event_name,
         strncpy(s_pending_text, s_last_text, sizeof(s_pending_text) - 1);
         s_pending_text[sizeof(s_pending_text) - 1] = '\0';
         s_pending_text_draw = true;
+#if CONFIG_CORE2_HW
         s_pending_text_redraw_retries = 5;
+#endif
         s_current_jpeg_url[0] = '\0';
 #if CONFIG_CORE2_HW
         strncpy(s_pending_speak_text, s_params, sizeof(s_pending_speak_text) - 1);
