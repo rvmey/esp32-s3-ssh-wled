@@ -263,14 +263,16 @@ esp_err_t socketio_connect(const char          *uri,
         .reconnect_timeout_ms = 5000,
         .disable_auto_reconnect = true,
         .ping_interval_sec   = 25,
-        /* 2048 (down from 4096): on no-PSRAM boards (CYD) the internal heap
-         * is fragmented to ~12KB largest-block by the time sync_all_commands()
-         * finishes its ~20 sequential HTTPS POSTs. rx_buffer+tx_buffer at
-         * 4096 each (8KB total) left no contiguous block for xTaskCreate's
-         * 4KB websocket task stack ("Error create websocket task" /
-         * esp_websocket_client_start: ESP_FAIL). SIO command-trigger payloads
-         * are short JSON (well under 2KB), so 2048 is plenty per direction. */
-        .buffer_size         = 2048,
+        /* 1024 (down from 4096 -> 2048 -> 1024): on no-PSRAM boards (CYD) the
+         * internal heap is critically tight by the time the websocket connects
+         * (after pairing + ~30 HTTPS command-sync POSTs, largest block ~14KB,
+         * total 8-bit free dipping near zero). rx_buffer+tx_buffer plus the 4KB
+         * WS task stack plus the persistent TLS handshake peak (5473B cert
+         * record + chain parse) must all coexist; at 2048 each esp_tls_init()
+         * still failed with ESP_ERR_NO_MEM. SIO command-trigger payloads are
+         * short JSON (well under 1KB), and ws_event_handler treats each frame
+         * standalone, so 1024 per direction is sufficient here. */
+        .buffer_size         = 1024,
         .cert_pem            = NULL,
         .cert_common_name    = NULL,
         .skip_cert_common_name_check = true,

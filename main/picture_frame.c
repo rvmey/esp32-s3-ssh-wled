@@ -6107,10 +6107,17 @@ void picture_frame_run(void)
 #if CONFIG_CORE2_HW
     nvs_read_str(NVS_KEY_VOICE_CONV, s_voice_conv_id, sizeof(s_voice_conv_id));
 #endif
-#if CONFIG_HARDWARE_CORE2
+#if CONFIG_CORE2_HW
     /* Start the config HTTP server so the STT API key (and WiFi networks) can
      * be configured at http://<device-ip>/ even when the device is already
-     * paired.  The "pair code" section shows "-----" when not actively pairing. */
+     * paired.  The "pair code" section shows "-----" when not actively pairing.
+     *
+     * CYD-only exception: this no-PSRAM board is too RAM-tight to run the httpd
+     * (task + listening socket + lwip structs) concurrently with the pairing
+     * lookup polls and the persistent Socket.IO TLS handshake — doing so left
+     * the largest contiguous internal block below the handshake peak and
+     * esp_tls_init() failed with ESP_ERR_NO_MEM. On CYD the config server is
+     * deferred until AFTER the first websocket connects (see below). */
     http_pf_config_start(NULL);
 #endif
 
@@ -6328,6 +6335,14 @@ void picture_frame_run(void)
         if (!restored_display_state) {
             restore_display_state_from_nvs();
             restored_display_state = true;
+
+#if CONFIG_HARDWARE_CYD
+            /* CYD only: now that the Socket.IO TLS session is up, it's safe to
+             * start the config HTTP server (deferred from boot so its httpd
+             * task + socket didn't starve the TLS handshake on this no-PSRAM
+             * board). On Core2 the server was already started at boot. */
+            http_pf_config_start(NULL);
+#endif
 
             /* Defer Classic BT reconnect until after the first Socket.IO/TLS
              * session is established; BT startup can otherwise starve mbedTLS
