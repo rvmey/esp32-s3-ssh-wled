@@ -5810,6 +5810,19 @@ static bool decode_and_show_jpeg(const uint8_t *buf, int len)
 
 static bool download_and_show_jpeg(const char *url)
 {
+#if CONFIG_HARDWARE_CYD
+    /* No-PSRAM CYD: fetching a web image would require a SECOND concurrent TLS
+     * context alongside the persistent Socket.IO websocket. This board's
+     * internal RAM cannot hold two TLS sessions at once (see
+     * [[project_cyd_single_tls_context]]) — the handshake attempt drives the
+     * heap to near-OOM and takes the command socket down with it. (Full image
+     * decode also needs a ~150KB RGB565 buffer that doesn't fit without PSRAM.)
+     * Refuse cleanly so the websocket stays alive. */
+    (void)url;
+    ESP_LOGW(TAG, "jpeg: web image fetch unsupported on no-PSRAM CYD — keeping WS alive");
+    screen_draw_text("Web images\nneed PSRAM");
+    return false;
+#else
     screen_draw_text("Loading image...");
 
     char effective_url[1024];
@@ -5939,6 +5952,7 @@ static bool download_and_show_jpeg(const char *url)
 
     screen_draw_text("Image decode\nfailed");
     return false;
+#endif /* CONFIG_HARDWARE_CYD */
 }
 
 static bool load_and_show_jpeg_file(const char *path)
