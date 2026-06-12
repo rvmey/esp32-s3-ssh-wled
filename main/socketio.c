@@ -29,6 +29,7 @@
 static const char *TAG = "socketio";
 
 #define SIO_CONNECTED_BIT       BIT0
+#define SIO_ACK_BIT             BIT1
 #define SIO_CONNECT_TIMEOUT_MS  10000
 
 /* ── State ──────────────────────────────────────────────────────────────── */
@@ -38,6 +39,13 @@ static socketio_event_cb_t           s_cb        = NULL;
 static void                         *s_user_ctx  = NULL;
 static volatile bool                 s_connected = false;
 static EventGroupHandle_t            s_evt_group = NULL;
+
+/* Synchronous virtual-request support: when s_capture_ack is set, the next
+ * Sails ack ("43…") frame is copied into s_ack_buf and SIO_ACK_BIT is raised
+ * so socketio_vrequest_sync() can return the server's response body. */
+static volatile bool s_capture_ack = false;
+static char          s_ack_buf[640];
+static volatile int  s_ack_len = -1;
 
 /* ── WebSocket event handler ─────────────────────────────────────────────── */
 
@@ -143,9 +151,18 @@ static void ws_event_handler(void *arg, esp_event_base_t base,
             break;
         }
 
-        /* SIO ack reply to virtual GET: "43[...]" — log full content so we can
-         * see whether subscribeToFunRoom returned 200 or an error status. */
+        /* SIO ack reply to a virtual request: "43[...]" — log full content so we
+         * can see whether the request returned 200 or an error status. */
         if (n >= 2 && p[0] == '4' && p[1] == '3') {
+            /* If a synchronous caller is waiting, hand it this ack body. */
+            if (s_capture_ack) {
+                int cp = n < (int)sizeof(s_ack_buf) - 1 ? n : (int)sizeof(s_ack_buf) - 1;
+                memcpy(s_ack_buf, p, cp);
+                s_ack_buf[cp] = '\0';
+                s_ack_len = cp;
+                s_capture_ack = false;
+                if (s_evt_group) xEventGroupSetBits(s_evt_group, SIO_ACK_BIT);
+            }
             /* Log up to 400 bytes of the ack body */
             int log_len = n < 400 ? n : 400;
             ESP_LOGI(TAG, "SIO ack (vget response, %d bytes): %.*s", n, log_len, p);
@@ -379,6 +396,41 @@ esp_err_t socketio_send_vpost(const char *path,
     ESP_LOGI(TAG, "Sending vpost: %s", path);
     int sent = esp_websocket_client_send_text(s_client, msg, n, pdMS_TO_TICKS(3000));
     return (sent >= 0) ? ESP_OK : ESP_FAIL;
+}
+
+esp_err_t socketio_vpost_sync(const char *path,
+                              const char *auth_token,
+                              const char *data_json_object,
+                              char *resp, size_t resp_sz,
+                              int timeout_ms)
+{
+    if (!s_client || !s_connected || !s_evt_group) return ESP_ERR_INVALID_STATE;
+
+    /* Arm the ack capture, then send. The server replies with one "43…" ack
+     * for this request; ws_event_handler copies it into s_ack_buf. Requests
+     * must be serialized (no other vget/vpost awaiting an ack concurrently). */
+    xEventGroupClearBits(s_evt_group, SIO_ACK_BIT);
+    s_ack_len = -1;
+    s_capture_ack = true;
+
+    esp_err_t r = socketio_send_vpost(path, auth_token, data_json_object);
+    if (r != ESP_OK) {
+        s_capture_ack = false;
+        return r;
+    }
+
+    EventBits_t bits = xEventGroupWaitBits(s_evt_group, SIO_ACK_BIT,
+                                           pdTRUE, pdFALSE,
+                                           pdMS_TO_TICKS(timeout_ms));
+    s_capture_ack = false;
+    if (!(bits & SIO_ACK_BIT)) return ESP_ERR_TIMEOUT;
+
+    if (resp && resp_sz > 0 && s_ack_len >= 0) {
+        size_t cp = (size_t)s_ack_len < resp_sz - 1 ? (size_t)s_ack_len : resp_sz - 1;
+        memcpy(resp, s_ack_buf, cp);
+        resp[cp] = '\0';
+    }
+    return ESP_OK;
 }
 
 void socketio_send_eio_ping(void)

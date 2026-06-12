@@ -83,6 +83,24 @@ esp_err_t socketio_send_vpost(const char *path,
                               const char *data_json_object);
 
 /**
+ * @brief Send a Sails.io virtual POST and block for the server's ack body.
+ *
+ * Like socketio_send_vpost(), but waits up to timeout_ms for the matching
+ * "43…" acknowledgement frame and copies its body into resp (NUL-terminated).
+ * Requests must be serialized — do not call another vget/vpost that expects an
+ * ack while this is in flight. Use for small responses (≤ the WS buffer size,
+ * ~1KB) such as a single created record.
+ *
+ * @return ESP_OK on ack received, ESP_ERR_TIMEOUT if none within timeout_ms,
+ *         ESP_ERR_INVALID_STATE if not connected.
+ */
+esp_err_t socketio_vpost_sync(const char *path,
+                              const char *auth_token,
+                              const char *data_json_object,
+                              char *resp, size_t resp_sz,
+                              int timeout_ms);
+
+/**
  * @brief Send an EIO ping ("2") to keep the server connection alive.
  *
  * Sails.js 0.12 / socket.io 1.x uses EIO v2/v3 keep-alive where the client

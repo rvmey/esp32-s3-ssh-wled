@@ -6022,6 +6022,52 @@ static void sync_time_before_tls(void)
 
 /* ── Connection step: Socket.IO + subscribeToFunRoom ────────────────────── */
 
+#if CONFIG_HARDWARE_CYD
+/* Create the TRIGGERcmd "computer" over the already-open websocket (Sails
+ * virtual POST), so the no-PSRAM CYD never opens a second TLS context. On
+ * Core2 (PSRAM) this is done over HTTPS before connecting. Returns ESP_OK if
+ * s_computer_id is known afterwards. */
+static esp_err_t cyd_create_computer_over_ws(void)
+{
+    if (s_computer_id[0]) return ESP_OK;   /* already provisioned */
+
+    uint8_t mac[6] = {0};
+    esp_read_mac(mac, ESP_MAC_WIFI_STA);
+    char computer_name[COMPUTER_NAME_LEN];
+    snprintf(computer_name, sizeof(computer_name),
+             "TCMDCORE2-%02X%02X%02X%02X%02X%02X",
+             mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+
+    ESP_LOGI(TAG, "Creating computer over WS: %s", computer_name);
+    pf_status_draw("Creating computer...");
+
+    char data[96];
+    snprintf(data, sizeof(data), "{\"name\":\"%s\"}", computer_name);
+
+    char resp[640] = {0};
+    esp_err_t r = socketio_vpost_sync(
+        "/api/computer/save?__sails_io_sdk_version=0.11.0",
+        s_hw_token, data, resp, sizeof(resp), 8000);
+    if (r != ESP_OK) {
+        ESP_LOGE(TAG, "computer/save(ws) failed: %s", esp_err_to_name(r));
+        return r;
+    }
+
+    char cid[COMPUTER_ID_MAX_LEN] = {0};
+    if (!json_extract_nested(resp, "data", "id", cid, sizeof(cid)) || !cid[0]) {
+        ESP_LOGE(TAG, "computer/save(ws): could not parse data.id from: %.200s", resp);
+        return ESP_FAIL;
+    }
+
+    strncpy(s_computer_id, cid, sizeof(s_computer_id) - 1);
+    s_computer_id[sizeof(s_computer_id) - 1] = '\0';
+    esp_err_t we = nvs_write_str(NVS_KEY_COMPID, s_computer_id);
+    ESP_LOGI(TAG, "computer_id stored (ws): %s (nvs write=%s)",
+             s_computer_id, esp_err_to_name(we));
+    return ESP_OK;
+}
+#endif /* CONFIG_HARDWARE_CYD */
+
 static esp_err_t connect_and_subscribe(void)
 {
     if (!s_mp3.active) pf_status_draw("Connecting to server...");
@@ -6044,6 +6090,18 @@ static esp_err_t connect_and_subscribe(void)
         ESP_LOGE(TAG, "socketio_connect failed: %s", esp_err_to_name(ret));
         return ret;
     }
+
+#if CONFIG_HARDWARE_CYD
+    /* On the no-PSRAM CYD the computer is created over THIS websocket (rather
+     * than a separate HTTPS call before connecting) so the WS stays the only
+     * TLS context. Must happen before subscribing — the room name is the
+     * computer id. */
+    if (cyd_create_computer_over_ws() != ESP_OK || !s_computer_id[0]) {
+        ESP_LOGE(TAG, "computer provisioning over WS failed — will retry");
+        socketio_disconnect();
+        return ESP_FAIL;
+    }
+#endif
 
     /* Subscribe via Sails.io virtual GET over the active socket.
      * Append __sails_io_sdk_version to the path (Python client style). */
@@ -6362,6 +6420,9 @@ void picture_frame_run(void)
     }
 
     /* ── Create computer if not already provisioned ──────────────────────── */
+    /* CYD does this over the websocket (see cyd_create_computer_over_ws) to
+     * avoid opening a second TLS context, so skip the HTTPS path here. */
+#if !CONFIG_HARDWARE_CYD
     if (!have_comp_id) {
         /* Build a unique computer name from the WiFi base MAC */
         uint8_t mac[6] = {0};
@@ -6411,6 +6472,7 @@ void picture_frame_run(void)
 
         vTaskDelay(pdMS_TO_TICKS(1500));
     }
+#endif /* !CONFIG_HARDWARE_CYD */
 
 #if CONFIG_CORE2_HW
     /* Log and configure AXP192 power rails for SK6812 LED bar.
