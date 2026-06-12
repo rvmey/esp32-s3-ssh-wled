@@ -69,18 +69,20 @@ CONFIG_ESP_TLS_SKIP_SERVER_CERT_VERIFY=y
 # parse window. It auto-selects MBEDTLS_ASYMMETRIC_CONTENT_LEN; IN/OUT below
 # act as ceilings, not fixed allocations. FREE_CONFIG_DATA frees key/DHM data
 # after handshake (safe: esp-tls builds a fresh config per connection).
-# v2.0.424: even after the WS connects and subscribes, the FIRST write after
-# being idle re-allocates the dynamic OUT buffer at its full ceiling + TLS
-# record overhead (OUT_CONTENT_LEN=4096 -> alloc(4437)). That single write is
-# just the 1-byte EIO pong ("3") replying to the server's EIO ping ("2"), but
-# by ~20s after connect (mp3/jpeg folder scans, config server start, display
-# restore all having run) the largest contiguous block has dropped below
-# 4437B, so the pong write fails, killing the WS. Our largest outbound
-# payload (socketio_vpost JSON, e.g. computer/save or cmd/save bodies) is
-# well under 1KB, so 2048 (-> ~2389B alloc) is ample headroom for every
-# record we actually send and much more likely to fit a fragmented heap.
+# v2.0.424 TRIED lowering OUT_CONTENT_LEN to 2048 to shrink the dynamic OUT
+# buffer alloc (4437B at 4096) that the first idle->active WS write (the
+# 1-byte EIO pong "3" replying to the server's EIO ping "2") needs ~20s after
+# connect. That made things WORSE: the TLS handshake itself then failed with
+# "Dynamic Impl: alloc(5473/2389 bytes) failed" on EVERY attempt, even at a
+# healthy largest=34816 (vs. 4096 handshaking fine at largest=18432 in
+# v2.0.423). The handshake's heap requirement does not shrink monotonically
+# with OUT_CONTENT_LEN here -- reverted to 4096. DO NOT lower this again
+# without re-testing the handshake itself (not just the post-connect pong).
+# The post-connect pong-write OOM needs a different fix (reduce heap used by
+# the deferred mp3/jpeg scan + config server + display restore in the first
+# ~20s after connect).
 CONFIG_MBEDTLS_SSL_IN_CONTENT_LEN=8192
-CONFIG_MBEDTLS_SSL_OUT_CONTENT_LEN=2048
+CONFIG_MBEDTLS_SSL_OUT_CONTENT_LEN=4096
 CONFIG_MBEDTLS_DYNAMIC_BUFFER=y
 CONFIG_MBEDTLS_DYNAMIC_FREE_CONFIG_DATA=y
 
