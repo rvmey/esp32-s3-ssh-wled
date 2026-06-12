@@ -6167,16 +6167,19 @@ void picture_frame_run(void)
                 static heap_trace_record_t s_pair_heap_trace_buf[128];
                 heap_trace_init_standalone(s_pair_heap_trace_buf,
                                             sizeof(s_pair_heap_trace_buf) / sizeof(s_pair_heap_trace_buf[0]));
-                heap_trace_start(HEAP_TRACE_ALL);
+                /* LEAKS mode: freed records are removed from the buffer, so at
+                 * dump time only allocations that OUTLIVED the GET remain —
+                 * exactly the persistent state that fragments the heap. */
+                heap_trace_start(HEAP_TRACE_LEAKS);
             }
 
             int pair_len = https_get_simple(pair_url, &pair_body);
 
             if (do_heap_trace) {
                 heap_trace_stop();
-                ESP_LOGW(TAG, "=== heap trace dump: first /pair GET ===");
+                ESP_LOGW(TAG, "=== heap trace LEAKS: survivors of first /pair GET ===");
                 heap_trace_dump();
-                ESP_LOGW(TAG, "=== end heap trace dump ===");
+                ESP_LOGW(TAG, "=== end heap trace LEAKS ===");
                 s_pair_heap_trace_done = true;
             }
 

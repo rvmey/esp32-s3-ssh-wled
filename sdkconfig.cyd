@@ -78,9 +78,13 @@ CONFIG_MBEDTLS_DYNAMIC_FREE_CONFIG_DATA=y
 # fragments the heap during the first /pair HTTPS connection (largest
 # contiguous block drops 26624 -> 14848 right after it, never recovers,
 # and is too small for the ~5473-byte cert-chain record on later calls).
-# Stack depth 1 keeps the record struct small (~4KB for 128 records).
+# Stack depth 2 so the captured caller is the real mbedTLS/esp-tls
+# function, not the heap_caps_malloc wrapper (depth 1 only showed
+# heap_caps.c). Used in HEAP_TRACE_LEAKS mode (see picture_frame.c) so
+# only unfreed allocations survive in the buffer — pinpoints exactly
+# what persists after the first /pair GET and fragments the heap.
 CONFIG_HEAP_TRACING_STANDALONE=y
-CONFIG_HEAP_TRACING_STACK_DEPTH=1
+CONFIG_HEAP_TRACING_STACK_DEPTH=2
 
 # NOTE: do NOT enable CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC on this board. It
 # forces all mbedTLS allocations to use MALLOC_CAP_SPIRAM, which always
