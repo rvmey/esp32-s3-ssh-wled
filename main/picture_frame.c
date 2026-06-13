@@ -4822,7 +4822,7 @@ static void pf_ask_gpt(const char *question, const char *run_id)
 
         char body[1024];
         int body_len = snprintf(body, sizeof(body),
-            "{\"model\":\"" PF_GPT_MODEL "\",\"messages\":[{\"role\":\"user\",\"content\":\"%s\"}],\"max_tokens\":300}",
+            "{\"model\":\"" PF_GPT_MODEL "\",\"messages\":[{\"role\":\"user\",\"content\":\"%s\"}],\"max_completion_tokens\":300}",
             esc_q);
 
         char bearer[280];
