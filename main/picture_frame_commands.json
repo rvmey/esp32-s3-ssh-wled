@@ -265,6 +265,15 @@
   "icon": "❓"
  },
  {
+  "trigger": "askgpt",
+  "command": "askgpt",
+  "voice": "askgpt",
+  "allowParams": "true",
+  "voiceReply": "{{result}}",
+  "mcpToolDescription": "Ask GPT a general question (no picture context). Example: 'What is the capital of France?'",
+  "icon": "💬"
+ },
+ {
   "trigger": "aitts",
   "command": "aitts",
   "voice": "aitts",

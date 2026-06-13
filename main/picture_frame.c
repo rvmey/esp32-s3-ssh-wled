@@ -421,6 +421,11 @@ static TickType_t    s_pending_run_retry_after __attribute__((unused)) = 0;
 static char          s_pending_ask_text[256]   __attribute__((unused)) = {0};
 static char          s_pending_ask_run_id[33]  __attribute__((unused)) = {0};
 static volatile bool s_pending_ask_pic         __attribute__((unused)) = false;
+
+/* Pending "askgpt" question — set by the WS event task, consumed by the main loop */
+static char          s_pending_askgpt_text[256]   __attribute__((unused)) = {0};
+static char          s_pending_askgpt_run_id[33]  __attribute__((unused)) = {0};
+static volatile bool s_pending_askgpt             __attribute__((unused)) = false;
 #if CONFIG_CORE2_HW
 /* Whether "askpic" answers are also spoken aloud via TTS. Default on,
  * overridden from NVS at boot, toggled by the "aitts" command. */
@@ -4604,6 +4609,39 @@ static bool json_extract_nested(const char *json, const char *outer,
 #define PF_ASK_ANSWER_MAX    512
 
 /*
+ * Reports an AI-generated answer back to TRIGGERcmd (JSON-escaped into
+ * s_pending_result) and, on Core2 with aitts enabled, queues it for TTS on a
+ * later main-loop tick (after the result POST, so blocking TTS doesn't push
+ * the result past the server's 15s voiceReply window).
+ */
+static void pf_report_ai_result(const char *answer, const char *run_id)
+{
+    strncpy(s_pending_run_id, run_id, sizeof(s_pending_run_id) - 1);
+    s_pending_run_id[sizeof(s_pending_run_id) - 1] = '\0';
+    {
+        char *out = s_pending_result;
+        const char *end = s_pending_result + sizeof(s_pending_result) - 1;
+        for (const char *a = answer; *a && out < end - 1; a++) {
+            if (*a == '"' || *a == '\\') { *out++ = '\\'; *out++ = *a; }
+            else if (*a == '\n')          { *out++ = '\\'; *out++ = 'n'; }
+            else if (*a == '\r')          { /* skip */ }
+            else                          { *out++ = *a; }
+        }
+        *out = '\0';
+    }
+    s_pending_has_result = true;
+    s_pending_run = true;
+
+#if CONFIG_CORE2_HW
+    if (s_ai_tts_enabled) {
+        strncpy(s_pending_speak_text, answer, sizeof(s_pending_speak_text) - 1);
+        s_pending_speak_text[sizeof(s_pending_speak_text) - 1] = '\0';
+        s_pending_speak = true;
+    }
+#endif
+}
+
+/*
  * Sends the currently displayed JPEG plus a question to OpenAI's vision-
  * capable chat endpoint, shows the answer on screen, optionally speaks it
  * (Core2), and reports it back to TRIGGERcmd via s_pending_result.
@@ -4743,37 +4781,112 @@ static void pf_ask_picture(const char *question, const char *run_id)
 ask_done:
     answer[sizeof(answer) - 1] = '\0';
     screen_draw_text(answer);
+    pf_report_ai_result(answer, run_id);
+}
 
-    /* Report the answer back to TRIGGERcmd FIRST, JSON-escaping it for
-     * s_pending_result. The main loop posts /api/command/result before it
-     * processes s_pending_speak below, so the result lands well inside the
-     * server's 15-second voiceReply window instead of being delayed by the
-     * ~10s TTS synthesis/playback. */
-    strncpy(s_pending_run_id, run_id, sizeof(s_pending_run_id) - 1);
-    s_pending_run_id[sizeof(s_pending_run_id) - 1] = '\0';
+#define PF_GPT_MODEL "gpt-5.4-mini"
+
+/*
+ * Sends a general text question (no picture context) to OpenAI's chat
+ * completions endpoint using PF_GPT_MODEL, shows the answer on screen,
+ * optionally speaks it (Core2), and reports it back to TRIGGERcmd via
+ * s_pending_result.
+ */
+static void pf_ask_gpt(const char *question, const char *run_id)
+{
+    char answer[PF_ASK_ANSWER_MAX] = {0};
+
+    char api_key[256] = {0};
+    if (!nvs_read_str(NVS_KEY_OPENAI, api_key, sizeof(api_key)) || !api_key[0]) {
+        strncpy(answer, "No OpenAI API key\nconfigured.\nVisit device IP\nto configure.",
+                sizeof(answer) - 1);
+        goto gpt_done;
+    }
+
+    screen_draw_text("Thinking...");
+
     {
-        char *out = s_pending_result;
-        const char *end = s_pending_result + sizeof(s_pending_result) - 1;
-        for (const char *a = answer; *a && out < end - 1; a++) {
-            if (*a == '"' || *a == '\\') { *out++ = '\\'; *out++ = *a; }
-            else if (*a == '\n')          { *out++ = '\\'; *out++ = 'n'; }
-            else if (*a == '\r')          { /* skip */ }
-            else                          { *out++ = *a; }
+        /* JSON-escape the question for embedding in the request body */
+        char esc_q[513];
+        {
+            const char *q = (question && question[0]) ? question : "What would you like to know?";
+            char *p = esc_q;
+            for (; *q && (size_t)(p - esc_q) < sizeof(esc_q) - 2; q++) {
+                if (*q == '"' || *q == '\\') { *p++ = '\\'; *p++ = *q; }
+                else if (*q == '\n')          { *p++ = '\\'; *p++ = 'n'; }
+                else if (*q == '\r')          { /* skip */ }
+                else                          { *p++ = *q; }
+            }
+            *p = '\0';
         }
-        *out = '\0';
-    }
-    s_pending_has_result = true;
-    s_pending_run = true;
 
-#if CONFIG_CORE2_HW
-    /* Speak the answer on a later main-loop tick (after the result POST) so
-     * the blocking TTS does not push the result past the 15s window. */
-    if (s_ai_tts_enabled) {
-        strncpy(s_pending_speak_text, answer, sizeof(s_pending_speak_text) - 1);
-        s_pending_speak_text[sizeof(s_pending_speak_text) - 1] = '\0';
-        s_pending_speak = true;
+        char body[1024];
+        int body_len = snprintf(body, sizeof(body),
+            "{\"model\":\"" PF_GPT_MODEL "\",\"messages\":[{\"role\":\"user\",\"content\":\"%s\"}],\"max_tokens\":300}",
+            esc_q);
+
+        char bearer[280];
+        snprintf(bearer, sizeof(bearer), "Bearer %s", api_key);
+
+        esp_http_client_config_t cfg = {
+            .url               = PF_VISION_URL,
+            .method            = HTTP_METHOD_POST,
+            .timeout_ms        = 30000,
+            .crt_bundle_attach = esp_crt_bundle_attach,
+            .buffer_size       = 4096,
+            .buffer_size_tx    = 1280,
+            .keep_alive_enable = false,
+        };
+        esp_http_client_handle_t client = esp_http_client_init(&cfg);
+        if (!client) {
+            strncpy(answer, "AI request failed\n(init)", sizeof(answer) - 1);
+            goto gpt_done;
+        }
+
+        esp_http_client_set_header(client, "Authorization", bearer);
+        esp_http_client_set_header(client, "Content-Type", "application/json");
+
+        if (esp_http_client_open(client, body_len) != ESP_OK) {
+            esp_http_client_cleanup(client);
+            strncpy(answer, "AI request failed\n(network)", sizeof(answer) - 1);
+            goto gpt_done;
+        }
+        esp_http_client_write(client, body, body_len);
+
+        int64_t cl = esp_http_client_fetch_headers(client);
+        int status = esp_http_client_get_status_code(client);
+        int max_resp = PF_VISION_MAX_RESP;
+        if (cl > 0 && cl < max_resp) max_resp = (int)cl;
+
+        char *resp = malloc(max_resp + 1);
+        if (resp) {
+            int total_read = 0, n;
+            while (total_read < max_resp) {
+                n = esp_http_client_read(client, resp + total_read, max_resp - total_read);
+                if (n <= 0) break;
+                total_read += n;
+            }
+            resp[total_read] = '\0';
+            ESP_LOGI(TAG, "askgpt: HTTP %d resp: %.200s", status, resp);
+            if (status == 200) {
+                if (!json_extract_nested(resp, "message", "content", answer, sizeof(answer))) {
+                    strncpy(answer, "AI gave no answer", sizeof(answer) - 1);
+                }
+            } else {
+                snprintf(answer, sizeof(answer), "AI request failed\n(HTTP %d)", status);
+            }
+            free(resp);
+        } else {
+            strncpy(answer, "AI request failed\n(no memory)", sizeof(answer) - 1);
+        }
+        esp_http_client_close(client);
+        esp_http_client_cleanup(client);
     }
-#endif
+
+gpt_done:
+    answer[sizeof(answer) - 1] = '\0';
+    screen_draw_text(answer);
+    pf_report_ai_result(answer, run_id);
 }
 #endif /* !CONFIG_HARDWARE_CYD */
 
@@ -4947,6 +5060,7 @@ static const pf_cmd_t s_pf_cmds[] = {
     { "listen",    "listen",    "false", "Start listening for a voice command on the user's Core2 device (records for 4 seconds then processes as an AI prompt).", "\xF0\x9F\x8E\xA4" /* 🎤 */, NULL },
     { "sleeponpower","sleeponpower","true", "Toggle whether the device can auto-sleep while on USB power (default off = only sleep on battery). Pass 'on'/'off' or omit to toggle.", "\xF0\x9F\x94\x8C" /* 🔌 */, NULL },
     { "askpic",    "askpic",    "true",  "Ask a question about the picture currently displayed, using AI vision. Example: 'What is in this picture?'", "\xE2\x9D\x93" /* ❓ */, "{{result}}" },
+    { "askgpt",    "askgpt",    "true",  "Ask GPT a general question (no picture context). Example: 'What is the capital of France?'", "\xF0\x9F\x92\xAC" /* 💬 */, "{{result}}" },
 #if CONFIG_CORE2_HW
     { "aitts",     "aitts",     "true",  "Toggle whether AI answers from 'askpic' are spoken aloud via TTS. Default on. Pass 'on'/'off' or omit to toggle.", "\xF0\x9F\x97\xA3\xEF\xB8\x8F" /* 🗣️ */, NULL },
 #endif
@@ -6025,6 +6139,16 @@ static void pf_event_handler(const char *event_name,
         s_pending_ask_run_id[sizeof(s_pending_ask_run_id) - 1] = '\0';
         s_pending_ask_pic = true;
         s_id[0] = '\0';   /* suppress the generic run/save below — pf_ask_picture()
+                           * sends run/save + command/result together once done */
+
+    } else if (strcmp(s_trigger, "askgpt") == 0) {
+        strncpy(s_pending_askgpt_text, s_params[0] ? s_params : "What would you like to know?",
+                sizeof(s_pending_askgpt_text) - 1);
+        s_pending_askgpt_text[sizeof(s_pending_askgpt_text) - 1] = '\0';
+        strncpy(s_pending_askgpt_run_id, s_id, sizeof(s_pending_askgpt_run_id) - 1);
+        s_pending_askgpt_run_id[sizeof(s_pending_askgpt_run_id) - 1] = '\0';
+        s_pending_askgpt = true;
+        s_id[0] = '\0';   /* suppress the generic run/save below — pf_ask_gpt()
                            * sends run/save + command/result together once done */
 #endif
 
@@ -7171,6 +7295,10 @@ void picture_frame_run(void)
             if (s_pending_ask_pic) {
                 s_pending_ask_pic = false;
                 pf_ask_picture(s_pending_ask_text, s_pending_ask_run_id);
+            }
+            if (s_pending_askgpt) {
+                s_pending_askgpt = false;
+                pf_ask_gpt(s_pending_askgpt_text, s_pending_askgpt_run_id);
             }
 #endif
 
