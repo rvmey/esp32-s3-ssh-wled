@@ -3405,6 +3405,25 @@ static bool core2_axp_on_external_power(void)
     return (reg0 & 0x04) != 0;
 }
 
+/* For idle-sleep purposes, also treat a near-full battery as "on power":
+ * once the battery is full the AXP192 stops sourcing charge current, so
+ * core2_axp_on_external_power() drops to 0 even with USB still connected.
+ * A battery that's actually discharging on its own won't sit at >=95%. */
+static bool core2_axp_treat_as_powered(void)
+{
+    if (core2_axp_on_external_power()) return true;
+
+    uint8_t vbat_h = 0, vbat_l = 0;
+    if (core2_axp_read_reg(0x78, &vbat_h) != ESP_OK ||
+        core2_axp_read_reg(0x79, &vbat_l) != ESP_OK) {
+        return false;
+    }
+    int adc   = ((int)vbat_h << 4) | ((int)vbat_l & 0x0F);
+    int vbat  = (int)((float)adc * 1.1f);
+    int level = (vbat - 3300) * 100 / 900;
+    return level >= 95;
+}
+
 static void core2_reassert_sd_power(void)
 {
     uint8_t reg = 0;
@@ -6933,9 +6952,12 @@ void picture_frame_run(void)
 
             if (s_sleep_timeout_s > 0 &&
                 !(s_mp3.active && !s_mp3.paused) &&
-                (s_sleep_while_powered || !core2_axp_on_external_power()) &&
+                (s_sleep_while_powered || !core2_axp_treat_as_powered()) &&
                 (TickType_t)(xTaskGetTickCount() - s_last_activity_tick) >=
                     pdMS_TO_TICKS(s_sleep_timeout_s * 1000u)) {
+                ESP_LOGI(TAG, "sleeponpower=%d on_external_power=%d treat_as_powered=%d",
+                         s_sleep_while_powered, core2_axp_on_external_power(),
+                         core2_axp_treat_as_powered());
                 ESP_LOGI(TAG, "Idle timeout (%d s) — entering deep sleep",
                          CONFIG_CORE2_SLEEP_TIMEOUT_S);
                 /* MPU6886 INT is not wired to the ESP32 on Core2. */
