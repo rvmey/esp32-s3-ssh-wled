@@ -4703,7 +4703,7 @@ static const pf_cmd_t s_pf_cmds[] = {
 #endif
     { "save",      "save",      "false", "Save the screen settings to non-volatile memory.", "\xF0\x9F\x92\xBE" /* 💾 */, NULL },
 #if !CONFIG_HARDWARE_CYD
-    { "savepic",   "savepic",   "false", "Save the currently displayed JPEG to the SD card in the 'pictures' folder.", "\xF0\x9F\x93\xB7" /* 📷 */, NULL },
+    { "savepic",   "savepic",   "false", "Save the currently displayed JPEG to the SD card in the 'saved-jpegs' folder.", "\xF0\x9F\x93\xB7" /* 📷 */, NULL },
 #endif
     { "folders",   "folders",   "false", "List the folders on the SD card.", "\xF0\x9F\x93\x82" /* 📂 */, "{{result}}" },
     { "files",     "files",     "true",  "List files in a folder on the SD card. Example: 'music'", "\xF0\x9F\x93\x84" /* 📄 */, "{{result}}" },
@@ -5344,7 +5344,7 @@ static void pf_event_handler(const char *event_name,
         } else if (!mount_sd_card_if_needed()) {
             screen_draw_text("No SD card");
         } else {
-            const char *pics_dir = MP3_ROOT_PATH "/pictures";
+            const char *pics_dir = MP3_ROOT_PATH "/saved-jpegs";
             mkdir(pics_dir, 0755);
             char fpath[128];
             time_t now = time(NULL);

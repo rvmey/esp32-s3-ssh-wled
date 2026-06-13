@@ -74,7 +74,7 @@
   "trigger": "savepic",
   "command": "savepic",
   "allowParams": "false",
-  "mcpToolDescription": "Save the currently displayed JPEG to the SD card on the user's Core2 device in the 'pictures' folder.",
+  "mcpToolDescription": "Save the currently displayed JPEG to the SD card on the user's Core2 device in the 'saved-jpegs' folder.",
   "icon": "📷"
  },
  {
