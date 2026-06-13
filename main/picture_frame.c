@@ -4739,13 +4739,12 @@ static void pf_ask_picture(const char *question, const char *run_id)
 ask_done:
     answer[sizeof(answer) - 1] = '\0';
     screen_draw_text(answer);
-#if CONFIG_CORE2_HW
-    if (s_ai_tts_enabled) {
-        core2_tts_speak(answer);
-    }
-#endif
 
-    /* Report the answer back to TRIGGERcmd, JSON-escaping it for s_pending_result */
+    /* Report the answer back to TRIGGERcmd FIRST, JSON-escaping it for
+     * s_pending_result. The main loop posts /api/command/result before it
+     * processes s_pending_speak below, so the result lands well inside the
+     * server's 15-second voiceReply window instead of being delayed by the
+     * ~10s TTS synthesis/playback. */
     strncpy(s_pending_run_id, run_id, sizeof(s_pending_run_id) - 1);
     s_pending_run_id[sizeof(s_pending_run_id) - 1] = '\0';
     {
@@ -4761,6 +4760,16 @@ ask_done:
     }
     s_pending_has_result = true;
     s_pending_run = true;
+
+#if CONFIG_CORE2_HW
+    /* Speak the answer on a later main-loop tick (after the result POST) so
+     * the blocking TTS does not push the result past the 15s window. */
+    if (s_ai_tts_enabled) {
+        strncpy(s_pending_speak_text, answer, sizeof(s_pending_speak_text) - 1);
+        s_pending_speak_text[sizeof(s_pending_speak_text) - 1] = '\0';
+        s_pending_speak = true;
+    }
+#endif
 }
 #endif /* !CONFIG_HARDWARE_CYD */
 
