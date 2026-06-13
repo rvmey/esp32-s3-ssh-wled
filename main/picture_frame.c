@@ -4584,8 +4584,12 @@ static bool json_extract_nested(const char *json, const char *outer,
     /* find closing brace — simple scan, not bracket-aware beyond one level */
     const char *end = strchr(p, '}');
     if (!end) return false;
-    /* extract key from the sub-object */
-    char sub[256];
+    /* extract key from the sub-object.  Sized to hold a full PF_ASK_ANSWER_MAX
+     * answer string (with worst-case \" / \\ / \n escaping doubling its size)
+     * plus the surrounding "role":"assistant","content":"...","refusal":null
+     * wrapper from OpenAI's message object — 256 was too small and silently
+     * truncated long askpic answers mid-word. */
+    char sub[1536];
     size_t sub_len = (size_t)(end - p + 1);
     if (sub_len >= sizeof(sub)) sub_len = sizeof(sub) - 1;
     memcpy(sub, p, sub_len);
