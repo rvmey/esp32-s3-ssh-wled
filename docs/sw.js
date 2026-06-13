@@ -29,13 +29,13 @@ self.addEventListener('fetch', event => {
   }
 
   if (reqUrl.pathname.endsWith('/manifest-core2.json')) {
-    const target = 'https://raw.githubusercontent.com/rvmey/esp32-s3-ssh-wled/master/docs/manifest-core2-2.0.390.json';
+    const target = 'https://raw.githubusercontent.com/rvmey/esp32-s3-ssh-wled/master/docs/manifest-core2-2.0.440.json';
     event.respondWith(fetch(target, { cache: 'no-store' }));
     return;
   }
 
   if (reqUrl.pathname.endsWith('/manifest-cyd.json')) {
-    const target = 'https://raw.githubusercontent.com/rvmey/esp32-s3-ssh-wled/master/docs/manifest-cyd-2.0.439.json';
+    const target = 'https://raw.githubusercontent.com/rvmey/esp32-s3-ssh-wled/master/docs/manifest-cyd-2.0.440.json';
     event.respondWith(fetch(target, { cache: 'no-store' }));
     return;
   }
@@ -129,7 +129,7 @@ self.addEventListener('fetch', event => {
     reqUrl.pathname.endsWith('/firmware/esp32_core2_picture_frame-2.0.388.bin') ||
     reqUrl.pathname.endsWith('/firmware/esp32_core2_picture_frame-2.0.389.bin')
   ) {
-    const target = new URL('/esp32-s3-ssh-wled/firmware/esp32_core2_picture_frame-2.0.390.bin', self.location.origin);
+    const target = new URL('/esp32-s3-ssh-wled/firmware/esp32_core2_picture_frame-2.0.440.bin', self.location.origin);
     event.respondWith(fetch(target.toString(), { cache: 'no-store' }));
     return;
   }
@@ -137,7 +137,7 @@ self.addEventListener('fetch', event => {
   if (
     reqUrl.pathname.endsWith('/firmware/esp32_cyd_picture_frame.bin')
   ) {
-    const target = new URL('/esp32-s3-ssh-wled/firmware/esp32_cyd_picture_frame-2.0.439.bin', self.location.origin);
+    const target = new URL('/esp32-s3-ssh-wled/firmware/esp32_cyd_picture_frame-2.0.440.bin', self.location.origin);
     event.respondWith(fetch(target.toString(), { cache: 'no-store' }));
     return;
   }

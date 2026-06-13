@@ -6087,7 +6087,8 @@ static esp_err_t cyd_create_computer_over_ws(void)
     pf_status_draw("Creating computer...");
 
     char data[96];
-    snprintf(data, sizeof(data), "{\"name\":\"%s\"}", computer_name);
+    snprintf(data, sizeof(data),
+             "{\"name\":\"%s\",\"voice\":\"yellow display\"}", computer_name);
 
     char resp[640] = {0};
     esp_err_t r = socketio_vpost_sync(
@@ -6488,9 +6489,9 @@ void picture_frame_run(void)
         char save_url[192];
         snprintf(save_url, sizeof(save_url), "%s/api/computer/save", TCMD_BASE_URL);
 
-        /* Body: name=TCMDCORE2-AABBCCDDEEFF (no special encoding needed) */
+        /* Body: name=TCMDCORE2-AABBCCDDEEFF&voice=core+2 */
         char form[64];
-        snprintf(form, sizeof(form), "name=%s", computer_name);
+        snprintf(form, sizeof(form), "name=%s&voice=core+2", computer_name);
 
         char *resp = NULL;
         int status = https_post_form(save_url, s_hw_token, form, &resp);

@@ -1183,7 +1183,7 @@ static void provision_computer(void)
     snprintf(save_url, sizeof(save_url), "%s/api/computer/save", TCMD_BASE_URL);
 
     char form[64];
-    snprintf(form, sizeof(form), "name=%s", computer_name);
+    snprintf(form, sizeof(form), "name=%s&voice=atom+S+3", computer_name);
 
     char *resp = NULL;
     int status = https_post_form(save_url, s_hw_token, form, &resp);
