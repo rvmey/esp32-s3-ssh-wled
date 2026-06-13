@@ -252,7 +252,7 @@
   "command": "battery",
   "allowParams": "false",
   "voiceReply": "{{result}}",
-  "mcpToolDescription": "Get the battery level of the user's Core2 device. Returns level (0-100) and voltage in mV.",
+  "mcpToolDescription": "Get the battery level of the user's Core2 device. Returns level (0-100), voltage in mV, and whether it is charging.",
   "icon": "🔋"
  }
 ]

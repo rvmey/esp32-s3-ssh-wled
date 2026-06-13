@@ -4727,7 +4727,7 @@ static const pf_cmd_t s_pf_cmds[] = {
     { "sleep",     "sleep",     "false", "Put the device into deep sleep immediately. Wake by touching the screen.", "\xF0\x9F\x92\xA4" /* 💤 */, NULL },
 #if !CONFIG_HARDWARE_CYD
     /* battery (AXP192) and listen (microphone) are Core2-only hardware. */
-    { "battery",   "battery",   "false", "Get the battery level of the user's Core2 device. Returns level (0-100) and voltage in mV.", "\xF0\x9F\x94\x8B" /* 🔋 */, "{{result}}" },
+    { "battery",   "battery",   "false", "Get the battery level of the user's Core2 device. Returns level (0-100), voltage in mV, and whether it is charging.", "\xF0\x9F\x94\x8B" /* 🔋 */, "{{result}}" },
     { "listen",    "listen",    "false", "Start listening for a voice command on the user's Core2 device (records for 4 seconds then processes as an AI prompt).", "\xF0\x9F\x8E\xA4" /* 🎤 */, NULL },
     { "sleeponpower","sleeponpower","true", "Toggle whether the device can auto-sleep while on USB power (default off = only sleep on battery). Pass 'on'/'off' or omit to toggle.", "\xF0\x9F\x94\x8C" /* 🔌 */, NULL },
 #endif
@@ -5777,15 +5777,17 @@ static void pf_event_handler(const char *event_name,
             int  level = (vbat - 3300) * 100 / 900;
             if (level < 0)   level = 0;
             if (level > 100) level = 100;
-            char scr[64];
-            snprintf(scr, sizeof(scr), "Battery: %d%%\n%d mV", level, vbat);
+            bool charging = core2_axp_on_external_power();
+            char scr[80];
+            snprintf(scr, sizeof(scr), "Battery: %d%%\n%d mV%s", level, vbat,
+                     charging ? "\nCharging" : "");
             screen_draw_text(scr);
             s_battery_display_active = true;
             snprintf(s_pending_result, sizeof(s_pending_result),
-                     "{\\\"level\\\":%d,\\\"voltage_mv\\\":%d}",
-                     level, vbat);
+                     "{\\\"level\\\":%d,\\\"voltage_mv\\\":%d,\\\"charging\\\":%s}",
+                     level, vbat, charging ? "true" : "false");
             s_pending_has_result = true;
-            ESP_LOGI(TAG, "battery: %d%% %d mV", level, vbat);
+            ESP_LOGI(TAG, "battery: %d%% %d mV charging=%d", level, vbat, charging);
         }
 #endif
 
