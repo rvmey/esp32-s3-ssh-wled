@@ -4913,6 +4913,34 @@ static void sync_remove_stale_mp3_commands(const char *del_url,
     }
 }
 
+static pf_cmd_t mp3_folder_pf_cmd(const mp3_folder_t *folder, char *desc, size_t desc_sz)
+{
+    snprintf(desc, desc_sz,
+             "Play mp3 files in the %s folder. If the parameter is a number from 1 to 100 to specify one of the mp3 files, otherwise, this command will play the first mp3 file, or a random file in the folder if shuffle mode is on.",
+             folder->trigger);
+    return (pf_cmd_t){
+        .trigger = folder->trigger,
+        .voice = folder->trigger,
+        .allow_params = "true",
+        .mcp_desc = desc,
+        .icon = "\xF0\x9F\x8E\xB6", /* 🎶 */
+    };
+}
+
+static pf_cmd_t jpeg_folder_pf_cmd(const jpeg_folder_t *folder, char *desc, size_t desc_sz)
+{
+    snprintf(desc, desc_sz,
+             "Display jpeg files in the %s folder. If the parameter is a number from 1 to 100, it specifies one of the jpeg files, otherwise, this command will display the first jpeg file.",
+             folder->trigger);
+    return (pf_cmd_t){
+        .trigger = folder->trigger,
+        .voice = folder->trigger,
+        .allow_params = "true",
+        .mcp_desc = desc,
+        .icon = "\xF0\x9F\x96\xBC\xEF\xB8\x8F", /* 🖼️ */
+    };
+}
+
 static void sync_all_commands(bool remove_stale_mp3)
 {
     if (!s_computer_id[0] || !s_hw_token[0]) return;
@@ -4944,31 +4972,13 @@ static void sync_all_commands(bool remove_stale_mp3)
 
     for (size_t i = 0; i < s_mp3_folder_count; i++) {
         char desc[320];
-        snprintf(desc, sizeof(desc),
-                 "Play mp3 files in the %s folder. If the parameter is a number from 1 to 100 to specify one of the mp3 files, otherwise, this command will play the first mp3 file, or a random file in the folder if shuffle mode is on.",
-                 s_mp3_folders[i].trigger);
-        pf_cmd_t dyn_cmd = {
-            .trigger = s_mp3_folders[i].trigger,
-            .voice = s_mp3_folders[i].trigger,
-            .allow_params = "true",
-            .mcp_desc = desc,
-            .icon = "\xF0\x9F\x8E\xB6", /* 🎶 */
-        };
+        pf_cmd_t dyn_cmd = mp3_folder_pf_cmd(&s_mp3_folders[i], desc, sizeof(desc));
         sync_command_if_missing(&dyn_cmd, cmd_url, list_body, list_len);
     }
 
     for (size_t i = 0; i < s_jpeg_folder_count; i++) {
         char desc[320];
-        snprintf(desc, sizeof(desc),
-                 "Display jpeg files in the %s folder. If the parameter is a number from 1 to 100, it specifies one of the jpeg files, otherwise, this command will display the first jpeg file.",
-                 s_jpeg_folders[i].trigger);
-        pf_cmd_t dyn_cmd = {
-            .trigger = s_jpeg_folders[i].trigger,
-            .voice = s_jpeg_folders[i].trigger,
-            .allow_params = "true",
-            .mcp_desc = desc,
-            .icon = "\xF0\x9F\x96\xBC\xEF\xB8\x8F", /* 🖼️ */
-        };
+        pf_cmd_t dyn_cmd = jpeg_folder_pf_cmd(&s_jpeg_folders[i], desc, sizeof(desc));
         sync_command_if_missing(&dyn_cmd, cmd_url, list_body, list_len);
     }
 
@@ -4981,8 +4991,8 @@ static void sync_all_commands(bool remove_stale_mp3)
     if (list_body) free(list_body);
 }
 
-#if CONFIG_HARDWARE_CYD
-/* ── CYD command sync over the websocket ────────────────────────────────────
+#if CONFIG_HARDWARE_CYD || CONFIG_CORE2_HW
+/* ── Command sync over the websocket ─────────────────────────────────────────
  * The no-PSRAM CYD cannot hold two TLS contexts at once: once the persistent
  * Socket.IO websocket is connected the internal heap is too fragmented for a
  * second (HTTPS) TLS handshake — and the websocket must connect FIRST to get
@@ -4990,8 +5000,14 @@ static void sync_all_commands(bool remove_stale_mp3)
  * the already-open websocket via Sails virtual POST (socketio_send_vpost),
  * needing no extra TLS handshake. cmd/save is an idempotent upsert, so every
  * command is saved unconditionally (no list diff). Stale-command removal is
- * skipped on CYD (it would require fetching+reassembling the command list over
- * the small WS buffer); Core2 (PSRAM) keeps the HTTPS list-based sync above. */
+ * skipped here (it would require fetching+reassembling the command list over
+ * the small WS buffer).
+ *
+ * Core2 (PSRAM) has no heap-fragmentation constraint but uses the same path
+ * for consistency, registering commands once over the already-open socket
+ * instead of opening a second HTTPS connection at boot. The HTTPS list-based
+ * sync_all_commands() above is still used for the SD-card-remount reconcile,
+ * which needs the list diff to add/remove dynamic MP3/JPEG-folder commands. */
 
 static char *json_escape_append(char *dst, char *end, const char *src)
 {
@@ -5046,6 +5062,30 @@ static void sync_command_ws(const pf_cmd_t *cmd)
     ESP_LOGI(TAG, "cmd/save(ws) '%s' -> %s", cmd->trigger, esp_err_to_name(r));
 }
 
+/* Sync one command over the websocket, pacing sends so a rapid burst of
+ * vposts plus the server's ~460-byte acks doesn't fill the send buffer faster
+ * than it drains (the CYD's TCP windows are trimmed to 2880 bytes to save
+ * internal RAM; 350ms between sends lets each ack arrive and be consumed
+ * before the next request). Returns false if the socket dropped mid-sync. */
+static bool sync_one_cmd_ws(const pf_cmd_t *cmd)
+{
+    if (!socketio_connected()) {
+        ESP_LOGW(TAG, "ws command sync aborted: socket dropped");
+        return false;
+    }
+    sync_command_ws(cmd);
+    vTaskDelay(pdMS_TO_TICKS(350));
+    return true;
+}
+
+static bool sync_cmd_array_ws(const pf_cmd_t *cmds, size_t count)
+{
+    for (size_t i = 0; i < count; i++) {
+        if (!sync_one_cmd_ws(&cmds[i])) return false;
+    }
+    return true;
+}
+
 static void sync_all_commands_ws(void)
 {
     if (!s_computer_id[0] || !s_hw_token[0]) return;
@@ -5061,25 +5101,31 @@ static void sync_all_commands_ws(void)
      * board has no working audio path (BT A2DP needs a 256KB PCM ring it
      * can't allocate) and cannot decode/display images (~150KB RGB565 buffer,
      * plus web fetch needs a 2nd TLS context). See cyd_commands.json. */
+    if (!sync_cmd_array_ws(s_pf_cmds, PF_CMD_COUNT)) return;
 
-    /* Pace the sends. The CYD's TCP windows are trimmed to 2880 bytes (to save
-     * internal RAM), so a rapid burst of ~12 vposts plus the server's ~460-byte
-     * acks for each one can fill the send buffer faster than it drains — the WS
-     * client's write then times out and drops the connection (which this board
-     * usually can't re-establish). 350ms between sends lets each ack arrive and
-     * be consumed before the next request. */
-    for (size_t i = 0; i < PF_CMD_COUNT; i++) {
-        if (!socketio_connected()) {
-            ESP_LOGW(TAG, "ws command sync aborted: socket dropped");
-            return;
-        }
-        sync_command_ws(&s_pf_cmds[i]);
-        vTaskDelay(pdMS_TO_TICKS(350));
+#if CONFIG_CORE2_HW
+    /* Core2 supports the MP3/Bluetooth media commands and SD-card folder
+     * playback/slideshow, so register those too on first sync. Folder
+     * indexes were rebuilt just before this call, so s_mp3_folders /
+     * s_jpeg_folders already reflect the SD card's current contents. */
+    if (!sync_cmd_array_ws(s_pf_media_cmds, PF_MEDIA_CMD_COUNT)) return;
+
+    for (size_t i = 0; i < s_mp3_folder_count; i++) {
+        char desc[320];
+        pf_cmd_t dyn_cmd = mp3_folder_pf_cmd(&s_mp3_folders[i], desc, sizeof(desc));
+        if (!sync_one_cmd_ws(&dyn_cmd)) return;
     }
+
+    for (size_t i = 0; i < s_jpeg_folder_count; i++) {
+        char desc[320];
+        pf_cmd_t dyn_cmd = jpeg_folder_pf_cmd(&s_jpeg_folders[i], desc, sizeof(desc));
+        if (!sync_one_cmd_ws(&dyn_cmd)) return;
+    }
+#endif
 
     ESP_LOGI(TAG, "ws command sync complete");
 }
-#endif /* CONFIG_HARDWARE_CYD */
+#endif /* CONFIG_HARDWARE_CYD || CONFIG_CORE2_HW */
 
 /* ── Color parser ──────────────────────────────────────────────────────── */
 
@@ -6593,16 +6639,16 @@ void picture_frame_run(void)
              * handshake: folder-index rebuilds + the command sync. */
             rebuild_mp3_folder_index();
             rebuild_jpeg_folder_index();
-#if CONFIG_HARDWARE_CYD
-            /* No-PSRAM: register commands over the open websocket (no second
-             * TLS context). cmd/save CREATES a new record each call (it is not
-             * an upsert — every call returns "Created successfully" with a new
-             * id), and the CYD can't fetch+diff the existing command list over
-             * its tiny WS buffer. So to avoid duplicating every command on each
-             * reboot, sync ONLY right after the computer is freshly created
-             * (a new computer has no commands yet). have_comp_id is the value
-             * read from NVS at boot, so !have_comp_id == "created this boot".
-             * On a normal reboot the commands are already registered. */
+#if CONFIG_HARDWARE_CYD || CONFIG_CORE2_HW
+            /* Register commands over the open websocket instead of opening a
+             * second HTTPS connection at boot. cmd/save CREATES a new record
+             * each call (it is not an upsert — every call returns "Created
+             * successfully" with a new id), and the WS path can't fetch+diff
+             * the existing command list, so sync ONLY right after the computer
+             * is freshly created (a new computer has no commands yet).
+             * have_comp_id is the value read from NVS at boot, so
+             * !have_comp_id == "created this boot". On a normal reboot the
+             * commands are already registered. */
             if (!have_comp_id) {
                 pf_status_draw("Syncing commands...");
                 sync_all_commands_ws();
