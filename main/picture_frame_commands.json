@@ -254,5 +254,22 @@
   "voiceReply": "{{result}}",
   "mcpToolDescription": "Get the battery level of the user's Core2 device. Returns level (0-100), voltage in mV, and whether it is charging.",
   "icon": "🔋"
+ },
+ {
+  "trigger": "askpic",
+  "command": "askpic",
+  "voice": "askpic",
+  "allowParams": "true",
+  "voiceReply": "{{result}}",
+  "mcpToolDescription": "Ask a question about the picture currently displayed on the user's Core2 device, using AI vision. Example: 'What is in this picture?'",
+  "icon": "❓"
+ },
+ {
+  "trigger": "aitts",
+  "command": "aitts",
+  "voice": "aitts",
+  "allowParams": "true",
+  "mcpToolDescription": "Toggle whether AI answers from 'askpic' are spoken aloud via TTS on the user's Core2 device. Default is on. Pass 'on', 'off', or omit to toggle.",
+  "icon": "🗣️"
  }
 ]

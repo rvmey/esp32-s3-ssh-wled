@@ -43,6 +43,7 @@
 #include "esp_crt_bundle.h"
 #include "esp_timer.h"
 #include "esp_sntp.h"
+#include "mbedtls/base64.h"
 
 #include "wifi_manager.h"
 #include "improv_wifi.h"
@@ -371,6 +372,8 @@ static const char *tcmd_display_host(void)
 #define NVS_KEY_BT_NAME "bt_name"
 #define NVS_KEY_SLEEP_MIN "sleep_min"
 #define NVS_KEY_SLEEP_ON_PWR "sleep_on_pwr"
+#define NVS_KEY_OPENAI  "stt_key"   /* shared OpenAI key (also used by askpic) */
+#define NVS_KEY_AI_TTS  "ai_tts"
 
 #define HW_TOKEN_MAX_LEN    513   /* 512 payload + NUL */
 #define COMPUTER_ID_MAX_LEN  33   /* 32 payload + NUL  */
@@ -413,6 +416,16 @@ static volatile bool s_pending_speak       __attribute__((unused)) = false;
 static char          s_pending_speak_text[256] __attribute__((unused)) = {0};
 static int           s_pending_run_tries  __attribute__((unused)) = 0;
 static TickType_t    s_pending_run_retry_after __attribute__((unused)) = 0;
+
+/* Pending "askpic" question — set by the WS event task, consumed by the main loop */
+static char          s_pending_ask_text[256]   __attribute__((unused)) = {0};
+static char          s_pending_ask_run_id[33]  __attribute__((unused)) = {0};
+static volatile bool s_pending_ask_pic         __attribute__((unused)) = false;
+#if CONFIG_CORE2_HW
+/* Whether "askpic" answers are also spoken aloud via TTS. Default on,
+ * overridden from NVS at boot, toggled by the "aitts" command. */
+static bool          s_ai_tts_enabled = true;
+#endif
 
 /* Pending AVRCP actions — set by bt_avrc_tg_cb, consumed by the main loop */
 #if CONFIG_BT_ENABLED && CONFIG_BT_A2DP_ENABLE
@@ -4580,6 +4593,174 @@ static bool json_extract_nested(const char *json, const char *outer,
     return json_extract_str(sub, key, out, out_sz);
 }
 
+#if !CONFIG_HARDWARE_CYD
+#define PF_VISION_URL        "https://api.openai.com/v1/chat/completions"
+#define PF_VISION_TIMEOUT_MS 60000
+#define PF_VISION_MAX_RESP   4096
+#define PF_ASK_ANSWER_MAX    512
+
+/*
+ * Sends the currently displayed JPEG plus a question to OpenAI's vision-
+ * capable chat endpoint, shows the answer on screen, optionally speaks it
+ * (Core2), and reports it back to TRIGGERcmd via s_pending_result.
+ */
+static void pf_ask_picture(const char *question, const char *run_id)
+{
+    char answer[PF_ASK_ANSWER_MAX] = {0};
+
+    if (!s_jpeg_cache || s_jpeg_cache_len <= 0) {
+        strncpy(answer, "No picture is\ncurrently displayed.", sizeof(answer) - 1);
+        goto ask_done;
+    }
+
+    {
+        char api_key[256] = {0};
+        if (!nvs_read_str(NVS_KEY_OPENAI, api_key, sizeof(api_key)) || !api_key[0]) {
+            strncpy(answer, "No OpenAI API key\nconfigured.\nVisit device IP\nto configure.",
+                    sizeof(answer) - 1);
+            goto ask_done;
+        }
+
+        screen_draw_text("Thinking...");
+
+        /* JSON-escape the question for embedding in the request body */
+        char esc_q[513];
+        {
+            const char *q = (question && question[0]) ? question : "What is in this picture?";
+            char *p = esc_q;
+            for (; *q && (size_t)(p - esc_q) < sizeof(esc_q) - 2; q++) {
+                if (*q == '"' || *q == '\\') { *p++ = '\\'; *p++ = *q; }
+                else if (*q == '\n')          { *p++ = '\\'; *p++ = 'n'; }
+                else if (*q == '\r')          { /* skip */ }
+                else                          { *p++ = *q; }
+            }
+            *p = '\0';
+        }
+
+        static const char prefix[] =
+            "{\"model\":\"gpt-4o-mini\",\"messages\":[{\"role\":\"user\",\"content\":["
+            "{\"type\":\"text\",\"text\":\"";
+        static const char mid[] =
+            "\"},{\"type\":\"image_url\",\"image_url\":{\"url\":"
+            "\"data:image/jpeg;base64,";
+        static const char suffix[] = "\"}}]}],\"max_tokens\":200}";
+
+        size_t b64_cap    = 4 * (((size_t)s_jpeg_cache_len + 2) / 3);
+        size_t prefix_len = strlen(prefix);
+        size_t esc_q_len  = strlen(esc_q);
+        size_t mid_len    = strlen(mid);
+        size_t suffix_len = strlen(suffix);
+        size_t total      = prefix_len + esc_q_len + mid_len + b64_cap + suffix_len + 1;
+
+        char *body = heap_caps_malloc(total, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (!body) body = malloc(total);
+        if (!body) {
+            ESP_LOGE(TAG, "askpic: no memory for %u byte request", (unsigned)total);
+            strncpy(answer, "Out of memory", sizeof(answer) - 1);
+            goto ask_done;
+        }
+
+        char *p = body;
+        memcpy(p, prefix, prefix_len); p += prefix_len;
+        memcpy(p, esc_q, esc_q_len);   p += esc_q_len;
+        memcpy(p, mid, mid_len);       p += mid_len;
+        size_t b64_olen = 0;
+        mbedtls_base64_encode((unsigned char *)p, b64_cap, &b64_olen,
+                               (const unsigned char *)s_jpeg_cache, (size_t)s_jpeg_cache_len);
+        p += b64_olen;
+        memcpy(p, suffix, suffix_len); p += suffix_len;
+        *p = '\0';
+        int body_len = (int)(p - body);
+
+        char bearer[280];
+        snprintf(bearer, sizeof(bearer), "Bearer %s", api_key);
+
+        esp_http_client_config_t cfg = {
+            .url               = PF_VISION_URL,
+            .method            = HTTP_METHOD_POST,
+            .timeout_ms        = PF_VISION_TIMEOUT_MS,
+            .crt_bundle_attach = esp_crt_bundle_attach,
+            .buffer_size       = 4096,
+            .buffer_size_tx    = 4096,
+            .keep_alive_enable = false,
+        };
+        esp_http_client_handle_t client = esp_http_client_init(&cfg);
+        if (!client) {
+            free(body);
+            strncpy(answer, "AI request failed\n(init)", sizeof(answer) - 1);
+            goto ask_done;
+        }
+
+        esp_http_client_set_header(client, "Authorization", bearer);
+        esp_http_client_set_header(client, "Content-Type", "application/json");
+
+        if (esp_http_client_open(client, body_len) != ESP_OK) {
+            esp_http_client_cleanup(client);
+            free(body);
+            strncpy(answer, "AI request failed\n(network)", sizeof(answer) - 1);
+            goto ask_done;
+        }
+        esp_http_client_write(client, body, body_len);
+        free(body);
+
+        int64_t cl = esp_http_client_fetch_headers(client);
+        int status = esp_http_client_get_status_code(client);
+        int max_resp = PF_VISION_MAX_RESP;
+        if (cl > 0 && cl < max_resp) max_resp = (int)cl;
+
+        char *resp = malloc(max_resp + 1);
+        if (resp) {
+            int total_read = 0, n;
+            while (total_read < max_resp) {
+                n = esp_http_client_read(client, resp + total_read, max_resp - total_read);
+                if (n <= 0) break;
+                total_read += n;
+            }
+            resp[total_read] = '\0';
+            ESP_LOGI(TAG, "askpic: HTTP %d resp: %.200s", status, resp);
+            if (status == 200) {
+                if (!json_extract_nested(resp, "message", "content", answer, sizeof(answer))) {
+                    strncpy(answer, "AI gave no answer", sizeof(answer) - 1);
+                }
+            } else {
+                snprintf(answer, sizeof(answer), "AI request failed\n(HTTP %d)", status);
+            }
+            free(resp);
+        } else {
+            strncpy(answer, "AI request failed\n(no memory)", sizeof(answer) - 1);
+        }
+        esp_http_client_close(client);
+        esp_http_client_cleanup(client);
+    }
+
+ask_done:
+    answer[sizeof(answer) - 1] = '\0';
+    screen_draw_text(answer);
+#if CONFIG_CORE2_HW
+    if (s_ai_tts_enabled) {
+        core2_tts_speak(answer);
+    }
+#endif
+
+    /* Report the answer back to TRIGGERcmd, JSON-escaping it for s_pending_result */
+    strncpy(s_pending_run_id, run_id, sizeof(s_pending_run_id) - 1);
+    s_pending_run_id[sizeof(s_pending_run_id) - 1] = '\0';
+    {
+        char *out = s_pending_result;
+        const char *end = s_pending_result + sizeof(s_pending_result) - 1;
+        for (const char *a = answer; *a && out < end - 1; a++) {
+            if (*a == '"' || *a == '\\') { *out++ = '\\'; *out++ = *a; }
+            else if (*a == '\n')          { *out++ = '\\'; *out++ = 'n'; }
+            else if (*a == '\r')          { /* skip */ }
+            else                          { *out++ = *a; }
+        }
+        *out = '\0';
+    }
+    s_pending_has_result = true;
+    s_pending_run = true;
+}
+#endif /* !CONFIG_HARDWARE_CYD */
+
 /* Decode a possibly-quoted JSON string literal into plain text. */
 static bool json_unescape_string_literal(const char *in, char *out, size_t out_sz)
 {
@@ -4749,6 +4930,10 @@ static const pf_cmd_t s_pf_cmds[] = {
     { "battery",   "battery",   "false", "Get the battery level of the user's Core2 device. Returns level (0-100), voltage in mV, and whether it is charging.", "\xF0\x9F\x94\x8B" /* 🔋 */, "{{result}}" },
     { "listen",    "listen",    "false", "Start listening for a voice command on the user's Core2 device (records for 4 seconds then processes as an AI prompt).", "\xF0\x9F\x8E\xA4" /* 🎤 */, NULL },
     { "sleeponpower","sleeponpower","true", "Toggle whether the device can auto-sleep while on USB power (default off = only sleep on battery). Pass 'on'/'off' or omit to toggle.", "\xF0\x9F\x94\x8C" /* 🔌 */, NULL },
+    { "askpic",    "askpic",    "true",  "Ask a question about the picture currently displayed, using AI vision. Example: 'What is in this picture?'", "\xE2\x9D\x93" /* ❓ */, "{{result}}" },
+#if CONFIG_CORE2_HW
+    { "aitts",     "aitts",     "true",  "Toggle whether AI answers from 'askpic' are spoken aloud via TTS. Default on. Pass 'on'/'off' or omit to toggle.", "\xF0\x9F\x97\xA3\xEF\xB8\x8F" /* 🗣️ */, NULL },
+#endif
 #endif
 };
 #define PF_CMD_COUNT  (sizeof(s_pf_cmds) / sizeof(s_pf_cmds[0]))
@@ -5815,6 +6000,34 @@ static void pf_event_handler(const char *event_name,
         s_pending_voice_query = true;
 #endif
 
+#if !CONFIG_HARDWARE_CYD
+    } else if (strcmp(s_trigger, "askpic") == 0) {
+        strncpy(s_pending_ask_text, s_params[0] ? s_params : "What is in this picture?",
+                sizeof(s_pending_ask_text) - 1);
+        s_pending_ask_text[sizeof(s_pending_ask_text) - 1] = '\0';
+        strncpy(s_pending_ask_run_id, s_id, sizeof(s_pending_ask_run_id) - 1);
+        s_pending_ask_run_id[sizeof(s_pending_ask_run_id) - 1] = '\0';
+        s_pending_ask_pic = true;
+        s_id[0] = '\0';   /* suppress the generic run/save below — pf_ask_picture()
+                           * sends run/save + command/result together once done */
+#endif
+
+#if CONFIG_CORE2_HW
+    } else if (strcmp(s_trigger, "aitts") == 0) {
+        char mode[16] = {0};
+        strncpy(mode, s_params, sizeof(mode) - 1);
+        for (size_t i = 0; mode[i]; i++) mode[i] = (char)tolower((unsigned char)mode[i]);
+        if (strcmp(mode, "on") == 0) {
+            s_ai_tts_enabled = true;
+        } else if (strcmp(mode, "off") == 0) {
+            s_ai_tts_enabled = false;
+        } else {
+            s_ai_tts_enabled = !s_ai_tts_enabled;
+        }
+        nvs_write_u8(NVS_KEY_AI_TTS, s_ai_tts_enabled ? 1 : 0);
+        ESP_LOGI(TAG, "AI TTS: %s", s_ai_tts_enabled ? "on" : "off");
+#endif
+
     } else {
         int folder_idx = mp3_find_folder_trigger(s_trigger);
         if (folder_idx >= 0) {
@@ -6500,6 +6713,9 @@ void picture_frame_run(void)
         if (nvs_read_u8(NVS_KEY_SLEEP_ON_PWR, &sleep_on_pwr)) {
             s_sleep_while_powered = (sleep_on_pwr != 0);
         }
+        uint8_t ai_tts = 1;
+        nvs_read_u8(NVS_KEY_AI_TTS, &ai_tts);
+        s_ai_tts_enabled = (ai_tts != 0);
 #endif
     }
     /* Defer SD mount/index work until the main loop so boot UI is responsive. */
@@ -6933,6 +7149,13 @@ void picture_frame_run(void)
                 do_core2_voice_query();
             }
 #endif
+#endif
+
+#if !CONFIG_HARDWARE_CYD
+            if (s_pending_ask_pic) {
+                s_pending_ask_pic = false;
+                pf_ask_picture(s_pending_ask_text, s_pending_ask_run_id);
+            }
 #endif
 
 #if CONFIG_CORE2_HW

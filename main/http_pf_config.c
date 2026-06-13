@@ -110,10 +110,11 @@ static const char s_ok_wifi[] =
 
 static const char s_stt_form[] =
     "<hr>"
-    "<h2 style='font-size:1.1rem;color:#a5b4fc;margin:0 0 .5rem'>Voice Feature (OpenAI Whisper)</h2>"
+    "<h2 style='font-size:1.1rem;color:#a5b4fc;margin:0 0 .5rem'>AI Features (OpenAI)</h2>"
     "<p style='color:#94a3b8;font-size:.85rem;margin:0 0 .75rem'>"
-    "Press the side button to record a voice command. "
-    "An OpenAI API key is required for transcription.</p>"
+    "Press the side button to record a voice command, or use the "
+    "'askpic' command to ask a question about the displayed picture. "
+    "An OpenAI API key is required for these features.</p>"
     "<form method='POST' action='/stt_key'>"
     "<label style='display:block;color:#94a3b8;font-size:.85rem;margin:.5rem 0 .2rem'>"
     "OpenAI API Key</label>"
