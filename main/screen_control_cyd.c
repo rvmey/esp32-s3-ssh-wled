@@ -81,6 +81,7 @@ static const char *TAG = "screen_cyd";
 #define XPT_MISO CONFIG_CYD_XPT2046_MISO_GPIO
 #define XPT_SCLK CONFIG_CYD_XPT2046_SCLK_GPIO
 #define XPT_CS   CONFIG_CYD_XPT2046_CS_GPIO
+#define XPT_IRQ  CONFIG_CYD_XPT2046_IRQ_GPIO
 #endif
 
 static spi_device_handle_t s_spi         = NULL;
@@ -468,6 +469,14 @@ static bool touch_read_point_physical(int *raw_x, int *raw_y)
 #if CONFIG_CYD_TOUCH_XPT2046
     if (!s_touch_xpt_ready) return false;
 
+    /* T_IRQ (PENIRQ) is active-low: pulled low only while the panel is
+     * actually pressed. Without this check the ADC inputs float when not
+     * pressed and yield spurious low-but-nonzero readings, making the
+     * touch task think it's continuously being tapped. */
+#if CONFIG_CYD_XPT2046_IRQ_GPIO >= 0
+    if (gpio_get_level(XPT_IRQ) != 0) return false;
+#endif
+
     xSemaphoreTake(s_draw_mutex, portMAX_DELAY);
     uint16_t rx_x = xpt2046_xfer16(0xD0);
     uint16_t rx_y = xpt2046_xfer16(0x90);
@@ -725,9 +734,26 @@ esp_err_t screen_init(void)
         gpio_set_level(XPT_SCLK, 0);
         gpio_set_level(XPT_MOSI, 0);
 
+#if CONFIG_CYD_XPT2046_IRQ_GPIO >= 0
+        /* T_IRQ has no external pull-up on most CYD boards; enable the
+         * internal one so it reads HIGH (not pressed) when idle. */
+        gpio_config_t irq_cfg = {
+            .pin_bit_mask = BIT64(XPT_IRQ),
+            .mode         = GPIO_MODE_INPUT,
+            .pull_up_en   = GPIO_PULLUP_ENABLE,
+        };
+        gpio_config(&irq_cfg);
+#endif
+
         s_touch_xpt_ready = true;
-        ESP_LOGI(TAG, "XPT2046 touch enabled (bit-banged: MOSI=%d MISO=%d SCLK=%d CS=%d)",
-                 XPT_MOSI, XPT_MISO, XPT_SCLK, XPT_CS);
+        ESP_LOGI(TAG, "XPT2046 touch enabled (bit-banged: MOSI=%d MISO=%d SCLK=%d CS=%d IRQ=%d)",
+                 XPT_MOSI, XPT_MISO, XPT_SCLK, XPT_CS,
+#if CONFIG_CYD_XPT2046_IRQ_GPIO >= 0
+                 XPT_IRQ
+#else
+                 -1
+#endif
+        );
         xTaskCreate(touch_poll_task, "cyd_touch", 3072, NULL, 4, NULL);
     }
 #elif CONFIG_CYD_TOUCH_CST816
