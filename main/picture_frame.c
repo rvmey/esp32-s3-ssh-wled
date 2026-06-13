@@ -4645,7 +4645,10 @@ static void pf_ask_picture(const char *question, const char *run_id)
             "\"data:image/jpeg;base64,";
         static const char suffix[] = "\"}}]}],\"max_tokens\":200}";
 
-        size_t b64_cap    = 4 * (((size_t)s_jpeg_cache_len + 2) / 3);
+        /* mbedtls_base64_encode requires dlen >= 4*ceil(slen/3) + 1 (it also
+         * writes a trailing NUL within that space), even though *olen on
+         * success is just 4*ceil(slen/3). */
+        size_t b64_cap    = 4 * (((size_t)s_jpeg_cache_len + 2) / 3) + 1;
         size_t prefix_len = strlen(prefix);
         size_t esc_q_len  = strlen(esc_q);
         size_t mid_len    = strlen(mid);
