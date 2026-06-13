@@ -590,6 +590,7 @@ static bool pf_reboot_touch_handler(int x, int y, screen_gesture_t gesture)
     return true;
 }
 static bool mp3_advance_track(int step, const char *reason);
+static bool mp3_start_track(int folder_idx, int track_idx, bool keep_position);
 static bool mp3_handle_track_end(void);
 static bool mp3_queue_seek_relative(int32_t delta_ms, const char *reason);
 static void mp3_log_mode_status(const char *reason);
@@ -3213,7 +3214,16 @@ static bool pf_touch_handler(int x, int y, screen_gesture_t gesture)
             handled = true;
             break;
         case SCREEN_GESTURE_SWIPE_LEFT:
-            handled = mp3_advance_track(-1, "swipe previous");
+            /* Right-to-left: restart the current song, unless we're still in
+             * the first 5 seconds, in which case go to the previous song. */
+            if (s_mp3.position_ms < 5000) {
+                handled = mp3_advance_track(-1, "swipe previous");
+            } else {
+                handled = mp3_start_track(s_mp3.folder_idx, s_mp3.track_idx, false);
+                if (handled) {
+                    ESP_LOGI(TAG, "mp3: swipe restart -> track %d", s_mp3.track_idx + 1);
+                }
+            }
             break;
         case SCREEN_GESTURE_SWIPE_RIGHT:
             handled = mp3_advance_track(1, "swipe next");
