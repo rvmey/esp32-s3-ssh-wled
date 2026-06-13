@@ -370,6 +370,7 @@ static const char *tcmd_display_host(void)
 #define NVS_KEY_BT_BDA  "bt_bda"
 #define NVS_KEY_BT_NAME "bt_name"
 #define NVS_KEY_SLEEP_MIN "sleep_min"
+#define NVS_KEY_SLEEP_ON_PWR "sleep_on_pwr"
 
 #define HW_TOKEN_MAX_LEN    513   /* 512 payload + NUL */
 #define COMPUTER_ID_MAX_LEN  33   /* 32 payload + NUL  */
@@ -386,6 +387,11 @@ static TickType_t s_last_activity_tick = 0;
 /* Runtime sleep timeout in seconds; 0 = disabled.  Defaults to the Kconfig
  * value but can be overridden at runtime by the "sleeptimer" command. */
 static uint32_t   s_sleep_timeout_s    = CONFIG_CORE2_SLEEP_TIMEOUT_S;
+#endif
+#if CONFIG_CORE2_HW
+/* If false (default), the idle-sleep timer is suppressed while running on
+ * external power. Toggled by the "sleeponpower" command. */
+static bool       s_sleep_while_powered = false;
 #endif
 #if CONFIG_CORE2_HW
 /* Set while the battery readout is on screen; tap refreshes the reading. */
@@ -3390,6 +3396,15 @@ static esp_err_t core2_axp_write_reg(uint8_t reg, uint8_t val)
                                       portMAX_DELAY);
 }
 
+/* AXP192 reg 0x00 bit2: battery charge current direction (1 = charging
+ * current flowing into the battery, i.e. external power is connected). */
+static bool core2_axp_on_external_power(void)
+{
+    uint8_t reg0 = 0;
+    if (core2_axp_read_reg(0x00, &reg0) != ESP_OK) return false;
+    return (reg0 & 0x04) != 0;
+}
+
 static void core2_reassert_sd_power(void)
 {
     uint8_t reg = 0;
@@ -4714,6 +4729,7 @@ static const pf_cmd_t s_pf_cmds[] = {
     /* battery (AXP192) and listen (microphone) are Core2-only hardware. */
     { "battery",   "battery",   "false", "Get the battery level of the user's Core2 device. Returns level (0-100) and voltage in mV.", "\xF0\x9F\x94\x8B" /* 🔋 */, "{{result}}" },
     { "listen",    "listen",    "false", "Start listening for a voice command on the user's Core2 device (records for 4 seconds then processes as an AI prompt).", "\xF0\x9F\x8E\xA4" /* 🎤 */, NULL },
+    { "sleeponpower","sleeponpower","true", "Toggle whether the device can auto-sleep while on USB power (default off = only sleep on battery). Pass 'on'/'off' or omit to toggle.", "\xF0\x9F\x94\x8C" /* 🔌 */, NULL },
 #endif
 };
 #define PF_CMD_COUNT  (sizeof(s_pf_cmds) / sizeof(s_pf_cmds[0]))
@@ -5726,6 +5742,22 @@ static void pf_event_handler(const char *event_name,
         nvs_write_u8(NVS_KEY_SLEEP_MIN, (uint8_t)mins);
         ESP_LOGI(TAG, "sleep timeout set to %d minutes", mins);
 
+#if CONFIG_CORE2_HW
+    } else if (strcmp(s_trigger, "sleeponpower") == 0) {
+        char mode[16] = {0};
+        strncpy(mode, s_params, sizeof(mode) - 1);
+        for (size_t i = 0; mode[i]; i++) mode[i] = (char)tolower((unsigned char)mode[i]);
+        if (strcmp(mode, "on") == 0) {
+            s_sleep_while_powered = true;
+        } else if (strcmp(mode, "off") == 0) {
+            s_sleep_while_powered = false;
+        } else {
+            s_sleep_while_powered = !s_sleep_while_powered;
+        }
+        nvs_write_u8(NVS_KEY_SLEEP_ON_PWR, s_sleep_while_powered ? 1 : 0);
+        ESP_LOGI(TAG, "sleep-while-powered: %s", s_sleep_while_powered ? "on" : "off");
+#endif
+
     } else if (strcmp(s_trigger, "sleep") == 0) {
         ESP_LOGI(TAG, "sleep command — entering deep sleep");
         pf_enter_deep_sleep_with_touch_wake();
@@ -6442,6 +6474,12 @@ void picture_frame_run(void)
             s_sleep_timeout_s = (uint32_t)sleep_min * 60u;
         }
 #endif
+#if CONFIG_CORE2_HW
+        uint8_t sleep_on_pwr = 0;
+        if (nvs_read_u8(NVS_KEY_SLEEP_ON_PWR, &sleep_on_pwr)) {
+            s_sleep_while_powered = (sleep_on_pwr != 0);
+        }
+#endif
     }
     /* Defer SD mount/index work until the main loop so boot UI is responsive. */
     s_mp3_next_mount_retry = xTaskGetTickCount();
@@ -6893,6 +6931,7 @@ void picture_frame_run(void)
 
             if (s_sleep_timeout_s > 0 &&
                 !(s_mp3.active && !s_mp3.paused) &&
+                (s_sleep_while_powered || !core2_axp_on_external_power()) &&
                 (TickType_t)(xTaskGetTickCount() - s_last_activity_tick) >=
                     pdMS_TO_TICKS(s_sleep_timeout_s * 1000u)) {
                 ESP_LOGI(TAG, "Idle timeout (%d s) — entering deep sleep",

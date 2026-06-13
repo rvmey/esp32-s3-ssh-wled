@@ -234,6 +234,13 @@
   "icon": "😴"
  },
  {
+  "trigger": "sleeponpower",
+  "command": "sleeponpower",
+  "allowParams": "true",
+  "mcpToolDescription": "Toggle whether the user's Core2 device can auto-sleep (via sleeptimer) while connected to USB power. Default is off (device only auto-sleeps on battery). Pass 'on', 'off', or omit to toggle.",
+  "icon": "🔌"
+ },
+ {
   "trigger": "sleep",
   "command": "sleep",
   "allowParams": "false",
