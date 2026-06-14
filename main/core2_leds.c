@@ -242,6 +242,48 @@ void core2_leds_set_vu(float low_level, float high_level)
     }
 }
 
+/* Visualizer style 5: VU-meter bars, bottom-up.
+ * Same low/high band split and green/yellow/red ramp as style 1, but fills
+ * from the bottom corners (LED4 left, LED5 right) toward the top corners
+ * (LED0 left, LED9 right) as the level rises — the opposite fill direction
+ * from style 1. */
+void core2_leds_set_vu_bottomup(float low_level, float high_level)
+{
+    if (!core2_leds_initialized()) return;
+    if (low_level < 0.0f)  low_level  = 0.0f;
+    if (low_level > 1.0f)  low_level  = 1.0f;
+    if (high_level < 0.0f) high_level = 0.0f;
+    if (high_level > 1.0f) high_level = 1.0f;
+
+    const int zone = CORE2_LED_COUNT / 2; /* 5 */
+    int low_n  = (int)(low_level  * zone + 0.5f);
+    int high_n = (int)(high_level * zone + 0.5f);
+    if (low_n  > zone) low_n  = zone;
+    if (high_n > zone) high_n = zone;
+
+    for (int i = 0; i < zone; i++) {
+        int led = (zone - 1) - i; /* fills LED4 up to LED0 */
+        uint8_t r = 0, g = 0, b = 0;
+        if (i < low_n) vu_meter_rgb(i, zone, &r, &g, &b);
+        s_pixels[led * 3 + 0] = g;
+        s_pixels[led * 3 + 1] = r;
+        s_pixels[led * 3 + 2] = b;
+    }
+    for (int i = 0; i < zone; i++) {
+        int led = zone + i; /* fills LED5 up to LED9 */
+        uint8_t r = 0, g = 0, b = 0;
+        if (i < high_n) vu_meter_rgb(i, zone, &r, &g, &b);
+        s_pixels[led * 3 + 0] = g;
+        s_pixels[led * 3 + 1] = r;
+        s_pixels[led * 3 + 2] = b;
+    }
+
+    esp_err_t err = led_flush();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "set_vu_bottomup: %s", esp_err_to_name(err));
+    }
+}
+
 /* Visualizer style 4: mirrored VU meter — both side faces fill outward from
  * the bottom together, driven by the same overall loudness level (0..5 LEDs
  * per side). The boundary LED is partially lit (brightness scaled by the

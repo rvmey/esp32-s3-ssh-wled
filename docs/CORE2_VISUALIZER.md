@@ -2,7 +2,7 @@
 
 The Core2 variant drives the 10 SK6812 LEDs on the sides of the M5Stack Core2
 (GPIO 25) as a music visualizer while MP3 playback is active. Audio is
-analyzed in real time and rendered to the LED strip in one of four styles.
+analyzed in real time and rendered to the LED strip in one of five styles.
 
 ---
 
@@ -49,6 +49,7 @@ LED 9 at top-right. This single logical chain
 | `visualizer 2` | Select **style 2 — FFT spectrum** (also turns the visualizer on) |
 | `visualizer 3` | Select **style 3 — chase** (also turns the visualizer on) |
 | `visualizer 4` | Select **style 4 — mirrored VU meter** (also turns the visualizer on) |
+| `visualizer 5` | Select **style 5 — VU bars (bottom-up)** (also turns the visualizer on) |
 
 The on/off state and selected style are both persisted to NVS, so they
 survive a reboot. Default style on a fresh install is **1**.
@@ -180,6 +181,32 @@ partial **brightness** based on the fractional level, giving a smooth
 gradient rather than a hard step. All lit LEDs are red.
 
 Implemented as `core2_leds_set_vu_mirror(level)` in `core2_leds.c`.
+
+---
+
+## Style 5 — VU bars (bottom-up)
+
+This style reuses style 1's low/high band split and color ramp exactly, but
+fills the strip in the opposite direction — bottom-up instead of top-down:
+
+- **Low zone (LEDs 0–4, the left side face):** driven by the loudest of the
+  5 low-frequency bands (60 Hz – 1000 Hz). Fills starting from LED 4 at the
+  bottom-left corner, extending toward LED 0 at the top-left corner.
+- **High zone (LEDs 5–9, the right side face):** driven by the loudest of
+  the 5 high-frequency bands (2000 Hz – 16000 Hz). Fills starting from
+  LED 5 at the bottom-right corner, extending toward LED 9 at the top-right
+  corner.
+
+As with style 1, the number of lit LEDs per zone is proportional to that
+zone's level (0–5 LEDs), and lit LEDs use the same green/yellow/red VU-meter
+ramp based on their position in the bar.
+
+The result: both zones grow upward from the bottom of the device as the
+music gets louder — the inverse of style 1's top-down fill — bass on the
+left side, treble on the right.
+
+Implemented as `core2_leds_set_vu_bottomup(low_level, high_level)` in
+`core2_leds.c`.
 
 ---
 
