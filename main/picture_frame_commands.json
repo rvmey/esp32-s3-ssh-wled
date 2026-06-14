@@ -188,7 +188,7 @@
   "trigger": "visualizer",
   "command": "visualizer",
   "allowParams": "true",
-  "mcpToolDescription": "Enable or disable the LED audio visualizer on the sides of the user's Core2 device. When on, the LEDs show FFT frequency levels while music plays. Example: 'on' or 'off'",
+  "mcpToolDescription": "Enable or disable the LED audio visualizer on the sides of the user's Core2 device, or pick its style. 'on'/'off' toggle the visualizer; '1' selects VU-meter bars (lows fill from one end, highs from the other) and '2' selects the per-band FFT spectrum. Example: 'on', 'off', '1', or '2'",
   "icon": "🌈"
  },
  {

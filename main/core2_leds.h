@@ -13,6 +13,7 @@ void  core2_leds_init(void);
 bool  core2_leds_initialized(void);
 void  core2_leds_set_solid(uint8_t r, uint8_t g, uint8_t b);
 void  core2_leds_set_bands(const float *levels, int count);
+void  core2_leds_set_vu(float low_level, float high_level);
 void  core2_leds_off(void);
 
 #ifdef __cplusplus

@@ -315,6 +315,7 @@ typedef struct {
     bool       repeat_track;
     bool       repeat_playlist;
     bool       visualizer;
+    uint8_t    visualizer_style; /* 1 = VU-meter bars (default), 2 = per-band spectrum */
     int        volume;            /* 0..100 */
     bool       muted;            /* toggled by "mute" command; not persisted */
     int        folder_idx;        /* index into s_mp3_folders */
@@ -366,6 +367,7 @@ static const char *tcmd_display_host(void)
 #define NVS_KEY_REPEAT_TRACK "mp3_rpt_trk"
 #define NVS_KEY_REPEAT_PLAYLIST "mp3_rpt_list"
 #define NVS_KEY_VISUALIZER      "mp3_viz"
+#define NVS_KEY_VISUALIZER_STYLE "mp3_viz_sty"
 #define NVS_KEY_VOLUME  "mp3_volume"
 #define NVS_KEY_MP3_MODE "mp3_mode"
 #define NVS_KEY_BT_BDA  "bt_bda"
@@ -481,6 +483,7 @@ static mp3_state_t   s_mp3 = {
     .shuffle = false,
     .repeat_track = false,
     .repeat_playlist = false,
+    .visualizer_style = 1,
     .volume = 50,
     .folder_idx = -1,
     .track_idx = -1,
@@ -567,7 +570,20 @@ static void viz_run_block(void)
                  (double)levels[9]);
     }
 
-    core2_leds_set_bands(levels, VIZ_BANDS);
+    if (s_mp3.visualizer_style == 2) {
+        core2_leds_set_bands(levels, VIZ_BANDS);
+    } else {
+        /* Style 1 (default): VU-meter bars — first 5 bands drive the low
+         * row, last 5 bands drive the high row. */
+        float low = 0.0f, high = 0.0f;
+        for (int b = 0; b < VIZ_BANDS / 2; b++) {
+            if (levels[b] > low) low = levels[b];
+        }
+        for (int b = VIZ_BANDS / 2; b < VIZ_BANDS; b++) {
+            if (levels[b] > high) high = levels[b];
+        }
+        core2_leds_set_vu(low, high);
+    }
 }
 
 static void viz_feed(const short *pcm, int total_samps, int channels, int fs)
@@ -2360,12 +2376,13 @@ static bool mp3_queue_seek_relative(int32_t delta_ms, const char *reason)
 static void mp3_log_mode_status(const char *reason)
 {
     ESP_LOGI(TAG,
-             "mp3: %s -> shuffle=%s repeattrack=%s repeatplaylist=%s visualizer=%s",
+             "mp3: %s -> shuffle=%s repeattrack=%s repeatplaylist=%s visualizer=%s style=%u",
              reason ? reason : "mode update",
              s_mp3.shuffle ? "on" : "off",
              s_mp3.repeat_track ? "on" : "off",
              s_mp3.repeat_playlist ? "on" : "off",
-             s_mp3.visualizer ? "on" : "off");
+             s_mp3.visualizer ? "on" : "off",
+             (unsigned)s_mp3.visualizer_style);
 }
 
 #ifndef MP3_INPUT_BUF_BYTES
@@ -5083,7 +5100,7 @@ static const pf_cmd_t s_pf_media_cmds[] = {
     { "shuffle",     "shuffle",     "true",  "Enable or disable shuffle mode. Example: 'on' or 'off'", "\xF0\x9F\x94\x80" /* 🔀 */, NULL },
     { "repeattrack", "repeattrack", "true",  "Enable or disable repeat-track mode. Example: 'on' or 'off'", "\xF0\x9F\x94\x82" /* 🔂 */, NULL },
     { "repeatplaylist", "repeatplaylist", "true",  "Enable or disable repeat-playlist mode. Example: 'on' or 'off'", "\xF0\x9F\x94\x81" /* 🔁 */, NULL },
-    { "visualizer",  "visualizer",  "true",  "Enable or disable the LED audio visualizer on the sides of the device. When on, the LEDs show FFT frequency levels while music plays. Example: 'on' or 'off'", "\xF0\x9F\x8C\x88" /* 🌈 */, NULL },
+    { "visualizer",  "visualizer",  "true",  "Enable or disable the LED audio visualizer on the sides of the device, or pick its style. 'on'/'off' toggle the visualizer; '1' selects VU-meter bars (lows fill from one end, highs from the other) and '2' selects the per-band FFT spectrum. Example: 'on', 'off', '1', or '2'", "\xF0\x9F\x8C\x88" /* 🌈 */, NULL },
     { "ledcolor",    "ledcolor",    "true",  "Set all side LEDs to a solid color. Examples: 'red', '#FF0000', 'off'", "\xF0\x9F\x92\xA1" /* 💡 */, NULL },
     { "pair",        "pair",        "true",  "Pair with a Bluetooth headset or speaker. Example: 'pair'", "\xF0\x9F\x8E\xA7" /* 🎧 */, NULL },
     { "btstatus",    "btstatus",    "false", "Show Bluetooth audio connection status.", "\xF0\x9F\x93\xB6" /* 📶 */, NULL },
@@ -6031,6 +6048,10 @@ static void pf_event_handler(const char *event_name,
             s_mp3.visualizer = true;
         } else if (strcmp(mode, "off") == 0) {
             s_mp3.visualizer = false;
+        } else if (strcmp(mode, "1") == 0 || strcmp(mode, "2") == 0) {
+            s_mp3.visualizer_style = (uint8_t)(mode[0] - '0');
+            s_mp3.visualizer = true;
+            nvs_write_u8(NVS_KEY_VISUALIZER_STYLE, s_mp3.visualizer_style);
         } else {
             s_mp3.visualizer = !s_mp3.visualizer;
         }
@@ -6840,6 +6861,11 @@ void picture_frame_run(void)
         uint8_t visualizer = 0;
         if (nvs_read_u8(NVS_KEY_VISUALIZER, &visualizer)) {
             s_mp3.visualizer = (visualizer != 0);
+        }
+        uint8_t visualizer_style = 0;
+        if (nvs_read_u8(NVS_KEY_VISUALIZER_STYLE, &visualizer_style)
+            && (visualizer_style == 1 || visualizer_style == 2)) {
+            s_mp3.visualizer_style = visualizer_style;
         }
 #endif
 #if CONFIG_HARDWARE_CORE2

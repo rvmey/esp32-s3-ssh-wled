@@ -192,6 +192,56 @@ void core2_leds_set_bands(const float *levels, int count)
     }
 }
 
+/* VU-meter color ramp: green for the lower portion of a zone, yellow in the
+ * middle, red at the top — independent of which audio band drives it. */
+static void vu_meter_rgb(int pos_in_zone, int zone_size, uint8_t *r, uint8_t *g, uint8_t *b)
+{
+    float frac = (zone_size <= 1) ? 0.0f : (float)pos_in_zone / (float)(zone_size - 1);
+    if (frac < 0.6f)      { *r = 0;   *g = 160; *b = 0; }
+    else if (frac < 0.85f) { *r = 160; *g = 160; *b = 0; }
+    else                   { *r = 160; *g = 0;   *b = 0; }
+}
+
+/* Visualizer style 1: simple VU-meter bars.
+ * The first 5 LEDs fill outward (LED0 -> LED4) with the low-frequency level,
+ * the last 5 LEDs fill inward (LED9 -> LED5) with the high-frequency level —
+ * louder audio lights more LEDs in each row. */
+void core2_leds_set_vu(float low_level, float high_level)
+{
+    if (!core2_leds_initialized()) return;
+    if (low_level < 0.0f)  low_level  = 0.0f;
+    if (low_level > 1.0f)  low_level  = 1.0f;
+    if (high_level < 0.0f) high_level = 0.0f;
+    if (high_level > 1.0f) high_level = 1.0f;
+
+    const int zone = CORE2_LED_COUNT / 2; /* 5 */
+    int low_n  = (int)(low_level  * zone + 0.5f);
+    int high_n = (int)(high_level * zone + 0.5f);
+    if (low_n  > zone) low_n  = zone;
+    if (high_n > zone) high_n = zone;
+
+    for (int i = 0; i < zone; i++) {
+        uint8_t r = 0, g = 0, b = 0;
+        if (i < low_n) vu_meter_rgb(i, zone, &r, &g, &b);
+        s_pixels[i * 3 + 0] = g;
+        s_pixels[i * 3 + 1] = r;
+        s_pixels[i * 3 + 2] = b;
+    }
+    for (int i = 0; i < zone; i++) {
+        int led = CORE2_LED_COUNT - 1 - i; /* fills LED9 down to LED5 */
+        uint8_t r = 0, g = 0, b = 0;
+        if (i < high_n) vu_meter_rgb(i, zone, &r, &g, &b);
+        s_pixels[led * 3 + 0] = g;
+        s_pixels[led * 3 + 1] = r;
+        s_pixels[led * 3 + 2] = b;
+    }
+
+    esp_err_t err = led_flush();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "set_vu: %s", esp_err_to_name(err));
+    }
+}
+
 void core2_leds_off(void)
 {
     if (!core2_leds_initialized()) return;
