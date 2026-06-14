@@ -242,6 +242,45 @@ void core2_leds_set_vu(float low_level, float high_level)
     }
 }
 
+/* Visualizer style 4: mirrored VU meter — both side faces fill outward from
+ * the bottom together, driven by the same overall loudness level (0..5 LEDs
+ * per side). The boundary LED is partially lit (brightness scaled by the
+ * fractional part of the level) for a smooth gradient. All lit LEDs are red. */
+void core2_leds_set_vu_mirror(float level)
+{
+    if (!core2_leds_initialized()) return;
+    if (level < 0.0f) level = 0.0f;
+    if (level > 1.0f) level = 1.0f;
+
+    const int zone = CORE2_LED_COUNT / 2; /* 5 */
+    float pos  = level * (float)zone;
+    int   full = (int)pos;
+    if (full > zone) full = zone;
+    float frac = pos - (float)full;
+
+    for (int i = 0; i < zone; i++) {
+        uint8_t br = 0;
+        if (i < full) {
+            br = 160;
+        } else if (i == full) {
+            br = (uint8_t)(frac * 160.0f + 0.5f);
+        }
+        /* left zone fills LED0 -> LED4, right zone mirrors LED9 -> LED5 */
+        s_pixels[i * 3 + 0] = 0;
+        s_pixels[i * 3 + 1] = br;
+        s_pixels[i * 3 + 2] = 0;
+        int led = CORE2_LED_COUNT - 1 - i;
+        s_pixels[led * 3 + 0] = 0;
+        s_pixels[led * 3 + 1] = br;
+        s_pixels[led * 3 + 2] = 0;
+    }
+
+    esp_err_t err = led_flush();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "set_vu_mirror: %s", esp_err_to_name(err));
+    }
+}
+
 /* Visualizer style 3: chase — lights a single LED at a time, advancing
  * 0 -> 9 then wrapping back to 0 with a new color each lap. */
 void core2_leds_set_chase(int position, uint8_t r, uint8_t g, uint8_t b)

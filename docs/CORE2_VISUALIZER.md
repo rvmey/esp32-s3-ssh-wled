@@ -2,7 +2,7 @@
 
 The Core2 variant drives the 10 SK6812 LEDs on the sides of the M5Stack Core2
 (GPIO 25) as a music visualizer while MP3 playback is active. Audio is
-analyzed in real time and rendered to the LED strip in one of three styles.
+analyzed in real time and rendered to the LED strip in one of four styles.
 
 ---
 
@@ -11,14 +11,25 @@ analyzed in real time and rendered to the LED strip in one of three styles.
 The 10-LED chain is split across the two side faces of the unit, 5 LEDs per
 side:
 
-- **LEDs 0–4** — left side face, ordered back → front (LED 0 is the
-  rearmost LED on the left side, LED 4 is the frontmost).
-- **LEDs 5–9** — right side face, ordered back → front (LED 5 is the
-  rearmost LED on the right side, LED 9 is the frontmost).
+- **LEDs 0–4** — left side face, ordered bottom → top (LED 0 is the
+  bottommost LED on the left side, LED 4 is the topmost).
+- **LEDs 5–9** — right side face, ordered top → bottom (LED 5 is the
+  topmost LED on the right side, LED 9 is the bottommost).
 
-So index 0 starts at the back-left corner and increases around to the
-front-right corner. This single logical chain (`s_pixels[CORE2_LED_COUNT * 3]`)
-is what both visualizer styles address.
+```
+LEFT SIDE (up)        RIGHT SIDE (down)
+
+LED 4  ─ top-left       top-right ─ LED 5
+LED 3                   LED 6
+LED 2                   LED 7
+LED 1                   LED 8
+LED 0  ─ bottom-left    bottom-right ─ LED 9
+```
+
+So index 0 starts at the bottom-left corner and increases up the left side to
+LED 4 at top-left, then LED 5 picks up at top-right and decreases down to
+LED 9 at bottom-right. This single logical chain
+(`s_pixels[CORE2_LED_COUNT * 3]`) is what both visualizer styles address.
 
 ---
 
@@ -31,6 +42,7 @@ is what both visualizer styles address.
 | `visualizer 1` | Select **style 1 — VU bars** (also turns the visualizer on) |
 | `visualizer 2` | Select **style 2 — FFT spectrum** (also turns the visualizer on) |
 | `visualizer 3` | Select **style 3 — chase** (also turns the visualizer on) |
+| `visualizer 4` | Select **style 4 — mirrored VU meter** (also turns the visualizer on) |
 
 The on/off state and selected style are both persisted to NVS, so they
 survive a reboot. Default style on a fresh install is **1**.
@@ -68,8 +80,9 @@ Each of the 10 LEDs corresponds directly to one of the 10 frequency bands:
 
 - LED 0 ↔ 60 Hz (bass) ... LED 9 ↔ 16 kHz (treble)
 - Per the [physical layout](#physical-layout), this puts the bass end of the
-  spectrum on the back-left LED of the left side and the treble end on the
-  front-right LED of the right side.
+  spectrum on the bottom-left LED of the left side and the treble end on the
+  bottom-right LED of the right side — both ends of the spectrum sit at the
+  bottom of the device.
 - Each LED's color is a hue computed from its band index — red for bass,
   sweeping through the spectrum to violet for treble (`band_to_rgb()`).
 - Each LED's **brightness** is driven by that band's current level — louder
@@ -86,21 +99,21 @@ Instead of mapping bands to individual LEDs, style 1 splits the strip into
 two 5-LED zones and treats each as a **bar-graph level meter**:
 
 - **Low zone (LEDs 0–4, the left side face):** driven by the loudest of the
-  5 low-frequency bands (60 Hz – 1000 Hz). Fills outward starting from LED 0
-  (back of the left side), extending toward the front.
+  5 low-frequency bands (60 Hz – 1000 Hz). Fills upward starting from LED 0
+  at the bottom of the left side, extending toward the top.
 - **High zone (LEDs 5–9, the right side face):** driven by the loudest of
-  the 5 high-frequency bands (2000 Hz – 16000 Hz). Fills inward starting
-  from LED 9 (front of the right side), extending toward the back (i.e. LED
-  9 lights first, then 8, 7...).
+  the 5 high-frequency bands (2000 Hz – 16000 Hz). Fills upward starting
+  from LED 9 at the bottom of the right side, extending toward the top (i.e.
+  LED 9 lights first, then 8, 7...).
 
 For each zone, the number of lit LEDs is proportional to that zone's level
 (0–5 LEDs). Lit LEDs are colored with a VU-meter ramp based on their
 position in the bar — green for the lower portion, yellow in the middle,
 red at the top — independent of which frequency drove them.
 
-The effect: bass-heavy passages light up more LEDs from one end of the
-strip, treble-heavy passages light up more from the other end, and both
-bars grow toward the middle of the strip as the music gets louder.
+The effect: both zones behave like a classic bar-graph meter, growing
+upward from the bottom of the device as the music gets louder — bass on the
+left side, treble on the right.
 
 Implemented as `core2_leds_set_vu(low_level, high_level)` in
 `core2_leds.c`.
@@ -119,6 +132,28 @@ lap per second), independent of the audio block rate.
 
 Implemented as `core2_leds_set_chase(position, r, g, b)` in `core2_leds.c`,
 driven from `viz_run_block()` in `picture_frame.c`.
+
+---
+
+## Style 4 — Mirrored VU meter
+
+Like style 1, this splits the strip into two 5-LED zones, but instead of
+the low/high frequency split, **both zones are driven by the same overall
+loudness level** (the loudest of all 10 frequency bands) and mirror each
+other:
+
+- **Left zone (LEDs 0–4):** fills upward from LED 0 at the bottom of the
+  left side.
+- **Right zone (LEDs 5–9):** fills upward from LED 9 at the bottom of the
+  right side (mirroring the left zone).
+
+The number of lit LEDs per zone ranges from 0 (silence) to 5 (loudest),
+with mid-level loudness lighting roughly 2-3 LEDs on each side. The boundary
+LED — the one currently transitioning between lit and unlit — is rendered at
+partial **brightness** based on the fractional level, giving a smooth
+gradient rather than a hard step. All lit LEDs are red.
+
+Implemented as `core2_leds_set_vu_mirror(level)` in `core2_leds.c`.
 
 ---
 
