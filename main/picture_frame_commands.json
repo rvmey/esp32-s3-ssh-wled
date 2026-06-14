@@ -188,8 +188,22 @@
   "trigger": "visualizer",
   "command": "visualizer",
   "allowParams": "true",
-  "mcpToolDescription": "Enable or disable the LED audio visualizer on the sides of the user's Core2 device, or pick its style. 'on'/'off' toggle the visualizer; '1' selects VU-meter bars (lows fill from one end, highs from the other) and '2' selects the per-band FFT spectrum. Example: 'on', 'off', '1', or '2'",
+  "mcpToolDescription": "Enable or disable the LED audio visualizer on the sides of the user's Core2 device, or pick its style. 'on'/'off' toggle the visualizer; '1' selects VU-meter bars (lows fill from one end, highs from the other), '2' selects the per-band FFT spectrum, '3' selects a chase animation (one LED at a time, cycling colors each lap), '4' selects a mirrored VU meter (both sides fill together 0-5 LEDs in red based on overall loudness), '5' selects VU-meter bars filling the opposite direction from style 1, and '6' selects a mixed VU bar that fills blue from the top for highs and red from the bottom for lows, mixing into magenta in the middle. Example: 'on', 'off', '1', '2', '3', '4', '5', or '6'",
   "icon": "🌈"
+ },
+ {
+  "trigger": "visualizernext",
+  "command": "visualizernext",
+  "allowParams": "false",
+  "mcpToolDescription": "Switch the LED audio visualizer on the user's Core2 device to the next style (wraps around after the last style) and turn it on.",
+  "icon": "⏩"
+ },
+ {
+  "trigger": "visualizerprevious",
+  "command": "visualizerprevious",
+  "allowParams": "false",
+  "mcpToolDescription": "Switch the LED audio visualizer on the user's Core2 device to the previous style (wraps around before the first style) and turn it on.",
+  "icon": "⏪"
  },
  {
   "trigger": "ledcolor",

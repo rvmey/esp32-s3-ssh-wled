@@ -2,7 +2,7 @@
 
 The Core2 variant drives the 10 SK6812 LEDs on the sides of the M5Stack Core2
 (GPIO 25) as a music visualizer while MP3 playback is active. Audio is
-analyzed in real time and rendered to the LED strip in one of five styles.
+analyzed in real time and rendered to the LED strip in one of six styles.
 
 ---
 
@@ -54,6 +54,9 @@ LED 9 at top-right. This single logical chain
 | `visualizer 3` | Select **style 3 — chase** (also turns the visualizer on) |
 | `visualizer 4` | Select **style 4 — mirrored VU meter** (also turns the visualizer on) |
 | `visualizer 5` | Select **style 5 — VU bars (bottom-up)** (also turns the visualizer on) |
+| `visualizer 6` | Select **style 6 — VU bars (mix)** (also turns the visualizer on) |
+| `visualizernext` | Switch to the next style, wrapping from 6 back to 1 (also turns the visualizer on) |
+| `visualizerprevious` | Switch to the previous style, wrapping from 1 back to 6 (also turns the visualizer on) |
 
 The on/off state and selected style are both persisted to NVS, so they
 survive a reboot. Default style on a fresh install is **1**.
@@ -201,6 +204,29 @@ music gets louder — the inverse of style 1's top-down fill — bass on the
 left side, treble on the right.
 
 Implemented as `core2_leds_set_vu_bottomup(low_level, high_level)` in
+`core2_leds.c`.
+
+---
+
+## Style 6 — VU bars (mix)
+
+This style reuses the same low/high band split as styles 1 and 5, but
+combines a top-down fill and a bottom-up fill on **each** side face at the
+same time, in different colors:
+
+- **Highs (blue) fill downward from the top:** LED 0 → LED 4 on the left
+  side, LED 9 → LED 5 on the right side, lit count proportional to the
+  high-frequency level (2000 Hz – 16000 Hz).
+- **Lows (red) fill upward from the bottom:** LED 4 → LED 0 on the left
+  side, LED 5 → LED 9 on the right side, lit count proportional to the
+  low-frequency level (60 Hz – 1000 Hz).
+
+Both fills are applied to both side faces (mirrored), so as the music gets
+louder the blue fill grows down from the top corners and the red fill grows
+up from the bottom corners. Where the two fills overlap in the middle of a
+side, the LED shows both colors mixed together (magenta).
+
+Implemented as `core2_leds_set_vu_mix(low_level, high_level)` in
 `core2_leds.c`.
 
 ---

@@ -328,6 +328,49 @@ void core2_leds_set_vu_mirror(float level)
     }
 }
 
+/* Visualizer style 6: VU bars, mixed top-down/bottom-up.
+ * Highs (blue) fill downward from the top corners (LED0 left / LED9 right);
+ * lows (red) fill upward from the bottom corners (LED4 left / LED5 right).
+ * Both fills are applied to both side faces (mirrored), so as the music
+ * gets louder the blue and red fills grow toward each other and mix into
+ * magenta in the middle of each side. */
+void core2_leds_set_vu_mix(float low_level, float high_level)
+{
+    if (!core2_leds_initialized()) return;
+    if (low_level < 0.0f)  low_level  = 0.0f;
+    if (low_level > 1.0f)  low_level  = 1.0f;
+    if (high_level < 0.0f) high_level = 0.0f;
+    if (high_level > 1.0f) high_level = 1.0f;
+
+    const int zone = CORE2_LED_COUNT / 2; /* 5 */
+    int high_n = (int)(high_level * zone + 0.5f);
+    int low_n  = (int)(low_level  * zone + 0.5f);
+    if (high_n > zone) high_n = zone;
+    if (low_n  > zone) low_n  = zone;
+
+    for (int i = 0; i < zone; i++) {
+        bool blue = (i < high_n);          /* top-down */
+        bool red  = (i >= zone - low_n);   /* bottom-up */
+        uint8_t r = red  ? 160 : 0;
+        uint8_t b = blue ? 160 : 0;
+
+        int left_led  = i;                   /* LED0 (top) -> LED4 (bottom) */
+        int right_led = (2 * zone - 1) - i;  /* LED9 (top) -> LED5 (bottom) */
+
+        s_pixels[left_led * 3 + 0] = 0;
+        s_pixels[left_led * 3 + 1] = r;
+        s_pixels[left_led * 3 + 2] = b;
+        s_pixels[right_led * 3 + 0] = 0;
+        s_pixels[right_led * 3 + 1] = r;
+        s_pixels[right_led * 3 + 2] = b;
+    }
+
+    esp_err_t err = led_flush();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "set_vu_mix: %s", esp_err_to_name(err));
+    }
+}
+
 /* Visualizer style 3: chase — lights a single LED at a time, advancing
  * 0 -> 9 then wrapping back to 0 with a new color each lap. */
 void core2_leds_set_chase(int position, uint8_t r, uint8_t g, uint8_t b)
