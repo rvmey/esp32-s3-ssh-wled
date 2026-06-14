@@ -1,4 +1,4 @@
-# ESP32-S3 SSH Server
+# ESP32-S3 Firmware Variants
 
 Control an ESP32-based output device (RGB LED, color screen, cloud display,
 or voice endpoint) over firmware variants in this repository. Choose the
@@ -9,6 +9,7 @@ variant that matches your board.
 | [ESP32-S3-DevKitC-1](DevKitC-1-Onboard-RGB-LED.md) | DevKitC-1 | Onboard WS2812 RGB LED (GPIO 48) |
 | [JC3248W535](JC3248W535-320x480-Screen.md) | Guition JC3248W535 | 320×480 AXS15231 QSPI display |
 | [Picture Frame](Picture-Frame-TRIGGERcmd-Display.md) | Guition JC3248W535 | TRIGGERcmd Display |
+| [Core2 Display](Core2-TRIGGERcmd-Display.md) | M5Stack Core2 for AWS | TRIGGERcmd Display + Bluetooth audio + AI voice + LED visualizer |
 | [ATOM Echo](ATOM-Echo-TRIGGERcmd-Voice.md) | M5Stack ATOM Echo | TRIGGERcmd pairing + button-triggered voice commands |
 | [AtomS3 Lite](AtomS3-Lite-TRIGGERcmd-RGB-LED.md) | M5Stack AtomS3 Lite | TRIGGERcmd RGB LED control + bookmark URL button |
 | [TRIGGERcmd CYD](TRIGGERcmd-CYD-Display.md) | ESP32-2432S028R (Cheap Yellow Display) | TRIGGERcmd Display (Core2-compatible profile) |
