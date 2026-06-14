@@ -142,10 +142,16 @@ the low/high frequency split, **both zones are driven by the same overall
 loudness level** (the loudest of all 10 frequency bands) and mirror each
 other:
 
-- **Left zone (LEDs 0–4):** fills upward from LED 0 at the bottom of the
-  left side.
-- **Right zone (LEDs 5–9):** fills upward from LED 9 at the bottom of the
-  right side (mirroring the left zone).
+- **Left zone (LEDs 0–4):** fills upward from LED 4 at the bottom of the
+  left side toward LED 0 at the top.
+- **Right zone (LEDs 5–9):** fills upward from LED 5 at the bottom of the
+  right side toward LED 9 at the top (mirroring the left zone).
+
+Note: on the physical hardware, LED 4 (left) / LED 5 (right) sit at the
+bottom corners and LED 0 (left) / LED 9 (right) sit at the top corners —
+the opposite of the orientation shown in the
+[physical layout](#physical-layout) diagram above, which was found to be
+reversed for styles 1/2 as well when this was tested with style 4.
 
 The number of lit LEDs per zone ranges from 0 (silence) to 5 (loudest),
 with mid-level loudness lighting roughly 2-3 LEDs on each side. The boundary

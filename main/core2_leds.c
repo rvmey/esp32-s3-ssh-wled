@@ -245,7 +245,12 @@ void core2_leds_set_vu(float low_level, float high_level)
 /* Visualizer style 4: mirrored VU meter — both side faces fill outward from
  * the bottom together, driven by the same overall loudness level (0..5 LEDs
  * per side). The boundary LED is partially lit (brightness scaled by the
- * fractional part of the level) for a smooth gradient. All lit LEDs are red. */
+ * fractional part of the level) for a smooth gradient. All lit LEDs are red.
+ *
+ * On the physical hardware LED4 (left) / LED5 (right) sit at the bottom
+ * corners and LED0 (left) / LED9 (right) sit at the top corners (the
+ * opposite of the indexing used by styles 1/2), so the fill grows
+ * LED4 -> LED0 and LED5 -> LED9 as loudness increases. */
 void core2_leds_set_vu_mirror(float level)
 {
     if (!core2_leds_initialized()) return;
@@ -265,14 +270,14 @@ void core2_leds_set_vu_mirror(float level)
         } else if (i == full) {
             br = (uint8_t)(frac * 160.0f + 0.5f);
         }
-        /* left zone fills LED0 -> LED4, right zone mirrors LED9 -> LED5 */
-        s_pixels[i * 3 + 0] = 0;
-        s_pixels[i * 3 + 1] = br;
-        s_pixels[i * 3 + 2] = 0;
-        int led = CORE2_LED_COUNT - 1 - i;
-        s_pixels[led * 3 + 0] = 0;
-        s_pixels[led * 3 + 1] = br;
-        s_pixels[led * 3 + 2] = 0;
+        int left_led  = (zone - 1) - i; /* LED4 -> LED0 */
+        int right_led = zone + i;       /* LED5 -> LED9 */
+        s_pixels[left_led * 3 + 0] = 0;
+        s_pixels[left_led * 3 + 1] = br;
+        s_pixels[left_led * 3 + 2] = 0;
+        s_pixels[right_led * 3 + 0] = 0;
+        s_pixels[right_led * 3 + 1] = br;
+        s_pixels[right_led * 3 + 2] = 0;
     }
 
     esp_err_t err = led_flush();
