@@ -315,7 +315,7 @@ typedef struct {
     bool       repeat_track;
     bool       repeat_playlist;
     bool       visualizer;
-    uint8_t    visualizer_style; /* 1-20, see docs/CORE2_VISUALIZER.md for the full list */
+    uint8_t    visualizer_style; /* 1-100, see docs/CORE2_VISUALIZER.md for the full list */
     int        volume;            /* 0..100 */
     bool       muted;            /* toggled by "mute" command; not persisted */
     int        folder_idx;        /* index into s_mp3_folders */
@@ -369,7 +369,7 @@ static const char *tcmd_display_host(void)
 #define NVS_KEY_VISUALIZER      "mp3_viz"
 #define NVS_KEY_VISUALIZER_STYLE "mp3_viz_sty"
 #define VISUALIZER_STYLE_MIN 1
-#define VISUALIZER_STYLE_MAX 20
+#define VISUALIZER_STYLE_MAX 100
 #define NVS_KEY_VOLUME  "mp3_volume"
 #define NVS_KEY_MP3_MODE "mp3_mode"
 #define NVS_KEY_BT_BDA  "bt_bda"
@@ -533,6 +533,326 @@ static uint32_t viz_rand(void)
     return x;
 }
 
+/* ── Generic parameterized visualizer engine (styles 21-100) ────────────
+ * Each style is a (position pattern, color scheme, FFT reaction, color
+ * rotation speed) tuple. viz_render_table_style() turns that tuple plus
+ * the current band levels into a CORE2_LED_COUNT*3 RGB frame. */
+
+typedef enum {
+    VPOS_BARS_BOTH,   /* zone fill growing inward from both ends (5+5) */
+    VPOS_BAR_SINGLE,  /* single bar growing from LED0 toward LED9 */
+    VPOS_BLOOM,       /* each side blooms outward from its center LED */
+    VPOS_COMET,       /* one lit LED circles the strip */
+    VPOS_DARK_COMET,  /* one dark LED circles an otherwise-lit strip */
+    VPOS_PULSE,       /* all LEDs pulse together */
+    VPOS_SPECTRUM,    /* LED i tracks band i directly */
+    VPOS_SPARKLE,     /* random sparkles, spawn rate audio-driven */
+    VPOS_CHECKER,     /* even/odd LEDs pulse in opposition */
+} viz_pos_t;
+
+typedef enum {
+    VCOL_RAINBOW_ROT, /* rotating rainbow gradient across the strip */
+    VCOL_VU_RAMP,     /* green/yellow/red ramp by position */
+    VCOL_SINGLE_HUE,  /* one base hue, optionally rotating */
+    VCOL_TEMP,        /* hue sweeps blue (quiet) to red (loud) */
+    VCOL_TWO_TONE,    /* alternates base hue / base hue + 180 */
+    VCOL_RANDOM_HUE,  /* random hue per sparkle */
+    VCOL_MONO,        /* white, brightness only */
+    VCOL_PER_BAND,    /* hue from LED index (red=bass .. violet=treble) */
+} viz_col_t;
+
+typedef enum {
+    VFFT_OVERALL,   /* loudest of all 10 bands */
+    VFFT_BASS,      /* loudest of bands 0-2 (60-250 Hz) */
+    VFFT_TREBLE,    /* loudest of bands 7-9 (8-16 kHz) */
+    VFFT_MID,       /* loudest of bands 3-6 (500 Hz-4 kHz) */
+    VFFT_DOMINANT,  /* level of the single loudest band */
+    VFFT_CENTROID,  /* level-weighted average band index, normalized */
+    VFFT_BEAT,      /* bass transient/kick envelope */
+    VFFT_PEAK,      /* slowly-decaying peak of the overall level */
+} viz_fft_t;
+
+typedef enum {
+    VROT_NONE,
+    VROT_SLOW,   /* ~15 deg/s hue, ~1 LED/s position */
+    VROT_MED,    /* ~50 deg/s hue, ~3 LED/s position */
+    VROT_FAST,   /* ~120 deg/s hue, ~7 LED/s position */
+    VROT_AUDIO,  /* speed scales with the reactive level */
+} viz_rot_t;
+
+typedef struct {
+    viz_pos_t pos;
+    viz_col_t col;
+    viz_fft_t fft;
+    viz_rot_t rot;
+    float     base_hue; /* degrees; used by VCOL_SINGLE_HUE / VCOL_TWO_TONE */
+} viz_style_def_t;
+
+/* Styles 21-100: s_viz_table[0] == style 21, s_viz_table[79] == style 100. */
+static const viz_style_def_t s_viz_table[80] = {
+    /* 21 */ { VPOS_BARS_BOTH,  VCOL_RAINBOW_ROT, VFFT_OVERALL,  VROT_SLOW,  0.0f   },
+    /* 22 */ { VPOS_BARS_BOTH,  VCOL_VU_RAMP,     VFFT_BASS,     VROT_NONE,  0.0f   },
+    /* 23 */ { VPOS_BARS_BOTH,  VCOL_VU_RAMP,     VFFT_TREBLE,   VROT_NONE,  0.0f   },
+    /* 24 */ { VPOS_BARS_BOTH,  VCOL_TEMP,        VFFT_OVERALL,  VROT_NONE,  0.0f   },
+    /* 25 */ { VPOS_BARS_BOTH,  VCOL_PER_BAND,    VFFT_OVERALL,  VROT_NONE,  0.0f   },
+    /* 26 */ { VPOS_BARS_BOTH,  VCOL_SINGLE_HUE,  VFFT_MID,      VROT_NONE,  240.0f },
+    /* 27 */ { VPOS_BARS_BOTH,  VCOL_TWO_TONE,    VFFT_OVERALL,  VROT_MED,   0.0f   },
+    /* 28 */ { VPOS_BARS_BOTH,  VCOL_RAINBOW_ROT, VFFT_BEAT,     VROT_FAST,  0.0f   },
+    /* 29 */ { VPOS_BARS_BOTH,  VCOL_MONO,        VFFT_PEAK,     VROT_NONE,  0.0f   },
+    /* 30 */ { VPOS_BARS_BOTH,  VCOL_VU_RAMP,     VFFT_DOMINANT, VROT_NONE,  0.0f   },
+    /* 31 */ { VPOS_BARS_BOTH,  VCOL_MONO,        VFFT_BEAT,     VROT_NONE,  0.0f   },
+    /* 32 */ { VPOS_BARS_BOTH,  VCOL_TWO_TONE,    VFFT_CENTROID, VROT_SLOW,  180.0f },
+
+    /* 33 */ { VPOS_BAR_SINGLE, VCOL_RAINBOW_ROT, VFFT_OVERALL,  VROT_SLOW,  0.0f   },
+    /* 34 */ { VPOS_BAR_SINGLE, VCOL_VU_RAMP,     VFFT_OVERALL,  VROT_NONE,  0.0f   },
+    /* 35 */ { VPOS_BAR_SINGLE, VCOL_TEMP,        VFFT_BASS,     VROT_NONE,  0.0f   },
+    /* 36 */ { VPOS_BAR_SINGLE, VCOL_PER_BAND,    VFFT_TREBLE,   VROT_NONE,  0.0f   },
+    /* 37 */ { VPOS_BAR_SINGLE, VCOL_SINGLE_HUE,  VFFT_MID,      VROT_NONE,  120.0f },
+    /* 38 */ { VPOS_BAR_SINGLE, VCOL_TWO_TONE,    VFFT_BEAT,     VROT_MED,   60.0f  },
+    /* 39 */ { VPOS_BAR_SINGLE, VCOL_MONO,        VFFT_PEAK,     VROT_NONE,  0.0f   },
+    /* 40 */ { VPOS_BAR_SINGLE, VCOL_RAINBOW_ROT, VFFT_CENTROID, VROT_MED,   0.0f   },
+    /* 41 */ { VPOS_BAR_SINGLE, VCOL_VU_RAMP,     VFFT_BASS,     VROT_NONE,  0.0f   },
+
+    /* 42 */ { VPOS_BLOOM,      VCOL_RAINBOW_ROT, VFFT_OVERALL,  VROT_SLOW,  0.0f   },
+    /* 43 */ { VPOS_BLOOM,      VCOL_PER_BAND,    VFFT_DOMINANT, VROT_NONE,  0.0f   },
+    /* 44 */ { VPOS_BLOOM,      VCOL_TEMP,        VFFT_OVERALL,  VROT_NONE,  0.0f   },
+    /* 45 */ { VPOS_BLOOM,      VCOL_SINGLE_HUE,  VFFT_BASS,     VROT_NONE,  300.0f },
+    /* 46 */ { VPOS_BLOOM,      VCOL_TWO_TONE,    VFFT_TREBLE,   VROT_MED,   180.0f },
+    /* 47 */ { VPOS_BLOOM,      VCOL_VU_RAMP,     VFFT_MID,      VROT_NONE,  0.0f   },
+    /* 48 */ { VPOS_BLOOM,      VCOL_MONO,        VFFT_BEAT,     VROT_NONE,  0.0f   },
+    /* 49 */ { VPOS_BLOOM,      VCOL_RAINBOW_ROT, VFFT_PEAK,     VROT_FAST,  0.0f   },
+
+    /* 50 */ { VPOS_COMET,      VCOL_RAINBOW_ROT, VFFT_OVERALL,  VROT_SLOW,  0.0f   },
+    /* 51 */ { VPOS_COMET,      VCOL_SINGLE_HUE,  VFFT_BASS,     VROT_MED,   180.0f },
+    /* 52 */ { VPOS_COMET,      VCOL_SINGLE_HUE,  VFFT_TREBLE,   VROT_MED,   30.0f  },
+    /* 53 */ { VPOS_COMET,      VCOL_PER_BAND,    VFFT_CENTROID, VROT_NONE,  0.0f   },
+    /* 54 */ { VPOS_COMET,      VCOL_TWO_TONE,    VFFT_BEAT,     VROT_AUDIO, 0.0f   },
+    /* 55 */ { VPOS_COMET,      VCOL_MONO,        VFFT_OVERALL,  VROT_FAST,  0.0f   },
+    /* 56 */ { VPOS_COMET,      VCOL_VU_RAMP,     VFFT_MID,      VROT_MED,   0.0f   },
+    /* 57 */ { VPOS_COMET,      VCOL_TEMP,        VFFT_OVERALL,  VROT_AUDIO, 0.0f   },
+    /* 58 */ { VPOS_COMET,      VCOL_TEMP,        VFFT_BEAT,     VROT_MED,   0.0f   },
+
+    /* 59 */ { VPOS_DARK_COMET, VCOL_RAINBOW_ROT, VFFT_OVERALL,  VROT_SLOW,  0.0f   },
+    /* 60 */ { VPOS_DARK_COMET, VCOL_SINGLE_HUE,  VFFT_BASS,     VROT_MED,   0.0f   },
+    /* 61 */ { VPOS_DARK_COMET, VCOL_SINGLE_HUE,  VFFT_TREBLE,   VROT_MED,   240.0f },
+    /* 62 */ { VPOS_DARK_COMET, VCOL_TEMP,        VFFT_OVERALL,  VROT_SLOW,  0.0f   },
+    /* 63 */ { VPOS_DARK_COMET, VCOL_PER_BAND,    VFFT_OVERALL,  VROT_MED,   0.0f   },
+    /* 64 */ { VPOS_DARK_COMET, VCOL_TWO_TONE,    VFFT_BEAT,     VROT_AUDIO, 60.0f  },
+    /* 65 */ { VPOS_DARK_COMET, VCOL_MONO,        VFFT_PEAK,     VROT_FAST,  0.0f   },
+    /* 66 */ { VPOS_DARK_COMET, VCOL_VU_RAMP,     VFFT_MID,      VROT_SLOW,  0.0f   },
+    /* 67 */ { VPOS_DARK_COMET, VCOL_SINGLE_HUE,  VFFT_DOMINANT, VROT_MED,   120.0f },
+    /* 68 */ { VPOS_DARK_COMET, VCOL_RAINBOW_ROT, VFFT_CENTROID, VROT_AUDIO, 0.0f   },
+    /* 69 */ { VPOS_DARK_COMET, VCOL_MONO,        VFFT_OVERALL,  VROT_FAST,  0.0f   },
+    /* 70 */ { VPOS_DARK_COMET, VCOL_TWO_TONE,    VFFT_OVERALL,  VROT_SLOW,  270.0f },
+
+    /* 71 */ { VPOS_PULSE,      VCOL_SINGLE_HUE,  VFFT_BASS,     VROT_NONE,  0.0f   },
+    /* 72 */ { VPOS_PULSE,      VCOL_SINGLE_HUE,  VFFT_TREBLE,   VROT_NONE,  180.0f },
+    /* 73 */ { VPOS_PULSE,      VCOL_TEMP,        VFFT_OVERALL,  VROT_NONE,  0.0f   },
+    /* 74 */ { VPOS_PULSE,      VCOL_MONO,        VFFT_BEAT,     VROT_NONE,  0.0f   },
+    /* 75 */ { VPOS_PULSE,      VCOL_SINGLE_HUE,  VFFT_MID,      VROT_SLOW,  270.0f },
+    /* 76 */ { VPOS_PULSE,      VCOL_TWO_TONE,    VFFT_OVERALL,  VROT_MED,   0.0f   },
+    /* 77 */ { VPOS_PULSE,      VCOL_PER_BAND,    VFFT_OVERALL,  VROT_NONE,  0.0f   },
+    /* 78 */ { VPOS_PULSE,      VCOL_SINGLE_HUE,  VFFT_CENTROID, VROT_AUDIO, 60.0f  },
+
+    /* 79 */ { VPOS_SPECTRUM,   VCOL_PER_BAND,    VFFT_OVERALL,  VROT_NONE,  0.0f   },
+    /* 80 */ { VPOS_SPECTRUM,   VCOL_RAINBOW_ROT, VFFT_OVERALL,  VROT_SLOW,  0.0f   },
+    /* 81 */ { VPOS_SPECTRUM,   VCOL_TEMP,        VFFT_OVERALL,  VROT_NONE,  0.0f   },
+    /* 82 */ { VPOS_SPECTRUM,   VCOL_MONO,        VFFT_OVERALL,  VROT_NONE,  0.0f   },
+    /* 83 */ { VPOS_SPECTRUM,   VCOL_TWO_TONE,    VFFT_BEAT,     VROT_NONE,  0.0f   },
+
+    /* 84 */ { VPOS_SPARKLE,    VCOL_RANDOM_HUE,  VFFT_OVERALL,  VROT_NONE,  0.0f   },
+    /* 85 */ { VPOS_SPARKLE,    VCOL_MONO,        VFFT_TREBLE,   VROT_NONE,  0.0f   },
+    /* 86 */ { VPOS_SPARKLE,    VCOL_SINGLE_HUE,  VFFT_BASS,     VROT_NONE,  0.0f   },
+    /* 87 */ { VPOS_SPARKLE,    VCOL_PER_BAND,    VFFT_BEAT,     VROT_NONE,  0.0f   },
+    /* 88 */ { VPOS_SPARKLE,    VCOL_TEMP,        VFFT_OVERALL,  VROT_NONE,  0.0f   },
+    /* 89 */ { VPOS_SPARKLE,    VCOL_TWO_TONE,    VFFT_MID,      VROT_NONE,  0.0f   },
+    /* 90 */ { VPOS_SPARKLE,    VCOL_RANDOM_HUE,  VFFT_PEAK,     VROT_NONE,  0.0f   },
+    /* 91 */ { VPOS_SPARKLE,    VCOL_RAINBOW_ROT, VFFT_CENTROID, VROT_MED,   0.0f   },
+
+    /* 92  */ { VPOS_CHECKER,   VCOL_TWO_TONE,    VFFT_OVERALL,  VROT_NONE,  0.0f   },
+    /* 93  */ { VPOS_CHECKER,   VCOL_RAINBOW_ROT, VFFT_OVERALL,  VROT_SLOW,  0.0f   },
+    /* 94  */ { VPOS_CHECKER,   VCOL_SINGLE_HUE,  VFFT_BASS,     VROT_NONE,  180.0f },
+    /* 95  */ { VPOS_CHECKER,   VCOL_SINGLE_HUE,  VFFT_TREBLE,   VROT_NONE,  30.0f  },
+    /* 96  */ { VPOS_CHECKER,   VCOL_TEMP,        VFFT_MID,      VROT_NONE,  0.0f   },
+    /* 97  */ { VPOS_CHECKER,   VCOL_MONO,        VFFT_BEAT,     VROT_NONE,  0.0f   },
+    /* 98  */ { VPOS_CHECKER,   VCOL_PER_BAND,    VFFT_OVERALL,  VROT_NONE,  0.0f   },
+    /* 99  */ { VPOS_CHECKER,   VCOL_VU_RAMP,     VFFT_PEAK,     VROT_NONE,  0.0f   },
+    /* 100 */ { VPOS_CHECKER,   VCOL_SINGLE_HUE,  VFFT_DOMINANT, VROT_MED,   300.0f },
+};
+
+/* Renders styles 21-100. idx = visualizer_style - 21. */
+static void viz_render_table_style(int idx, const float levels[VIZ_BANDS],
+                                     float v_overall, int v_dom, float v_centroid,
+                                     int64_t now_us)
+{
+    const viz_style_def_t *d = &s_viz_table[idx];
+
+    static float   hue_phase = 0.0f;
+    static float   pos_phase = 0.0f;
+    static float   beat_avg = 0.0f, beat_flash = 0.0f;
+    static float   fft_peak = 0.0f;
+    static float   sparkle_bright[CORE2_LED_COUNT] = {0};
+    static float   sparkle_hue[CORE2_LED_COUNT] = {0};
+    static int64_t last_us = 0;
+
+    float dt = (last_us != 0) ? (float)(now_us - last_us) / 1000000.0f : 0.0f;
+    if (dt > 0.25f) dt = 0.25f; /* clamp after long gaps, e.g. a style switch */
+    last_us = now_us;
+
+    float bass = 0.0f, mid = 0.0f, treble = 0.0f;
+    for (int b = 0; b < 3; b++) if (levels[b] > bass) bass = levels[b];
+    for (int b = 3; b < 7; b++) if (levels[b] > mid) mid = levels[b];
+    for (int b = 7; b < VIZ_BANDS; b++) if (levels[b] > treble) treble = levels[b];
+
+    if (bass > beat_avg * 1.4f + 0.04f && beat_flash < 0.3f) {
+        beat_flash = 1.0f;
+    } else if (dt > 0.0f) {
+        beat_flash -= dt * 5.0f;
+        if (beat_flash < 0.0f) beat_flash = 0.0f;
+    }
+    beat_avg += (bass - beat_avg) * 0.05f;
+
+    fft_peak *= 0.93f;
+    if (v_overall > fft_peak) fft_peak = v_overall;
+
+    float val;
+    switch (d->fft) {
+        case VFFT_BASS:     val = bass; break;
+        case VFFT_TREBLE:   val = treble; break;
+        case VFFT_MID:      val = mid; break;
+        case VFFT_DOMINANT: val = levels[v_dom]; break;
+        case VFFT_CENTROID: val = v_centroid / (float)(VIZ_BANDS - 1); break;
+        case VFFT_BEAT:     val = beat_flash; break;
+        case VFFT_PEAK:     val = fft_peak; break;
+        default:            val = v_overall; break;
+    }
+    if (val < 0.0f) val = 0.0f;
+    if (val > 1.0f) val = 1.0f;
+
+    float rot_rate, pos_rate;
+    switch (d->rot) {
+        case VROT_SLOW:  rot_rate = 15.0f;  pos_rate = 1.0f; break;
+        case VROT_MED:   rot_rate = 50.0f;  pos_rate = 3.0f; break;
+        case VROT_FAST:  rot_rate = 120.0f; pos_rate = 7.0f; break;
+        case VROT_AUDIO: rot_rate = 20.0f + val * 200.0f; pos_rate = 0.5f + val * 6.0f; break;
+        default:         rot_rate = 0.0f;   pos_rate = 1.0f; break;
+    }
+    hue_phase = fmodf(hue_phase + rot_rate * dt, 360.0f);
+    pos_phase = fmodf(pos_phase + pos_rate * dt, (float)CORE2_LED_COUNT);
+
+    float frac[CORE2_LED_COUNT];
+    switch (d->pos) {
+        case VPOS_BARS_BOTH: {
+            int n = (int)(val * 5.0f + 0.5f);
+            if (n > 5) n = 5;
+            for (int i = 0; i < 5; i++) {
+                float f = (i < n) ? 1.0f : 0.0f;
+                frac[i] = f; frac[9 - i] = f;
+            }
+            break;
+        }
+        case VPOS_BAR_SINGLE: {
+            int n = (int)(val * CORE2_LED_COUNT + 0.5f);
+            if (n > CORE2_LED_COUNT) n = CORE2_LED_COUNT;
+            for (int i = 0; i < CORE2_LED_COUNT; i++) frac[i] = (i < n) ? 1.0f : 0.0f;
+            break;
+        }
+        case VPOS_BLOOM: {
+            int n = (int)(val * 3.0f + 0.5f);
+            if (n > 3) n = 3;
+            for (int i = 0; i < 5; i++) {
+                float f = (abs(i - 2) < n) ? 1.0f : 0.0f;
+                frac[i] = f; frac[5 + (4 - i)] = f;
+            }
+            break;
+        }
+        case VPOS_COMET: {
+            int p = (int)(pos_phase + 0.5f) % CORE2_LED_COUNT;
+            for (int i = 0; i < CORE2_LED_COUNT; i++) frac[i] = 0.0f;
+            frac[p] = 0.3f + 0.7f * val;
+            break;
+        }
+        case VPOS_DARK_COMET: {
+            int p = (int)(pos_phase + 0.5f) % CORE2_LED_COUNT;
+            for (int i = 0; i < CORE2_LED_COUNT; i++) frac[i] = 0.2f + 0.8f * val;
+            frac[p] = 0.0f;
+            break;
+        }
+        case VPOS_PULSE: {
+            for (int i = 0; i < CORE2_LED_COUNT; i++) frac[i] = val;
+            break;
+        }
+        case VPOS_SPECTRUM: {
+            for (int i = 0; i < CORE2_LED_COUNT; i++) frac[i] = levels[i];
+            break;
+        }
+        case VPOS_SPARKLE: {
+            for (int i = 0; i < CORE2_LED_COUNT; i++) sparkle_bright[i] *= 0.90f;
+            int spawns = (int)(val * 2.0f + 0.5f);
+            for (int n = 0; n < spawns; n++) {
+                int sidx = (int)(viz_rand() % CORE2_LED_COUNT);
+                sparkle_bright[sidx] = 1.0f;
+                sparkle_hue[sidx] = (float)(viz_rand() % 360);
+            }
+            for (int i = 0; i < CORE2_LED_COUNT; i++) frac[i] = sparkle_bright[i];
+            break;
+        }
+        case VPOS_CHECKER:
+        default: {
+            for (int i = 0; i < CORE2_LED_COUNT; i++) frac[i] = (i % 2 == 0) ? val : (1.0f - val);
+            break;
+        }
+    }
+
+    uint8_t rgb[CORE2_LED_COUNT * 3];
+    for (int i = 0; i < CORE2_LED_COUNT; i++) {
+        float level = frac[i];
+        if (level < 0.0f) level = 0.0f;
+        if (level > 1.0f) level = 1.0f;
+        float hue;
+        uint8_t *r = &rgb[i * 3 + 0], *g = &rgb[i * 3 + 1], *b = &rgb[i * 3 + 2];
+        switch (d->col) {
+            case VCOL_RAINBOW_ROT:
+                hue = hue_phase + (float)i * 36.0f;
+                core2_leds_hsv_to_rgb(hue, 1.0f, level, r, g, b);
+                break;
+            case VCOL_SINGLE_HUE:
+                hue = d->base_hue + hue_phase;
+                core2_leds_hsv_to_rgb(hue, 1.0f, level, r, g, b);
+                break;
+            case VCOL_TEMP:
+                hue = 240.0f * (1.0f - level);
+                core2_leds_hsv_to_rgb(hue, 1.0f, 0.15f + 0.85f * level, r, g, b);
+                break;
+            case VCOL_TWO_TONE:
+                hue = (i % 2 == 0) ? (d->base_hue + hue_phase) : (d->base_hue + 180.0f + hue_phase);
+                core2_leds_hsv_to_rgb(hue, 1.0f, level, r, g, b);
+                break;
+            case VCOL_PER_BAND:
+                hue = (float)i / 9.0f * 270.0f;
+                core2_leds_hsv_to_rgb(hue, 1.0f, level, r, g, b);
+                break;
+            case VCOL_RANDOM_HUE:
+                core2_leds_hsv_to_rgb(sparkle_hue[i], 1.0f, level, r, g, b);
+                break;
+            case VCOL_MONO:
+                core2_leds_hsv_to_rgb(0.0f, 0.0f, level, r, g, b);
+                break;
+            case VCOL_VU_RAMP:
+            default: {
+                float pf = (float)i / 9.0f;
+                uint8_t rr = (pf < 0.6f) ? 0 : 160;
+                uint8_t gg = (pf < 0.85f) ? 160 : 0;
+                *r = (uint8_t)(rr * level);
+                *g = (uint8_t)(gg * level);
+                *b = 0;
+                break;
+            }
+        }
+    }
+    core2_leds_set_pixels_rgb(rgb);
+}
+
 static void viz_init_for_rate(int fs)
 {
     s_viz_last_fs = fs;
@@ -567,7 +887,7 @@ static void viz_run_block(void)
         if (levels[b] > 1.0f) levels[b] = 1.0f;
     }
 
-    /* Shared aggregates for styles 7-20 (computed once per block). */
+    /* Shared aggregates for styles 7-100 (computed once per block). */
     int64_t now_us = esp_timer_get_time();
     float v_low = 0.0f, v_high = 0.0f;
     for (int b = 0; b < VIZ_BANDS / 2; b++) {
@@ -997,6 +1317,10 @@ static void viz_run_block(void)
         rgb[(9 - pos) * 3 + 1] = chase_colors[color_idx][1];
         rgb[(9 - pos) * 3 + 2] = chase_colors[color_idx][2];
         core2_leds_set_pixels_rgb(rgb);
+    } else if (s_mp3.visualizer_style >= 21 && s_mp3.visualizer_style <= 100) {
+        /* Styles 21-100: generic parameterized engine, see s_viz_table. */
+        viz_render_table_style(s_mp3.visualizer_style - 21, levels, v_overall,
+                                 v_dom, v_centroid, now_us);
     } else {
         /* Style 1 (default): VU-meter bars — first 5 bands drive the low
          * row, last 5 bands drive the high row. */
