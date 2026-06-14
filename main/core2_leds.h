@@ -20,6 +20,10 @@ void  core2_leds_set_vu_mix(float low_level, float high_level);
 void  core2_leds_set_chase(int position, uint8_t r, uint8_t g, uint8_t b);
 void  core2_leds_off(void);
 
+/* Shared helpers for additional visualizer styles (picture_frame.c). */
+void  core2_leds_hsv_to_rgb(float hue_deg, float sat, float val, uint8_t *r, uint8_t *g, uint8_t *b);
+void  core2_leds_set_pixels_rgb(const uint8_t *rgb /* CORE2_LED_COUNT * 3 bytes, R,G,B per LED */);
+
 #ifdef __cplusplus
 }
 #endif

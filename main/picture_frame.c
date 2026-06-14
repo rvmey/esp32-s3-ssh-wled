@@ -315,7 +315,7 @@ typedef struct {
     bool       repeat_track;
     bool       repeat_playlist;
     bool       visualizer;
-    uint8_t    visualizer_style; /* 1 = VU-meter bars (default), 2 = per-band spectrum, 3 = chase, 4 = mirrored VU meter, 5 = VU-meter bars (bottom-up), 6 = VU bars mix (top-down blue highs / bottom-up red lows) */
+    uint8_t    visualizer_style; /* 1-20, see docs/CORE2_VISUALIZER.md for the full list */
     int        volume;            /* 0..100 */
     bool       muted;            /* toggled by "mute" command; not persisted */
     int        folder_idx;        /* index into s_mp3_folders */
@@ -369,7 +369,7 @@ static const char *tcmd_display_host(void)
 #define NVS_KEY_VISUALIZER      "mp3_viz"
 #define NVS_KEY_VISUALIZER_STYLE "mp3_viz_sty"
 #define VISUALIZER_STYLE_MIN 1
-#define VISUALIZER_STYLE_MAX 6
+#define VISUALIZER_STYLE_MAX 20
 #define NVS_KEY_VOLUME  "mp3_volume"
 #define NVS_KEY_MP3_MODE "mp3_mode"
 #define NVS_KEY_BT_BDA  "bt_bda"
@@ -521,6 +521,18 @@ static float      s_viz_buf[VIZ_BLOCK];
 static int        s_viz_buf_pos = 0;
 static int        s_viz_last_fs = 0;
 
+/* Small xorshift PRNG used by the sparkle/confetti visualizer styles. */
+static uint32_t s_viz_rand_state = 0x12345678u;
+static uint32_t viz_rand(void)
+{
+    uint32_t x = s_viz_rand_state;
+    x ^= x << 13;
+    x ^= x >> 17;
+    x ^= x << 5;
+    s_viz_rand_state = x;
+    return x;
+}
+
 static void viz_init_for_rate(int fs)
 {
     s_viz_last_fs = fs;
@@ -555,6 +567,27 @@ static void viz_run_block(void)
         if (levels[b] > 1.0f) levels[b] = 1.0f;
     }
 
+    /* Shared aggregates for styles 7-20 (computed once per block). */
+    int64_t now_us = esp_timer_get_time();
+    float v_low = 0.0f, v_high = 0.0f;
+    for (int b = 0; b < VIZ_BANDS / 2; b++) {
+        if (levels[b] > v_low) v_low = levels[b];
+    }
+    for (int b = VIZ_BANDS / 2; b < VIZ_BANDS; b++) {
+        if (levels[b] > v_high) v_high = levels[b];
+    }
+    float v_overall = (v_low > v_high) ? v_low : v_high;
+    int v_dom = 0;
+    for (int b = 1; b < VIZ_BANDS; b++) {
+        if (levels[b] > levels[v_dom]) v_dom = b;
+    }
+    float v_centroid_num = 0.0f, v_centroid_den = 0.0f;
+    for (int b = 0; b < VIZ_BANDS; b++) {
+        v_centroid_num += (float)b * levels[b];
+        v_centroid_den += levels[b];
+    }
+    float v_centroid = (v_centroid_den > 0.001f) ? (v_centroid_num / v_centroid_den) : 4.5f;
+
     if (s_mp3.visualizer_style == 2) {
         core2_leds_set_bands(levels, VIZ_BANDS);
     } else if (s_mp3.visualizer_style == 3) {
@@ -573,7 +606,6 @@ static void viz_run_block(void)
         static int     chase_color = 0;
         static int64_t chase_last_us = 0;
 
-        int64_t now_us = esp_timer_get_time();
         if (chase_pos < 0 || now_us - chase_last_us >= 100000) {
             chase_last_us = now_us;
             chase_pos++;
@@ -618,6 +650,353 @@ static void viz_run_block(void)
             if (levels[b] > high) high = levels[b];
         }
         core2_leds_set_vu_mix(low, high);
+    } else if (s_mp3.visualizer_style == 7) {
+        /* Style 7: rainbow VU bars — same low/high zone fill as style 1
+         * (LEDs 0-4 fill from LED0, LEDs 5-9 fill from LED9), but lit LEDs
+         * are colored from a slowly rotating rainbow gradient instead of
+         * the fixed green/yellow/red ramp. */
+        static float hue_phase = 0.0f;
+        static int64_t last_us = 0;
+        if (last_us != 0) {
+            hue_phase += (float)(now_us - last_us) * (60.0f / 1000000.0f); /* 60 deg/sec */
+        }
+        last_us = now_us;
+
+        const int zone = CORE2_LED_COUNT / 2;
+        int low_n  = (int)(v_low  * zone + 0.5f);
+        int high_n = (int)(v_high * zone + 0.5f);
+        if (low_n  > zone) low_n  = zone;
+        if (high_n > zone) high_n = zone;
+
+        uint8_t rgb[CORE2_LED_COUNT * 3] = {0};
+        for (int i = 0; i < zone; i++) {
+            if (i < low_n) {
+                core2_leds_hsv_to_rgb(hue_phase + i * 40.0f, 1.0f, 0.8f,
+                                       &rgb[i * 3 + 0], &rgb[i * 3 + 1], &rgb[i * 3 + 2]);
+            }
+        }
+        for (int i = 0; i < zone; i++) {
+            int led = CORE2_LED_COUNT - 1 - i;
+            if (i < high_n) {
+                core2_leds_hsv_to_rgb(hue_phase + (zone + i) * 40.0f, 1.0f, 0.8f,
+                                       &rgb[led * 3 + 0], &rgb[led * 3 + 1], &rgb[led * 3 + 2]);
+            }
+        }
+        core2_leds_set_pixels_rgb(rgb);
+    } else if (s_mp3.visualizer_style == 8) {
+        /* Style 8: bass-pulse breathing — all 10 LEDs share one color whose
+         * brightness tracks the bass level (60-250 Hz) and whose hue slowly
+         * rotates over time. */
+        static float hue_phase = 0.0f;
+        static int64_t last_us = 0;
+        if (last_us != 0) {
+            hue_phase += (float)(now_us - last_us) * (20.0f / 1000000.0f); /* 20 deg/sec */
+        }
+        last_us = now_us;
+
+        float bass = levels[0];
+        if (levels[1] > bass) bass = levels[1];
+        if (levels[2] > bass) bass = levels[2];
+
+        uint8_t r, g, b;
+        core2_leds_hsv_to_rgb(hue_phase, 1.0f, 0.15f + 0.85f * bass, &r, &g, &b);
+        uint8_t rgb[CORE2_LED_COUNT * 3];
+        for (int i = 0; i < CORE2_LED_COUNT; i++) {
+            rgb[i * 3 + 0] = r; rgb[i * 3 + 1] = g; rgb[i * 3 + 2] = b;
+        }
+        core2_leds_set_pixels_rgb(rgb);
+    } else if (s_mp3.visualizer_style == 9) {
+        /* Style 9: dual mirrored mini-spectrum — each side face is its own
+         * 5-band spectrum. Left zone (LED0-4) shows bands 0-4 (bass..mid),
+         * right zone (LED5-9) shows bands 9-5 (treble..mid), each band
+         * colored by its global hue (red=bass .. violet=treble) with
+         * brightness from that band's level. */
+        uint8_t rgb[CORE2_LED_COUNT * 3];
+        for (int i = 0; i < 5; i++) {
+            float hue = (float)i / 9.0f * 270.0f;
+            core2_leds_hsv_to_rgb(hue, 1.0f, levels[i],
+                                   &rgb[i * 3 + 0], &rgb[i * 3 + 1], &rgb[i * 3 + 2]);
+        }
+        for (int i = 0; i < 5; i++) {
+            int band = VIZ_BANDS - 1 - i; /* 9 .. 5 */
+            int led  = 5 + i;             /* LED5 .. LED9 */
+            float hue = (float)band / 9.0f * 270.0f;
+            core2_leds_hsv_to_rgb(hue, 1.0f, levels[band],
+                                   &rgb[led * 3 + 0], &rgb[led * 3 + 1], &rgb[led * 3 + 2]);
+        }
+        core2_leds_set_pixels_rgb(rgb);
+    } else if (s_mp3.visualizer_style == 10) {
+        /* Style 10: treble sparkle — a dim blue base (brightness from the
+         * bass level) with random white sparkles whose count is driven by
+         * the treble energy (8-16 kHz bands). */
+        float bass = 0.0f;
+        for (int b = 0; b < 5; b++) if (levels[b] > bass) bass = levels[b];
+        float treble = 0.0f;
+        for (int b = 7; b < VIZ_BANDS; b++) if (levels[b] > treble) treble = levels[b];
+
+        uint8_t br, bg, bb;
+        core2_leds_hsv_to_rgb(220.0f, 1.0f, 0.08f + 0.12f * bass, &br, &bg, &bb);
+
+        uint8_t rgb[CORE2_LED_COUNT * 3];
+        for (int i = 0; i < CORE2_LED_COUNT; i++) {
+            rgb[i * 3 + 0] = br; rgb[i * 3 + 1] = bg; rgb[i * 3 + 2] = bb;
+        }
+
+        int sparkles = (int)(treble * CORE2_LED_COUNT + 0.5f);
+        for (int n = 0; n < sparkles; n++) {
+            int idx = (int)(viz_rand() % CORE2_LED_COUNT);
+            rgb[idx * 3 + 0] = 200; rgb[idx * 3 + 1] = 200; rgb[idx * 3 + 2] = 200;
+        }
+        core2_leds_set_pixels_rgb(rgb);
+    } else if (s_mp3.visualizer_style == 11) {
+        /* Style 11: beat-flash strobe — tracks a slow moving average of the
+         * bass level (60-250 Hz); when the instantaneous bass level spikes
+         * well above that average (a "kick"), flash all LEDs white and let
+         * the flash decay over ~200 ms. Otherwise show a dim white glow
+         * from the overall level. */
+        static float bass_avg = 0.0f;
+        static float flash = 0.0f;
+        static int64_t last_us = 0;
+        float dt = (last_us != 0) ? (float)(now_us - last_us) / 1000000.0f : 0.0f;
+        last_us = now_us;
+
+        float bass = 0.0f;
+        for (int b = 0; b < 3; b++) if (levels[b] > bass) bass = levels[b];
+
+        if (bass > bass_avg * 1.4f + 0.04f && flash < 0.3f) {
+            flash = 1.0f;
+        } else if (dt > 0.0f) {
+            flash -= dt * 5.0f; /* ~200ms decay */
+            if (flash < 0.0f) flash = 0.0f;
+        }
+        bass_avg += (bass - bass_avg) * 0.05f;
+
+        float val = (flash > v_overall * 0.2f) ? flash : v_overall * 0.2f;
+        uint8_t r, g, b;
+        core2_leds_hsv_to_rgb(0.0f, 0.0f, val, &r, &g, &b); /* sat=0 -> white */
+        uint8_t rgb[CORE2_LED_COUNT * 3];
+        for (int i = 0; i < CORE2_LED_COUNT; i++) {
+            rgb[i * 3 + 0] = r; rgb[i * 3 + 1] = g; rgb[i * 3 + 2] = b;
+        }
+        core2_leds_set_pixels_rgb(rgb);
+    } else if (s_mp3.visualizer_style == 12) {
+        /* Style 12: spectral-centroid comet — a bright pixel sweeps along
+         * the strip according to the spectral centroid (the level-weighted
+         * average band index, 0=bass end .. 9=treble end), leaving a
+         * fading trail. Each LED position has a fixed hue (red=bass end ..
+         * violet=treble end); brightness comes from the trail decay scaled
+         * by the overall level. */
+        static float trail[CORE2_LED_COUNT] = {0};
+
+        for (int i = 0; i < CORE2_LED_COUNT; i++) trail[i] *= 0.75f;
+
+        int lo = (int)v_centroid;
+        float frac = v_centroid - (float)lo;
+        if (lo < 0) lo = 0;
+        if (lo > CORE2_LED_COUNT - 1) lo = CORE2_LED_COUNT - 1;
+        int hi = lo + 1;
+        if (hi > CORE2_LED_COUNT - 1) hi = CORE2_LED_COUNT - 1;
+
+        trail[lo] += (1.0f - frac) * v_overall;
+        trail[hi] += frac * v_overall;
+
+        uint8_t rgb[CORE2_LED_COUNT * 3];
+        for (int i = 0; i < CORE2_LED_COUNT; i++) {
+            float v = trail[i];
+            if (v > 1.0f) v = 1.0f;
+            float hue = (float)i / 9.0f * 270.0f;
+            core2_leds_hsv_to_rgb(hue, 1.0f, v, &rgb[i * 3 + 0], &rgb[i * 3 + 1], &rgb[i * 3 + 2]);
+        }
+        core2_leds_set_pixels_rgb(rgb);
+    } else if (s_mp3.visualizer_style == 13) {
+        /* Style 13: center bloom — each 5-LED zone blooms outward from its
+         * center LED (LED2 left, LED7 right) toward both ends as the
+         * overall level rises (0..3 LEDs lit per side of center). The
+         * bloom color is the hue of whichever band is currently loudest,
+         * so the color shifts with the dominant frequency. */
+        int bloom_n = (int)(v_overall * 3.0f + 0.5f); /* 0..3 */
+        if (bloom_n > 3) bloom_n = 3;
+        float hue = (float)v_dom / 9.0f * 270.0f;
+
+        uint8_t lit_r, lit_g, lit_b;
+        core2_leds_hsv_to_rgb(hue, 1.0f, 0.8f, &lit_r, &lit_g, &lit_b);
+
+        uint8_t rgb[CORE2_LED_COUNT * 3] = {0};
+        for (int i = 0; i < 5; i++) {
+            if (abs(i - 2) < bloom_n) {
+                rgb[i * 3 + 0] = lit_r; rgb[i * 3 + 1] = lit_g; rgb[i * 3 + 2] = lit_b;
+                int right_led = 5 + (4 - i); /* mirrors left zone about LED7 */
+                rgb[right_led * 3 + 0] = lit_r; rgb[right_led * 3 + 1] = lit_g; rgb[right_led * 3 + 2] = lit_b;
+            }
+        }
+        core2_leds_set_pixels_rgb(rgb);
+    } else if (s_mp3.visualizer_style == 14) {
+        /* Style 14: color-temperature VU bars — same corner-fill positions
+         * as style 1 (low band fills LEDs 0-4 from LED0, high band fills
+         * LEDs 5-9 from LED9), but each zone's lit LEDs share one color
+         * whose hue sweeps from blue (quiet) to red (loud) based on that
+         * zone's level, instead of a fixed green/yellow/red ramp. */
+        const int zone = CORE2_LED_COUNT / 2;
+        int low_n  = (int)(v_low  * zone + 0.5f);
+        int high_n = (int)(v_high * zone + 0.5f);
+        if (low_n  > zone) low_n  = zone;
+        if (high_n > zone) high_n = zone;
+
+        uint8_t low_r, low_g, low_b, high_r, high_g, high_b;
+        core2_leds_hsv_to_rgb(240.0f * (1.0f - v_low),  1.0f, 0.8f, &low_r,  &low_g,  &low_b);
+        core2_leds_hsv_to_rgb(240.0f * (1.0f - v_high), 1.0f, 0.8f, &high_r, &high_g, &high_b);
+
+        uint8_t rgb[CORE2_LED_COUNT * 3] = {0};
+        for (int i = 0; i < low_n; i++) {
+            rgb[i * 3 + 0] = low_r; rgb[i * 3 + 1] = low_g; rgb[i * 3 + 2] = low_b;
+        }
+        for (int i = 0; i < high_n; i++) {
+            int led = CORE2_LED_COUNT - 1 - i;
+            rgb[led * 3 + 0] = high_r; rgb[led * 3 + 1] = high_g; rgb[led * 3 + 2] = high_b;
+        }
+        core2_leds_set_pixels_rgb(rgb);
+    } else if (s_mp3.visualizer_style == 15) {
+        /* Style 15: confetti — random LEDs flash a random color and fade
+         * out; the spawn rate is driven by the overall level (louder music
+         * = more frequent sparkles). Paced by wall-clock time (~30ms ticks)
+         * so it looks consistent regardless of the audio block rate. */
+        static float bright[CORE2_LED_COUNT] = {0};
+        static float hue[CORE2_LED_COUNT] = {0};
+        static int64_t last_us = 0;
+
+        if (now_us - last_us >= 30000) {
+            last_us = now_us;
+            for (int i = 0; i < CORE2_LED_COUNT; i++) bright[i] *= 0.85f;
+
+            int spawns = (int)(v_overall * 2.0f + 0.5f);
+            for (int n = 0; n < spawns; n++) {
+                int idx = (int)(viz_rand() % CORE2_LED_COUNT);
+                bright[idx] = 1.0f;
+                hue[idx] = (float)(viz_rand() % 360);
+            }
+        }
+
+        uint8_t rgb[CORE2_LED_COUNT * 3];
+        for (int i = 0; i < CORE2_LED_COUNT; i++) {
+            core2_leds_hsv_to_rgb(hue[i], 1.0f, bright[i], &rgb[i * 3 + 0], &rgb[i * 3 + 1], &rgb[i * 3 + 2]);
+        }
+        core2_leds_set_pixels_rgb(rgb);
+    } else if (s_mp3.visualizer_style == 16) {
+        /* Style 16: rainbow wash — a full rainbow gradient continuously
+         * rotates across all 10 LEDs (position/color is not audio-driven),
+         * while the overall brightness breathes with the music. */
+        static float hue_phase = 0.0f;
+        static int64_t last_us = 0;
+        if (last_us != 0) {
+            hue_phase += (float)(now_us - last_us) * (90.0f / 1000000.0f); /* 90 deg/sec */
+        }
+        last_us = now_us;
+
+        float val = 0.15f + 0.85f * v_overall;
+        uint8_t rgb[CORE2_LED_COUNT * 3];
+        for (int i = 0; i < CORE2_LED_COUNT; i++) {
+            float hue = hue_phase + (float)i * 36.0f;
+            core2_leds_hsv_to_rgb(hue, 1.0f, val, &rgb[i * 3 + 0], &rgb[i * 3 + 1], &rgb[i * 3 + 2]);
+        }
+        core2_leds_set_pixels_rgb(rgb);
+    } else if (s_mp3.visualizer_style == 17) {
+        /* Style 17: peak-hold spectrum — like style 2's per-band spectrum
+         * (LED i <-> band i, red=bass .. violet=treble), but each band also
+         * tracks a slowly decaying peak so recently-loud bands keep a dim
+         * afterglow instead of snapping off instantly. */
+        static float peak[VIZ_BANDS] = {0};
+
+        uint8_t rgb[CORE2_LED_COUNT * 3];
+        for (int i = 0; i < VIZ_BANDS; i++) {
+            peak[i] *= 0.93f;
+            if (levels[i] > peak[i]) peak[i] = levels[i];
+            float v = levels[i];
+            if (peak[i] * 0.6f > v) v = peak[i] * 0.6f;
+            float hue = (float)i / 9.0f * 270.0f;
+            core2_leds_hsv_to_rgb(hue, 1.0f, v, &rgb[i * 3 + 0], &rgb[i * 3 + 1], &rgb[i * 3 + 2]);
+        }
+        core2_leds_set_pixels_rgb(rgb);
+    } else if (s_mp3.visualizer_style == 18) {
+        /* Style 18: dominant-band spotlight — the single LED corresponding
+         * to the currently loudest frequency band (LED i <-> band i, as in
+         * style 2) lights brightly with that band's hue, while every other
+         * LED stays at a dim white glow. The spotlight jumps around the
+         * strip as the dominant frequency changes. */
+        uint8_t rgb[CORE2_LED_COUNT * 3];
+        for (int i = 0; i < CORE2_LED_COUNT; i++) {
+            core2_leds_hsv_to_rgb(0.0f, 0.0f, 0.04f, &rgb[i * 3 + 0], &rgb[i * 3 + 1], &rgb[i * 3 + 2]);
+        }
+        float hue = (float)v_dom / 9.0f * 270.0f;
+        core2_leds_hsv_to_rgb(hue, 1.0f, 0.3f + 0.7f * levels[v_dom],
+                               &rgb[v_dom * 3 + 0], &rgb[v_dom * 3 + 1], &rgb[v_dom * 3 + 2]);
+        core2_leds_set_pixels_rgb(rgb);
+    } else if (s_mp3.visualizer_style == 19) {
+        /* Style 19: pulsing VU bars — same low/high zone fill and
+         * green/yellow/red ramp as style 1, but the whole strip's
+         * brightness additionally breathes with the overall loudness, so
+         * quiet passages dim the whole bar and loud passages punch it back
+         * up to full brightness. */
+        const int zone = CORE2_LED_COUNT / 2;
+        int low_n  = (int)(v_low  * zone + 0.5f);
+        int high_n = (int)(v_high * zone + 0.5f);
+        if (low_n  > zone) low_n  = zone;
+        if (high_n > zone) high_n = zone;
+        float master = 0.4f + 0.6f * v_overall;
+
+        uint8_t rgb[CORE2_LED_COUNT * 3] = {0};
+        for (int i = 0; i < low_n; i++) {
+            float frac = (zone <= 1) ? 0.0f : (float)i / (float)(zone - 1);
+            uint8_t r = (frac < 0.6f) ? 0 : 160;
+            uint8_t g = (frac < 0.85f) ? 160 : 0;
+            rgb[i * 3 + 0] = (uint8_t)(r * master);
+            rgb[i * 3 + 1] = (uint8_t)(g * master);
+        }
+        for (int i = 0; i < high_n; i++) {
+            int led = CORE2_LED_COUNT - 1 - i;
+            float frac = (zone <= 1) ? 0.0f : (float)i / (float)(zone - 1);
+            uint8_t r = (frac < 0.6f) ? 0 : 160;
+            uint8_t g = (frac < 0.85f) ? 160 : 0;
+            rgb[led * 3 + 0] = (uint8_t)(r * master);
+            rgb[led * 3 + 1] = (uint8_t)(g * master);
+        }
+        core2_leds_set_pixels_rgb(rgb);
+    } else if (s_mp3.visualizer_style == 20) {
+        /* Style 20: mirrored chase — a pair of LEDs (LED i and its mirror
+         * LED 9-i) step together around the strip, like style 3's chase
+         * but doubled and mirrored, with the step speed driven by the
+         * overall loudness (louder = faster) and the color cycling each
+         * full lap. */
+        static const uint8_t chase_colors[][3] = {
+            {160, 0,   0  }, /* red */
+            {0,   160, 0  }, /* green */
+            {0,   0,   160}, /* blue */
+            {160, 160, 0  }, /* yellow */
+            {0,   160, 160}, /* cyan */
+            {160, 0,   160}, /* magenta */
+        };
+        static int     pos       = 0;
+        static int     color_idx = 0;
+        static int64_t last_us   = 0;
+
+        int64_t interval_us = 180000 - (int64_t)(v_overall * 120000.0f);
+        if (now_us - last_us >= interval_us) {
+            last_us = now_us;
+            pos++;
+            if (pos >= 5) {
+                pos = 0;
+                color_idx = (color_idx + 1) %
+                            (int)(sizeof(chase_colors) / sizeof(chase_colors[0]));
+            }
+        }
+
+        uint8_t rgb[CORE2_LED_COUNT * 3] = {0};
+        rgb[pos * 3 + 0]       = chase_colors[color_idx][0];
+        rgb[pos * 3 + 1]       = chase_colors[color_idx][1];
+        rgb[pos * 3 + 2]       = chase_colors[color_idx][2];
+        rgb[(9 - pos) * 3 + 0] = chase_colors[color_idx][0];
+        rgb[(9 - pos) * 3 + 1] = chase_colors[color_idx][1];
+        rgb[(9 - pos) * 3 + 2] = chase_colors[color_idx][2];
+        core2_leds_set_pixels_rgb(rgb);
     } else {
         /* Style 1 (default): VU-meter bars — first 5 bands drive the low
          * row, last 5 bands drive the high row. */
@@ -6092,12 +6471,15 @@ static void pf_event_handler(const char *event_name,
         char mode[16] = {0};
         strncpy(mode, s_params, sizeof(mode) - 1);
         for (size_t i = 0; mode[i]; i++) mode[i] = (char)tolower((unsigned char)mode[i]);
+        char *endptr = NULL;
+        long style_num = (mode[0] != '\0') ? strtol(mode, &endptr, 10) : 0;
         if (strcmp(mode, "on") == 0) {
             s_mp3.visualizer = true;
         } else if (strcmp(mode, "off") == 0) {
             s_mp3.visualizer = false;
-        } else if (strcmp(mode, "1") == 0 || strcmp(mode, "2") == 0 || strcmp(mode, "3") == 0 || strcmp(mode, "4") == 0 || strcmp(mode, "5") == 0 || strcmp(mode, "6") == 0) {
-            s_mp3.visualizer_style = (uint8_t)(mode[0] - '0');
+        } else if (endptr != NULL && endptr != mode && *endptr == '\0'
+                   && style_num >= VISUALIZER_STYLE_MIN && style_num <= VISUALIZER_STYLE_MAX) {
+            s_mp3.visualizer_style = (uint8_t)style_num;
             s_mp3.visualizer = true;
             nvs_write_u8(NVS_KEY_VISUALIZER_STYLE, s_mp3.visualizer_style);
         } else {

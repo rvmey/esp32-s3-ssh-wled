@@ -396,3 +396,50 @@ void core2_leds_off(void)
     memset(s_pixels, 0, sizeof(s_pixels));
     led_flush();
 }
+
+/* General HSV -> RGB conversion shared by the picture_frame.c visualizer
+ * styles. hue_deg wraps to 0..360, sat/val are clamped to 0..1. Output is
+ * scaled to 0..200 to match the brightness ceiling used elsewhere in this
+ * file (band_to_rgb, vu_meter_rgb, etc.). */
+void core2_leds_hsv_to_rgb(float hue_deg, float sat, float val, uint8_t *r, uint8_t *g, uint8_t *b)
+{
+    hue_deg = fmodf(hue_deg, 360.0f);
+    if (hue_deg < 0.0f) hue_deg += 360.0f;
+    if (sat < 0.0f) sat = 0.0f;
+    if (sat > 1.0f) sat = 1.0f;
+    if (val < 0.0f) val = 0.0f;
+    if (val > 1.0f) val = 1.0f;
+
+    float h = hue_deg / 60.0f;
+    float c = val * sat;
+    float x = c * (1.0f - fabsf(fmodf(h, 2.0f) - 1.0f));
+    float m = val - c;
+    float r1, g1, b1;
+    if      (h < 1.0f) { r1 = c; g1 = x; b1 = 0.0f; }
+    else if (h < 2.0f) { r1 = x; g1 = c; b1 = 0.0f; }
+    else if (h < 3.0f) { r1 = 0.0f; g1 = c; b1 = x; }
+    else if (h < 4.0f) { r1 = 0.0f; g1 = x; b1 = c; }
+    else if (h < 5.0f) { r1 = x; g1 = 0.0f; b1 = c; }
+    else               { r1 = c; g1 = 0.0f; b1 = x; }
+
+    *r = (uint8_t)((r1 + m) * 200.0f);
+    *g = (uint8_t)((g1 + m) * 200.0f);
+    *b = (uint8_t)((b1 + m) * 200.0f);
+}
+
+/* Writes a full CORE2_LED_COUNT*3 R,G,B buffer to the strip, converting to
+ * the GRB pixel order used by s_pixels. Used by the picture_frame.c
+ * visualizer styles that compute their own per-LED colors. */
+void core2_leds_set_pixels_rgb(const uint8_t *rgb)
+{
+    if (!core2_leds_initialized()) return;
+    for (int i = 0; i < CORE2_LED_COUNT; i++) {
+        s_pixels[i * 3 + 0] = rgb[i * 3 + 1]; /* G */
+        s_pixels[i * 3 + 1] = rgb[i * 3 + 0]; /* R */
+        s_pixels[i * 3 + 2] = rgb[i * 3 + 2]; /* B */
+    }
+    esp_err_t err = led_flush();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "set_pixels_rgb: %s", esp_err_to_name(err));
+    }
+}

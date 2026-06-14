@@ -2,7 +2,7 @@
 
 The Core2 variant drives the 10 SK6812 LEDs on the sides of the M5Stack Core2
 (GPIO 25) as a music visualizer while MP3 playback is active. Audio is
-analyzed in real time and rendered to the LED strip in one of six styles.
+analyzed in real time and rendered to the LED strip in one of 20 styles.
 
 ---
 
@@ -55,8 +55,22 @@ LED 9 at top-right. This single logical chain
 | `visualizer 4` | Select **style 4 — mirrored VU meter** (also turns the visualizer on) |
 | `visualizer 5` | Select **style 5 — VU bars (bottom-up)** (also turns the visualizer on) |
 | `visualizer 6` | Select **style 6 — VU bars (mix)** (also turns the visualizer on) |
-| `visualizernext` | Switch to the next style, wrapping from 6 back to 1 (also turns the visualizer on) |
-| `visualizerprevious` | Switch to the previous style, wrapping from 1 back to 6 (also turns the visualizer on) |
+| `visualizer 7` | Select **style 7 — rainbow VU bars** (also turns the visualizer on) |
+| `visualizer 8` | Select **style 8 — bass-pulse breathing** (also turns the visualizer on) |
+| `visualizer 9` | Select **style 9 — dual mirrored mini-spectrum** (also turns the visualizer on) |
+| `visualizer 10` | Select **style 10 — treble sparkle** (also turns the visualizer on) |
+| `visualizer 11` | Select **style 11 — beat-flash strobe** (also turns the visualizer on) |
+| `visualizer 12` | Select **style 12 — spectral-centroid comet** (also turns the visualizer on) |
+| `visualizer 13` | Select **style 13 — center bloom** (also turns the visualizer on) |
+| `visualizer 14` | Select **style 14 — color-temperature VU bars** (also turns the visualizer on) |
+| `visualizer 15` | Select **style 15 — confetti** (also turns the visualizer on) |
+| `visualizer 16` | Select **style 16 — rainbow wash** (also turns the visualizer on) |
+| `visualizer 17` | Select **style 17 — peak-hold spectrum** (also turns the visualizer on) |
+| `visualizer 18` | Select **style 18 — dominant-band spotlight** (also turns the visualizer on) |
+| `visualizer 19` | Select **style 19 — pulsing VU bars** (also turns the visualizer on) |
+| `visualizer 20` | Select **style 20 — mirrored chase** (also turns the visualizer on) |
+| `visualizernext` | Switch to the next style, wrapping from 20 back to 1 (also turns the visualizer on) |
+| `visualizerprevious` | Switch to the previous style, wrapping from 1 back to 20 (also turns the visualizer on) |
 
 The on/off state and selected style are both persisted to NVS, so they
 survive a reboot. Default style on a fresh install is **1**.
@@ -231,6 +245,206 @@ Implemented as `core2_leds_set_vu_mix(low_level, high_level)` in
 
 ---
 
+## Style 7 — Rainbow VU bars
+
+Same fill positions as style 1 (low band fills LEDs 0–4 from LED 0, high band
+fills LEDs 5–9 from LED 9), but instead of the green/yellow/red ramp, each lit
+LED's color comes from a rainbow gradient that slowly rotates over time
+(60°/sec). The result looks like style 1's bars, but the colors continuously
+cycle through the spectrum rather than encoding loudness.
+
+Implemented in `viz_run_block()` (`picture_frame.c`) using
+`core2_leds_hsv_to_rgb()` + `core2_leds_set_pixels_rgb()`.
+
+---
+
+## Style 8 — Bass-pulse breathing
+
+The simplest style: all 10 LEDs show the same color at all times. Brightness
+tracks the bass level (the loudest of the 60/120/250 Hz bands), so the whole
+strip "breathes" with the beat. The hue slowly rotates over time (20°/sec)
+independent of the audio, so the breathing color cycles through the rainbow
+over the course of a song.
+
+Implemented in `viz_run_block()` using `core2_leds_hsv_to_rgb()` +
+`core2_leds_set_pixels_rgb()`.
+
+---
+
+## Style 9 — Dual mirrored mini-spectrum
+
+Each side face acts as its own 5-band spectrum analyzer:
+
+- **Left zone (LEDs 0–4):** bands 0–4 (60 Hz – 1000 Hz), LED 0 = band 0
+  (bass) … LED 4 = band 4.
+- **Right zone (LEDs 5–9):** bands 9–5 (16000 Hz down to 1000 Hz), LED 5 =
+  band 9 (treble) … LED 9 = band 5.
+
+Each LED's hue comes from its band's position in the global 10-band spectrum
+(red = bass … violet = treble, same hue mapping as style 2) and its
+brightness comes from that band's level. The two zones effectively show
+mirrored halves of the spectrum.
+
+Implemented in `viz_run_block()` using `core2_leds_hsv_to_rgb()` +
+`core2_leds_set_pixels_rgb()`.
+
+---
+
+## Style 10 — Treble sparkle
+
+All 10 LEDs show a dim blue base whose brightness tracks the bass level
+(60 Hz – 1000 Hz). On top of that, a number of randomly chosen LEDs flash
+bright white each block — the number of sparkles is proportional to the
+treble level (8000/12000/16000 Hz bands), so busy high-frequency content
+("ts ts ts" hi-hats, cymbals) produces a flurry of white sparkles over a dim
+blue glow.
+
+Implemented in `viz_run_block()` using a small xorshift PRNG
+(`viz_rand()`), `core2_leds_hsv_to_rgb()`, and `core2_leds_set_pixels_rgb()`.
+
+---
+
+## Style 11 — Beat-flash strobe
+
+Tracks a slow moving average of the bass level (60/120/250 Hz). When the
+instantaneous bass level spikes well above that average — a "kick" — all 10
+LEDs flash white at full brightness, then decay back over roughly 200 ms.
+Between kicks, the strip shows a dim white glow proportional to the overall
+level. This gives a strobe-like effect synced to bass drum hits rather than
+to any fixed frequency band's continuous level.
+
+Implemented in `viz_run_block()` using `core2_leds_hsv_to_rgb()` (saturation
+0 = white) + `core2_leds_set_pixels_rgb()`.
+
+---
+
+## Style 12 — Spectral-centroid comet
+
+Computes the **spectral centroid** each block — the level-weighted average of
+the 10 band indices, which shifts toward 0 (bass end) for bass-heavy audio and
+toward 9 (treble end) for treble-heavy audio. A bright "comet" is drawn at
+that position (split across the two nearest LEDs by the fractional part),
+leaving a fading trail behind it (each LED's trail brightness decays by 25%
+per block). Each LED position has a fixed hue along the same red→violet ramp
+used by style 2, and the comet's brightness scales with the overall level — so
+quiet passages produce a faint trail and loud, bass-or-treble-heavy passages
+produce a bright comet that visibly slides toward that end of the strip.
+
+Implemented in `viz_run_block()` using `core2_leds_hsv_to_rgb()` +
+`core2_leds_set_pixels_rgb()`.
+
+---
+
+## Style 13 — Center bloom
+
+Each 5-LED zone blooms outward from its center LED (LED 2 on the left, LED 7
+on the right) toward both ends as the overall level rises — 0 LEDs lit at
+silence, growing through the center LED, then ±1, then ±2 (all 5) at full
+level. Both zones bloom in the same color, which is the hue of whichever
+frequency band is currently loudest (the "dominant band"), so the bloom's
+color shifts with the dominant frequency while its size tracks overall
+loudness.
+
+Implemented in `viz_run_block()` using `core2_leds_hsv_to_rgb()` +
+`core2_leds_set_pixels_rgb()`.
+
+---
+
+## Style 14 — Color-temperature VU bars
+
+Same corner-fill positions as style 1 (low band fills LEDs 0–4 from LED 0,
+high band fills LEDs 5–9 from LED 9), but instead of a fixed green/yellow/red
+ramp, each zone's lit LEDs share a single color whose **hue** is derived from
+that zone's level: blue (240°) at low levels sweeping to red (0°) at high
+levels. The two zones are colored independently, so e.g. a bass-heavy moment
+can show a "hot" red low zone next to a "cool" blue high zone.
+
+Implemented in `viz_run_block()` using `core2_leds_hsv_to_rgb()` +
+`core2_leds_set_pixels_rgb()`.
+
+---
+
+## Style 15 — Confetti
+
+A non-deterministic sparkle effect: every ~30 ms, all LEDs' brightness decays
+by 15%, and then a number of new sparkles are spawned proportional to the
+overall level (0–2 per tick). Each spawned sparkle picks a random LED and a
+random hue and sets it to full brightness, which then fades out over the
+following ticks. The result is a field of randomly-colored sparkles whose
+spawn rate rises and falls with the music.
+
+Implemented in `viz_run_block()` using `viz_rand()`, `core2_leds_hsv_to_rgb()`,
+and `core2_leds_set_pixels_rgb()`.
+
+---
+
+## Style 16 — Rainbow wash
+
+A non-audio-reactive rainbow gradient is spread evenly across all 10 LEDs
+(36° of hue between adjacent LEDs, one full rainbow around the strip) and
+continuously rotates over time (90°/sec). The only audio-reactive element is
+overall brightness, which breathes between 15% and 100% with the overall
+level — so the rainbow pattern itself is constant, but it dims during quiet
+passages and brightens during loud ones.
+
+Implemented in `viz_run_block()` using `core2_leds_hsv_to_rgb()` +
+`core2_leds_set_pixels_rgb()`.
+
+---
+
+## Style 17 — Peak-hold spectrum
+
+Like style 2, LED *i* corresponds directly to band *i* (red = bass … violet =
+treble). In addition, each band tracks a slowly-decaying **peak** value
+(`peak *= 0.93` per block, raised to the current level whenever it's
+exceeded). Each LED's brightness is the greater of the current level and 60%
+of that band's peak, so a band that was recently loud keeps a dim trailing
+glow for a moment after it quiets down — the classic "peak hold" behavior of
+hardware equalizer displays.
+
+Implemented in `viz_run_block()` using `core2_leds_hsv_to_rgb()` +
+`core2_leds_set_pixels_rgb()`.
+
+---
+
+## Style 18 — Dominant-band spotlight
+
+Each block, the band with the highest level (the "dominant band") is found.
+The single LED corresponding to that band (LED *i* ↔ band *i*, as in style 2)
+lights up brightly with that band's hue; every other LED stays at a very dim
+white glow. As the dominant frequency shifts during a track, the bright
+"spotlight" jumps to a different position along the strip.
+
+Implemented in `viz_run_block()` using `core2_leds_hsv_to_rgb()` +
+`core2_leds_set_pixels_rgb()`.
+
+---
+
+## Style 19 — Pulsing VU bars
+
+Same low/high zone fill and green/yellow/red ramp as style 1, but with an
+extra global brightness multiplier (40%–100%) driven by the overall level.
+Quiet passages dim the entire bar display down to 40% brightness; loud
+passages bring it back to full — layering a "master volume pulse" on top of
+style 1's per-zone bar logic.
+
+Implemented in `viz_run_block()` using `core2_leds_set_pixels_rgb()`.
+
+---
+
+## Style 20 — Mirrored chase
+
+Like style 3's chase, but two LEDs move together: LED *i* and its mirror
+LED `9-i` step in lockstep around the strip (covering all 10 LEDs over 5
+steps), changing to the next color in the same 6-color palette as style 3
+each time they complete a lap. The step interval is driven by the overall
+level — from 180 ms at silence down to 60 ms at full loudness — so the chase
+speeds up with the music.
+
+Implemented in `viz_run_block()` using `core2_leds_set_pixels_rgb()`.
+
+---
+
 ## Implementation notes
 
 - `CORE2_LED_COUNT` = 10, `CORE2_LED_GPIO` = 25 (`core2_leds.h`).
@@ -240,3 +454,12 @@ Implemented as `core2_leds_set_vu_mix(low_level, high_level)` in
   both styles — `core2_leds_set_bands()`, `core2_leds_set_vu()`, and
   `core2_leds_set_solid()` (used by `ledcolor`) all write into it and flush
   via the same `led_flush()`.
+- Styles 7–20 are implemented directly in `viz_run_block()`
+  (`picture_frame.c`) rather than as dedicated `core2_leds_set_*()`
+  functions. They compute a flat R,G,B buffer and push it with the generic
+  `core2_leds_set_pixels_rgb()`, using `core2_leds_hsv_to_rgb()` for color
+  and a small xorshift PRNG (`viz_rand()`) for the sparkle/confetti styles.
+- Several shared per-block aggregates (`v_low`, `v_high`, `v_overall`,
+  `v_dom` — the dominant band index, and `v_centroid` — the level-weighted
+  average band index) are computed once at the top of `viz_run_block()` and
+  reused across styles 7–20.
