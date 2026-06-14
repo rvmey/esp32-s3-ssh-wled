@@ -11,25 +11,31 @@ analyzed in real time and rendered to the LED strip in one of four styles.
 The 10-LED chain is split across the two side faces of the unit, 5 LEDs per
 side:
 
-- **LEDs 0–4** — left side face, ordered bottom → top (LED 0 is the
-  bottommost LED on the left side, LED 4 is the topmost).
-- **LEDs 5–9** — right side face, ordered top → bottom (LED 5 is the
-  topmost LED on the right side, LED 9 is the bottommost).
+- **LEDs 0–4** — left side face, ordered top → bottom (LED 0 is the
+  topmost LED on the left side, LED 4 is the bottommost).
+- **LEDs 5–9** — right side face, ordered bottom → top (LED 5 is the
+  bottommost LED on the right side, LED 9 is the topmost).
 
 ```
 LEFT SIDE (up)        RIGHT SIDE (down)
 
-LED 4  ─ top-left       top-right ─ LED 5
-LED 3                   LED 6
-LED 2                   LED 7
+LED 0  ─ top-left       top-right ─ LED 9
 LED 1                   LED 8
-LED 0  ─ bottom-left    bottom-right ─ LED 9
+LED 2                   LED 7
+LED 3                   LED 6
+LED 4  ─ bottom-left    bottom-right ─ LED 5
 ```
 
-So index 0 starts at the bottom-left corner and increases up the left side to
-LED 4 at top-left, then LED 5 picks up at top-right and decreases down to
-LED 9 at bottom-right. This single logical chain
-(`s_pixels[CORE2_LED_COUNT * 3]`) is what both visualizer styles address.
+So index 0 starts at the top-left corner and increases down the left side to
+LED 4 at bottom-left, then LED 5 picks up at bottom-right and increases up to
+LED 9 at top-right. This single logical chain
+(`s_pixels[CORE2_LED_COUNT * 3]`) is what all four visualizer styles address.
+
+> **Note:** this orientation was corrected based on hardware testing of
+> [style 4](#style-4--mirrored-vu-meter) (v2.0.457). The earlier version of
+> this diagram had top and bottom reversed. Styles 1 and 2 were written
+> against the old (incorrect) diagram and have **not** been re-verified
+> against the corrected orientation; see the notes in their sections below.
 
 ---
 
@@ -80,9 +86,9 @@ Each of the 10 LEDs corresponds directly to one of the 10 frequency bands:
 
 - LED 0 ↔ 60 Hz (bass) ... LED 9 ↔ 16 kHz (treble)
 - Per the [physical layout](#physical-layout), this puts the bass end of the
-  spectrum on the bottom-left LED of the left side and the treble end on the
-  bottom-right LED of the right side — both ends of the spectrum sit at the
-  bottom of the device.
+  spectrum on the top-left LED of the left side and the treble end on the
+  top-right LED of the right side — both ends of the spectrum sit at the
+  top of the device.
 - Each LED's color is a hue computed from its band index — red for bass,
   sweeping through the spectrum to violet for treble (`band_to_rgb()`).
 - Each LED's **brightness** is driven by that band's current level — louder
@@ -90,6 +96,10 @@ Each of the 10 LEDs corresponds directly to one of the 10 frequency bands:
 
 This gives a classic "spectrum analyzer" look: a rainbow strip where each
 LED pulses independently with its own frequency band.
+
+> **Unverified:** the "bass/treble at the top" placement above follows
+> directly from the corrected [physical layout](#physical-layout), but the
+> per-band mapping itself has not been checked against real hardware.
 
 ---
 
@@ -99,21 +109,31 @@ Instead of mapping bands to individual LEDs, style 1 splits the strip into
 two 5-LED zones and treats each as a **bar-graph level meter**:
 
 - **Low zone (LEDs 0–4, the left side face):** driven by the loudest of the
-  5 low-frequency bands (60 Hz – 1000 Hz). Fills upward starting from LED 0
-  at the bottom of the left side, extending toward the top.
+  5 low-frequency bands (60 Hz – 1000 Hz). Fills starting from LED 0,
+  extending toward LED 4.
 - **High zone (LEDs 5–9, the right side face):** driven by the loudest of
-  the 5 high-frequency bands (2000 Hz – 16000 Hz). Fills upward starting
-  from LED 9 at the bottom of the right side, extending toward the top (i.e.
-  LED 9 lights first, then 8, 7...).
+  the 5 high-frequency bands (2000 Hz – 16000 Hz). Fills starting from
+  LED 9, extending toward LED 5 (i.e. LED 9 lights first, then 8, 7...).
 
 For each zone, the number of lit LEDs is proportional to that zone's level
 (0–5 LEDs). Lit LEDs are colored with a VU-meter ramp based on their
 position in the bar — green for the lower portion, yellow in the middle,
-red at the top — independent of which frequency drove them.
+red at the top of the ramp — independent of which frequency drove them.
 
-The effect: both zones behave like a classic bar-graph meter, growing
+The intent: both zones behave like a classic bar-graph meter, growing
 upward from the bottom of the device as the music gets louder — bass on the
 left side, treble on the right.
+
+> **Likely reversed (unverified):** style 4 used this same fill order
+> (LED 0 → LED 4 / LED 9 → LED 5) and, per the
+> [corrected physical layout](#physical-layout), that order actually starts
+> at LED 0/LED 9 — the **top** corners — and extends toward LED 4/LED 5 — the
+> **bottom** corners. Style 4 was fixed in v2.0.457 to reverse this so it
+> grows bottom-up; style 1 has the same fill order and has **not** been
+> re-checked on hardware, so it likely currently grows top-down instead of
+> bottom-up as described above. If you confirm this on real hardware, the
+> fix is the same as style 4's: swap the fill to LED 4 → LED 0 / LED 5 →
+> LED 9.
 
 Implemented as `core2_leds_set_vu(low_level, high_level)` in
 `core2_leds.c`.
