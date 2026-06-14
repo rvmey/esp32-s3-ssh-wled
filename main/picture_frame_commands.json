@@ -188,7 +188,7 @@
   "trigger": "visualizer",
   "command": "visualizer",
   "allowParams": "true",
-  "mcpToolDescription": "Enable or disable the LED audio visualizer on the sides of the user's Core2 device, or pick its style (1-6): 1=VU bars (lows/highs fill from opposite ends), 2=per-band FFT spectrum, 3=chase animation, 4=mirrored VU meter (red, driven by overall loudness), 5=VU bars filling bottom-up (opposite of style 1), 6=VU bars mixed (blue highs fill down from the top, red lows fill up from the bottom, mixing into magenta in the middle). Example: 'on', 'off', '1'-'6'",
+  "mcpToolDescription": "Enable or disable the LED audio visualizer on the sides of the user's Core2 device, or pick its style (1-100). Example: 'on', 'off', '6'",
   "icon": "🌈"
  },
  {

@@ -5146,7 +5146,7 @@ static const pf_cmd_t s_pf_media_cmds[] = {
     { "shuffle",     "shuffle",     "true",  "Enable or disable shuffle mode. Example: 'on' or 'off'", "\xF0\x9F\x94\x80" /* 🔀 */, NULL },
     { "repeattrack", "repeattrack", "true",  "Enable or disable repeat-track mode. Example: 'on' or 'off'", "\xF0\x9F\x94\x82" /* 🔂 */, NULL },
     { "repeatplaylist", "repeatplaylist", "true",  "Enable or disable repeat-playlist mode. Example: 'on' or 'off'", "\xF0\x9F\x94\x81" /* 🔁 */, NULL },
-    { "visualizer",  "visualizer",  "true",  "Enable or disable the LED audio visualizer on the sides of the device, or pick its style (1-6): 1=VU bars (lows/highs fill from opposite ends), 2=per-band FFT spectrum, 3=chase animation, 4=mirrored VU meter (red, driven by overall loudness), 5=VU bars filling bottom-up (opposite of style 1), 6=VU bars mixed (blue highs fill down from the top, red lows fill up from the bottom, mixing into magenta in the middle). Example: 'on', 'off', '1'-'6'", "\xF0\x9F\x8C\x88" /* 🌈 */, NULL },
+    { "visualizer",  "visualizer",  "true",  "Enable or disable the LED audio visualizer on the sides of the device, or pick its style (1-100). Example: 'on', 'off', '6'", "\xF0\x9F\x8C\x88" /* 🌈 */, NULL },
     { "visualizernext", "visualizernext", "false", "Switch the LED audio visualizer to the next style (wraps around after the last style) and turn it on.", "\xE2\x8F\xA9" /* ⏩ */, NULL },
     { "visualizerprevious", "visualizerprevious", "false", "Switch the LED audio visualizer to the previous style (wraps around before the first style) and turn it on.", "\xE2\x8F\xAA" /* ⏪ */, NULL },
     { "ledcolor",    "ledcolor",    "true",  "Set all side LEDs to a solid color. Examples: 'red', '#FF0000', 'off'", "\xF0\x9F\x92\xA1" /* 💡 */, NULL },
