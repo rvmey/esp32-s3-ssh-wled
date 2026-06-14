@@ -3878,6 +3878,7 @@ static void mp3_render_now_playing(void)
              "%s / %s\n"
              "Vol:%s  Shuffle:%s\n"
              "RptTrack:%s  RptList:%s\n"
+             "Visualizer:%s  Style:%u\n"
              "\n"
              "[      %s      ]\n"
              "[ VOLUME  ^  v ]\n"
@@ -3892,6 +3893,8 @@ static void mp3_render_now_playing(void)
              s_mp3.shuffle ? "on" : "off",
              s_mp3.repeat_track ? "on" : "off",
              s_mp3.repeat_playlist ? "on" : "off",
+             s_mp3.visualizer ? "on" : "off",
+             (unsigned)s_mp3.visualizer_style,
              s_mp3.paused ? "PLAY" : "PAUSE");
     if (s_mp3_saved_font_scale < 0) {
         int cur = 2;
