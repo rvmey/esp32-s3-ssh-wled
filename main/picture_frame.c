@@ -520,12 +520,10 @@ static viz_band_t s_viz_band[VIZ_BANDS];
 static float      s_viz_buf[VIZ_BLOCK];
 static int        s_viz_buf_pos = 0;
 static int        s_viz_last_fs = 0;
-static uint32_t   s_viz_block_count = 0;
 
 static void viz_init_for_rate(int fs)
 {
     s_viz_last_fs = fs;
-    s_viz_block_count = 0;
     for (int i = 0; i < VIZ_BANDS; i++) {
         float w = 2.0f * (float)M_PI * s_viz_freqs[i] / (float)fs;
         s_viz_band[i].coeff = 2.0f * cosf(w);
@@ -555,21 +553,6 @@ static void viz_run_block(void)
         }
         levels[b] = s_viz_band[b].peak * 5.0f;
         if (levels[b] > 1.0f) levels[b] = 1.0f;
-    }
-
-    s_viz_block_count++;
-    if (s_viz_block_count <= 3 || (s_viz_block_count % 150) == 0) {
-        float mx = 0.0f;
-        for (int b = 0; b < VIZ_BANDS; b++) if (levels[b] > mx) mx = levels[b];
-        ESP_LOGI("viz", "block=%lu leds_ok=%d max_level=%.3f "
-                 "[%.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f]",
-                 (unsigned long)s_viz_block_count,
-                 (int)core2_leds_initialized(),
-                 (double)mx,
-                 (double)levels[0], (double)levels[1], (double)levels[2],
-                 (double)levels[3], (double)levels[4], (double)levels[5],
-                 (double)levels[6], (double)levels[7], (double)levels[8],
-                 (double)levels[9]);
     }
 
     if (s_mp3.visualizer_style == 2) {
@@ -5163,7 +5146,7 @@ static const pf_cmd_t s_pf_media_cmds[] = {
     { "shuffle",     "shuffle",     "true",  "Enable or disable shuffle mode. Example: 'on' or 'off'", "\xF0\x9F\x94\x80" /* 🔀 */, NULL },
     { "repeattrack", "repeattrack", "true",  "Enable or disable repeat-track mode. Example: 'on' or 'off'", "\xF0\x9F\x94\x82" /* 🔂 */, NULL },
     { "repeatplaylist", "repeatplaylist", "true",  "Enable or disable repeat-playlist mode. Example: 'on' or 'off'", "\xF0\x9F\x94\x81" /* 🔁 */, NULL },
-    { "visualizer",  "visualizer",  "true",  "Enable or disable the LED audio visualizer on the sides of the device, or pick its style. 'on'/'off' toggle the visualizer; '1' selects VU-meter bars (lows fill from one end, highs from the other), '2' selects the per-band FFT spectrum, '3' selects a chase animation (one LED at a time, cycling colors each lap), '4' selects a mirrored VU meter (both sides fill together 0-5 LEDs in red based on overall loudness), '5' selects VU-meter bars filling the opposite direction from style 1, and '6' selects a mixed VU bar that fills blue from the top for highs and red from the bottom for lows, mixing into magenta in the middle. Example: 'on', 'off', '1', '2', '3', '4', '5', or '6'", "\xF0\x9F\x8C\x88" /* 🌈 */, NULL },
+    { "visualizer",  "visualizer",  "true",  "Enable or disable the LED audio visualizer on the sides of the device, or pick its style (1-6): 1=VU bars (lows/highs fill from opposite ends), 2=per-band FFT spectrum, 3=chase animation, 4=mirrored VU meter (red, driven by overall loudness), 5=VU bars filling bottom-up (opposite of style 1), 6=VU bars mixed (blue highs fill down from the top, red lows fill up from the bottom, mixing into magenta in the middle). Example: 'on', 'off', '1'-'6'", "\xF0\x9F\x8C\x88" /* 🌈 */, NULL },
     { "visualizernext", "visualizernext", "false", "Switch the LED audio visualizer to the next style (wraps around after the last style) and turn it on.", "\xE2\x8F\xA9" /* ⏩ */, NULL },
     { "visualizerprevious", "visualizerprevious", "false", "Switch the LED audio visualizer to the previous style (wraps around before the first style) and turn it on.", "\xE2\x8F\xAA" /* ⏪ */, NULL },
     { "ledcolor",    "ledcolor",    "true",  "Set all side LEDs to a solid color. Examples: 'red', '#FF0000', 'off'", "\xF0\x9F\x92\xA1" /* 💡 */, NULL },
