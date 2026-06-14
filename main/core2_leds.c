@@ -242,6 +242,25 @@ void core2_leds_set_vu(float low_level, float high_level)
     }
 }
 
+/* Visualizer style 3: chase — lights a single LED at a time, advancing
+ * 0 -> 9 then wrapping back to 0 with a new color each lap. */
+void core2_leds_set_chase(int position, uint8_t r, uint8_t g, uint8_t b)
+{
+    if (!core2_leds_initialized()) return;
+    int pos = position % CORE2_LED_COUNT;
+    if (pos < 0) pos += CORE2_LED_COUNT;
+
+    memset(s_pixels, 0, sizeof(s_pixels));
+    s_pixels[pos * 3 + 0] = g;
+    s_pixels[pos * 3 + 1] = r;
+    s_pixels[pos * 3 + 2] = b;
+
+    esp_err_t err = led_flush();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "set_chase: %s", esp_err_to_name(err));
+    }
+}
+
 void core2_leds_off(void)
 {
     if (!core2_leds_initialized()) return;

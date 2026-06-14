@@ -1,0 +1,133 @@
+# Core2 LED Audio Visualizer
+
+The Core2 variant drives the 10 SK6812 LEDs on the sides of the M5Stack Core2
+(GPIO 25) as a music visualizer while MP3 playback is active. Audio is
+analyzed in real time and rendered to the LED strip in one of three styles.
+
+---
+
+## Physical layout
+
+The 10-LED chain is split across the two side faces of the unit, 5 LEDs per
+side:
+
+- **LEDs 0–4** — left side face, ordered back → front (LED 0 is the
+  rearmost LED on the left side, LED 4 is the frontmost).
+- **LEDs 5–9** — right side face, ordered back → front (LED 5 is the
+  rearmost LED on the right side, LED 9 is the frontmost).
+
+So index 0 starts at the back-left corner and increases around to the
+front-right corner. This single logical chain (`s_pixels[CORE2_LED_COUNT * 3]`)
+is what both visualizer styles address.
+
+---
+
+## Enabling / controlling
+
+| Command | Effect |
+|---|---|
+| `visualizer on` / `visualizer off` | Force the visualizer on or off |
+| `visualizer` (no params) | Toggle on/off |
+| `visualizer 1` | Select **style 1 — VU bars** (also turns the visualizer on) |
+| `visualizer 2` | Select **style 2 — FFT spectrum** (also turns the visualizer on) |
+| `visualizer 3` | Select **style 3 — chase** (also turns the visualizer on) |
+
+The on/off state and selected style are both persisted to NVS, so they
+survive a reboot. Default style on a fresh install is **1**.
+
+When the visualizer is off, `core2_leds_off()` blanks all 10 LEDs.
+
+---
+
+## Audio analysis (shared by both styles)
+
+Regardless of style, the same analysis feeds both visualizers:
+
+- While a track is playing, decoded PCM samples are fed into `viz_feed()`
+  in 256-sample blocks (`VIZ_BLOCK`).
+- Each block is run through 10 **Goertzel filters**, one per frequency band:
+
+  ```
+  60, 120, 250, 500, 1000, 2000, 4000, 8000, 12000, 16000 Hz
+  ```
+
+- Each band tracks a decaying **peak level** (fast attack, ~0.88 decay per
+  block) and the result is scaled/clamped to a `0.0–1.0` level per band.
+- The resulting `levels[10]` array is handed to `core2_leds_set_bands()`
+  (style 2) or reduced to two values and handed to `core2_leds_set_vu()`
+  (style 1).
+
+This all happens in `picture_frame.c` (`viz_init_for_rate`, `viz_run_block`,
+`viz_feed`); the actual LED pixel output happens in `core2_leds.c`.
+
+---
+
+## Style 2 — FFT spectrum (the original visualizer)
+
+Each of the 10 LEDs corresponds directly to one of the 10 frequency bands:
+
+- LED 0 ↔ 60 Hz (bass) ... LED 9 ↔ 16 kHz (treble)
+- Per the [physical layout](#physical-layout), this puts the bass end of the
+  spectrum on the back-left LED of the left side and the treble end on the
+  front-right LED of the right side.
+- Each LED's color is a hue computed from its band index — red for bass,
+  sweeping through the spectrum to violet for treble (`band_to_rgb()`).
+- Each LED's **brightness** is driven by that band's current level — louder
+  energy in that frequency range = brighter LED.
+
+This gives a classic "spectrum analyzer" look: a rainbow strip where each
+LED pulses independently with its own frequency band.
+
+---
+
+## Style 1 — VU-meter bars (new default)
+
+Instead of mapping bands to individual LEDs, style 1 splits the strip into
+two 5-LED zones and treats each as a **bar-graph level meter**:
+
+- **Low zone (LEDs 0–4, the left side face):** driven by the loudest of the
+  5 low-frequency bands (60 Hz – 1000 Hz). Fills outward starting from LED 0
+  (back of the left side), extending toward the front.
+- **High zone (LEDs 5–9, the right side face):** driven by the loudest of
+  the 5 high-frequency bands (2000 Hz – 16000 Hz). Fills inward starting
+  from LED 9 (front of the right side), extending toward the back (i.e. LED
+  9 lights first, then 8, 7...).
+
+For each zone, the number of lit LEDs is proportional to that zone's level
+(0–5 LEDs). Lit LEDs are colored with a VU-meter ramp based on their
+position in the bar — green for the lower portion, yellow in the middle,
+red at the top — independent of which frequency drove them.
+
+The effect: bass-heavy passages light up more LEDs from one end of the
+strip, treble-heavy passages light up more from the other end, and both
+bars grow toward the middle of the strip as the music gets louder.
+
+Implemented as `core2_leds_set_vu(low_level, high_level)` in
+`core2_leds.c`.
+
+---
+
+## Style 3 — Chase
+
+A simple non-audio-reactive "marquee" animation: a single LED is lit at a
+time, stepping from LED 0 through LED 9 and then wrapping back to LED 0. Each
+time the chase completes a full lap of the strip, it switches to the next
+color in a fixed palette (red, green, blue, yellow, cyan, magenta, repeating).
+
+The step rate is paced by wall-clock time (one step every ~100 ms, i.e. one
+lap per second), independent of the audio block rate.
+
+Implemented as `core2_leds_set_chase(position, r, g, b)` in `core2_leds.c`,
+driven from `viz_run_block()` in `picture_frame.c`.
+
+---
+
+## Implementation notes
+
+- `CORE2_LED_COUNT` = 10, `CORE2_LED_GPIO` = 25 (`core2_leds.h`).
+- LED output uses a direct RMT driver with SK6812/WS2812-compatible timing
+  (`core2_leds.c`); no `led_strip` component dependency.
+- `s_pixels[CORE2_LED_COUNT * 3]` is a static GRB pixel buffer reused by
+  both styles — `core2_leds_set_bands()`, `core2_leds_set_vu()`, and
+  `core2_leds_set_solid()` (used by `ledcolor`) all write into it and flush
+  via the same `led_flush()`.

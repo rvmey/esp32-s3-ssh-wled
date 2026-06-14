@@ -315,7 +315,7 @@ typedef struct {
     bool       repeat_track;
     bool       repeat_playlist;
     bool       visualizer;
-    uint8_t    visualizer_style; /* 1 = VU-meter bars (default), 2 = per-band spectrum */
+    uint8_t    visualizer_style; /* 1 = VU-meter bars (default), 2 = per-band spectrum, 3 = chase */
     int        volume;            /* 0..100 */
     bool       muted;            /* toggled by "mute" command; not persisted */
     int        folder_idx;        /* index into s_mp3_folders */
@@ -572,6 +572,34 @@ static void viz_run_block(void)
 
     if (s_mp3.visualizer_style == 2) {
         core2_leds_set_bands(levels, VIZ_BANDS);
+    } else if (s_mp3.visualizer_style == 3) {
+        /* Style 3: chase — single LED steps 0..9, then repeats with the
+         * next color in the palette. Paced by wall-clock time, not the
+         * (much faster) audio block rate. */
+        static const uint8_t chase_colors[][3] = {
+            {160, 0,   0  }, /* red */
+            {0,   160, 0  }, /* green */
+            {0,   0,   160}, /* blue */
+            {160, 160, 0  }, /* yellow */
+            {0,   160, 160}, /* cyan */
+            {160, 0,   160}, /* magenta */
+        };
+        static int     chase_pos   = -1;
+        static int     chase_color = 0;
+        static int64_t chase_last_us = 0;
+
+        int64_t now_us = esp_timer_get_time();
+        if (chase_pos < 0 || now_us - chase_last_us >= 100000) {
+            chase_last_us = now_us;
+            chase_pos++;
+            if (chase_pos >= CORE2_LED_COUNT) {
+                chase_pos = 0;
+                chase_color = (chase_color + 1) %
+                              (int)(sizeof(chase_colors) / sizeof(chase_colors[0]));
+            }
+            core2_leds_set_chase(chase_pos, chase_colors[chase_color][0],
+                                  chase_colors[chase_color][1], chase_colors[chase_color][2]);
+        }
     } else {
         /* Style 1 (default): VU-meter bars — first 5 bands drive the low
          * row, last 5 bands drive the high row. */
@@ -5100,7 +5128,7 @@ static const pf_cmd_t s_pf_media_cmds[] = {
     { "shuffle",     "shuffle",     "true",  "Enable or disable shuffle mode. Example: 'on' or 'off'", "\xF0\x9F\x94\x80" /* 🔀 */, NULL },
     { "repeattrack", "repeattrack", "true",  "Enable or disable repeat-track mode. Example: 'on' or 'off'", "\xF0\x9F\x94\x82" /* 🔂 */, NULL },
     { "repeatplaylist", "repeatplaylist", "true",  "Enable or disable repeat-playlist mode. Example: 'on' or 'off'", "\xF0\x9F\x94\x81" /* 🔁 */, NULL },
-    { "visualizer",  "visualizer",  "true",  "Enable or disable the LED audio visualizer on the sides of the device, or pick its style. 'on'/'off' toggle the visualizer; '1' selects VU-meter bars (lows fill from one end, highs from the other) and '2' selects the per-band FFT spectrum. Example: 'on', 'off', '1', or '2'", "\xF0\x9F\x8C\x88" /* 🌈 */, NULL },
+    { "visualizer",  "visualizer",  "true",  "Enable or disable the LED audio visualizer on the sides of the device, or pick its style. 'on'/'off' toggle the visualizer; '1' selects VU-meter bars (lows fill from one end, highs from the other), '2' selects the per-band FFT spectrum, and '3' selects a chase animation (one LED at a time, cycling colors each lap). Example: 'on', 'off', '1', '2', or '3'", "\xF0\x9F\x8C\x88" /* 🌈 */, NULL },
     { "ledcolor",    "ledcolor",    "true",  "Set all side LEDs to a solid color. Examples: 'red', '#FF0000', 'off'", "\xF0\x9F\x92\xA1" /* 💡 */, NULL },
     { "pair",        "pair",        "true",  "Pair with a Bluetooth headset or speaker. Example: 'pair'", "\xF0\x9F\x8E\xA7" /* 🎧 */, NULL },
     { "btstatus",    "btstatus",    "false", "Show Bluetooth audio connection status.", "\xF0\x9F\x93\xB6" /* 📶 */, NULL },
@@ -6048,7 +6076,7 @@ static void pf_event_handler(const char *event_name,
             s_mp3.visualizer = true;
         } else if (strcmp(mode, "off") == 0) {
             s_mp3.visualizer = false;
-        } else if (strcmp(mode, "1") == 0 || strcmp(mode, "2") == 0) {
+        } else if (strcmp(mode, "1") == 0 || strcmp(mode, "2") == 0 || strcmp(mode, "3") == 0) {
             s_mp3.visualizer_style = (uint8_t)(mode[0] - '0');
             s_mp3.visualizer = true;
             nvs_write_u8(NVS_KEY_VISUALIZER_STYLE, s_mp3.visualizer_style);
@@ -6864,7 +6892,7 @@ void picture_frame_run(void)
         }
         uint8_t visualizer_style = 0;
         if (nvs_read_u8(NVS_KEY_VISUALIZER_STYLE, &visualizer_style)
-            && (visualizer_style == 1 || visualizer_style == 2)) {
+            && (visualizer_style == 1 || visualizer_style == 2 || visualizer_style == 3)) {
             s_mp3.visualizer_style = visualizer_style;
         }
 #endif
