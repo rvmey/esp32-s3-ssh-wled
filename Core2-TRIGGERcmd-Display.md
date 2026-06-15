@@ -152,10 +152,30 @@ password3=thirdpass
 
 # OpenAI API key (used for listen/askpic/askgpt/speak)
 openai_key=sk-proj-...
+
+# Optional: keep secrets on the SD card only (do not copy them to NVS)
+# secrets_in_sd=1
 ```
 
 The file is read every boot, so credentials can be updated without
 re-flashing. Removing a key from the file does not clear its NVS value.
+
+#### `secrets_in_sd=1` — SD-only mode
+
+By default the firmware copies secrets from `config.txt` into NVS so the
+device can reconnect after the SD card is removed.  Adding `secrets_in_sd=1`
+disables that:
+
+- WiFi credentials and the OpenAI key are **never written to NVS**.
+- They are held only in RAM for the current boot, read fresh from the SD card
+  each time.
+- If the SD card is absent at boot, the device falls back to whatever NVS
+  already contains (which may be empty).
+- Existing NVS credentials are not erased — this setting just suppresses new
+  writes.
+
+Use this when you want physical control over access: pulling the SD card makes
+the credentials unavailable to anyone who reflashes the device.
 
 ### Settings file — `core2_settings.cfg`
 

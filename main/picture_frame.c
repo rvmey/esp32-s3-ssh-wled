@@ -557,6 +557,16 @@ static char s_current_jpeg_url[512]  __attribute__((unused)) = {0};
 
 static sdmmc_card_t *s_sd_card __attribute__((unused)) = NULL;
 static bool          s_sd_mounted __attribute__((unused)) = false;
+
+/* Set when config.txt contains secrets_in_sd=1.  Secrets read from config.txt
+ * are kept in these vars and used directly; they are NOT written to NVS. */
+static bool s_sd_secrets_only = false;
+static char s_sd_wifi_ssid[3][64]  = {{0}};
+static char s_sd_wifi_pass[3][128] = {{0}};
+static int  s_sd_wifi_count = 0;
+#if CONFIG_CORE2_HW
+static char s_sd_openai_key[256] = {0};
+#endif
 static mp3_folder_t  s_mp3_folders[MP3_MAX_FOLDERS] __attribute__((unused));
 static size_t        s_mp3_folder_count __attribute__((unused)) = 0;
 static jpeg_folder_t s_jpeg_folders[MP3_MAX_FOLDERS] __attribute__((unused));
@@ -4863,6 +4873,17 @@ static bool json_extract_str(const char *json, const char *key,
 
 static char s_voice_conv_id[64] = {0};   /* conversation context across queries */
 
+/* Read the OpenAI key: SD-only mode takes priority over NVS. */
+static bool read_openai_key(char *buf, size_t len)
+{
+    if (s_sd_openai_key[0]) {
+        strncpy(buf, s_sd_openai_key, len - 1);
+        buf[len - 1] = '\0';
+        return true;
+    }
+    return nvs_read_str(NVS_KEY_STT, buf, len) && buf[0];
+}
+
 static bool core2_stt_transcribe(const uint8_t *wav, size_t wav_len,
                                  const char *api_key,
                                  char *transcript_out)
@@ -4991,7 +5012,7 @@ static bool core2_tts_speak(const char *text)
     char *mp3_buf = NULL;
     int mp3_len = 0;
 
-    if (!nvs_read_str(NVS_KEY_STT, api_key, sizeof(api_key)) || !api_key[0]) {
+    if (!read_openai_key(api_key, sizeof(api_key))) {
         ESP_LOGW(TAG, "TTS: no API key configured");
         screen_draw_text("TTS: no API key\nVisit device IP\nto configure");
         goto tts_done;
@@ -5177,7 +5198,7 @@ static void do_core2_voice_query(void)
 
     screen_draw_text("Processing...");
 
-    if (!nvs_read_str(NVS_KEY_STT, stt_key, sizeof(stt_key))) {
+    if (!read_openai_key(stt_key, sizeof(stt_key))) {
         ESP_LOGW(TAG, "Voice query: no STT API key");
         screen_draw_text("Voice: no API key\nVisit device IP\nto configure");
         goto voice_done;
@@ -6161,7 +6182,7 @@ static void pf_ask_picture(const char *question, const char *run_id)
 
     {
         char api_key[256] = {0};
-        if (!nvs_read_str(NVS_KEY_OPENAI, api_key, sizeof(api_key)) || !api_key[0]) {
+        if (!read_openai_key(api_key, sizeof(api_key))) {
             strncpy(answer, "No OpenAI API key\nconfigured.\nVisit device IP\nto configure.",
                     sizeof(answer) - 1);
             goto ask_done;
@@ -6301,7 +6322,7 @@ static void pf_ask_gpt(const char *question, const char *run_id)
     char answer[PF_ASK_ANSWER_MAX] = {0};
 
     char api_key[256] = {0};
-    if (!nvs_read_str(NVS_KEY_OPENAI, api_key, sizeof(api_key)) || !api_key[0]) {
+    if (!read_openai_key(api_key, sizeof(api_key))) {
         strncpy(answer, "No OpenAI API key\nconfigured.\nVisit device IP\nto configure.",
                 sizeof(answer) - 1);
         goto gpt_done;
@@ -8613,6 +8634,8 @@ static esp_err_t connect_and_subscribe(bool initial_connect)
 
 /* Read /sdcard/config.txt (key=value lines) and write any found WiFi
  * credentials or OpenAI key to NVS, overwriting previously stored values.
+ * If the file contains "secrets_in_sd=1", secrets are kept in module-level
+ * vars and used directly without being written to NVS.
  * Silently skips if the SD card is absent or the file does not exist. */
 static void sd_apply_config_if_present(void)
 {
@@ -8630,6 +8653,7 @@ static void sd_apply_config_if_present(void)
     char password2[128] = {0};
     char ssid3[64]      = {0};
     char password3[128] = {0};
+    bool secrets_in_sd  = false;
 #if CONFIG_CORE2_HW
     char openai_key[256] = {0};
 #endif
@@ -8659,7 +8683,9 @@ static void sd_apply_config_if_present(void)
         /* trim leading whitespace from value */
         while (*val == ' ' || *val == '\t') val++;
 
-        if (strcmp(key, "ssid") == 0)
+        if (strcmp(key, "secrets_in_sd") == 0)
+            secrets_in_sd = (val[0] == '1');
+        else if (strcmp(key, "ssid") == 0)
             snprintf(ssid, sizeof(ssid), "%s", val);
         else if (strcmp(key, "password") == 0)
             snprintf(password, sizeof(password), "%s", val);
@@ -8678,6 +8704,42 @@ static void sd_apply_config_if_present(void)
     }
     fclose(f);
 
+    if (secrets_in_sd) {
+        /* Keep secrets in SD card only — store in module vars, skip NVS writes. */
+        ESP_LOGI(TAG, "sd config: secrets_in_sd=1, credentials kept on SD card only");
+        s_sd_secrets_only = true;
+        s_sd_wifi_count = 0;
+        if (ssid[0]) {
+            snprintf(s_sd_wifi_ssid[s_sd_wifi_count],
+                     sizeof(s_sd_wifi_ssid[0]), "%s", ssid);
+            snprintf(s_sd_wifi_pass[s_sd_wifi_count],
+                     sizeof(s_sd_wifi_pass[0]), "%s", password);
+            s_sd_wifi_count++;
+        }
+        if (ssid2[0]) {
+            snprintf(s_sd_wifi_ssid[s_sd_wifi_count],
+                     sizeof(s_sd_wifi_ssid[0]), "%s", ssid2);
+            snprintf(s_sd_wifi_pass[s_sd_wifi_count],
+                     sizeof(s_sd_wifi_pass[0]), "%s", password2);
+            s_sd_wifi_count++;
+        }
+        if (ssid3[0]) {
+            snprintf(s_sd_wifi_ssid[s_sd_wifi_count],
+                     sizeof(s_sd_wifi_ssid[0]), "%s", ssid3);
+            snprintf(s_sd_wifi_pass[s_sd_wifi_count],
+                     sizeof(s_sd_wifi_pass[0]), "%s", password3);
+            s_sd_wifi_count++;
+        }
+#if CONFIG_CORE2_HW
+        if (openai_key[0]) {
+            snprintf(s_sd_openai_key, sizeof(s_sd_openai_key), "%s", openai_key);
+            ESP_LOGI(TAG, "sd config: OpenAI key loaded from SD (not written to NVS)");
+        }
+#endif
+        return;
+    }
+
+    /* Default: write secrets to NVS so they persist without the SD card. */
     if (ssid[0]) {
         esp_err_t err = wifi_save_credentials(ssid, password);
         if (err == ESP_OK)
@@ -8701,7 +8763,6 @@ static void sd_apply_config_if_present(void)
         else
             ESP_LOGE(TAG, "sd config: WiFi3 save failed: %s", esp_err_to_name(err));
     }
-
 
 #if CONFIG_CORE2_HW
     if (openai_key[0]) {
@@ -8745,22 +8806,34 @@ void picture_frame_run(void)
     /* ── WiFi ────────────────────────────────────────────────────────────── */
     pf_status_draw("Waiting for WiFi...");
 
-    if (!wifi_has_stored_credentials()) {
-#if CONFIG_HARDWARE_CORE2
-        pf_softap_provision();   /* never returns — restarts after credentials saved */
-#else
-        screen_set_color(0, 0, 64);   /* blue = BLE provisioning */
-        if (improv_wifi_start() != ESP_OK) {
-            screen_set_color(64, 0, 0);
-            ESP_LOGE(TAG, "Improv WiFi provisioning failed");
-            vTaskSuspend(NULL);
+    esp_err_t wifi_ret;
+    if (s_sd_secrets_only && s_sd_wifi_count > 0) {
+        /* SD-only mode: connect directly with config.txt credentials; skip NVS. */
+        screen_set_touch_handler(pf_wifi_skip_touch_handler);
+        wifi_ret = ESP_FAIL;
+        for (int i = 0; i < s_sd_wifi_count && wifi_ret != ESP_OK; i++) {
+            ESP_LOGI(TAG, "WiFi: trying SD-only SSID '%s'", s_sd_wifi_ssid[i]);
+            wifi_ret = wifi_connect_with_credentials(s_sd_wifi_ssid[i],
+                                                     s_sd_wifi_pass[i]);
         }
+        screen_set_touch_handler(pf_touch_handler);
+    } else {
+        if (!wifi_has_stored_credentials()) {
+#if CONFIG_HARDWARE_CORE2
+            pf_softap_provision();   /* never returns — restarts after credentials saved */
+#else
+            screen_set_color(0, 0, 64);   /* blue = BLE provisioning */
+            if (improv_wifi_start() != ESP_OK) {
+                screen_set_color(64, 0, 0);
+                ESP_LOGE(TAG, "Improv WiFi provisioning failed");
+                vTaskSuspend(NULL);
+            }
 #endif
+        }
+        screen_set_touch_handler(pf_wifi_skip_touch_handler);
+        wifi_ret = wifi_connect();
+        screen_set_touch_handler(pf_touch_handler);
     }
-
-    screen_set_touch_handler(pf_wifi_skip_touch_handler);
-    esp_err_t wifi_ret = wifi_connect();
-    screen_set_touch_handler(pf_touch_handler);
 
     if (wifi_ret != ESP_OK) {
         if (wifi_connect_was_aborted()) {
