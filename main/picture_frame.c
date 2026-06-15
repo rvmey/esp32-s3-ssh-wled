@@ -4377,6 +4377,27 @@ static bool pf_touch_handler(int x, int y, screen_gesture_t gesture)
         }
         return true;
     }
+    if (s_jpeg_rgb565 && s_jpeg_zoom > 1.0f &&
+            (gesture == SCREEN_GESTURE_SWIPE_LEFT || gesture == SCREEN_GESTURE_SWIPE_RIGHT ||
+             gesture == SCREEN_GESTURE_SWIPE_UP   || gesture == SCREEN_GESTURE_SWIPE_DOWN)) {
+        /* While zoomed in, single-finger swipes pan the view instead of
+         * navigating to the next/previous image in the folder. */
+        float step = 0.25f / s_jpeg_zoom;
+        switch (gesture) {
+            case SCREEN_GESTURE_SWIPE_LEFT:  s_jpeg_pan_cx += step; break;
+            case SCREEN_GESTURE_SWIPE_RIGHT: s_jpeg_pan_cx -= step; break;
+            case SCREEN_GESTURE_SWIPE_UP:    s_jpeg_pan_cy += step; break;
+            case SCREEN_GESTURE_SWIPE_DOWN:  s_jpeg_pan_cy -= step; break;
+            default: break;
+        }
+        float half = 0.5f / s_jpeg_zoom;
+        if (s_jpeg_pan_cx < half)        s_jpeg_pan_cx = half;
+        if (s_jpeg_pan_cx > 1.0f - half) s_jpeg_pan_cx = 1.0f - half;
+        if (s_jpeg_pan_cy < half)        s_jpeg_pan_cy = half;
+        if (s_jpeg_pan_cy > 1.0f - half) s_jpeg_pan_cy = 1.0f - half;
+        pf_redraw_jpeg_view();
+        return true;
+    }
 #endif
     if (s_jpeg_folder_display_active &&
             (gesture == SCREEN_GESTURE_SWIPE_LEFT || gesture == SCREEN_GESTURE_SWIPE_RIGHT)) {
