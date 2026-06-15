@@ -4239,6 +4239,17 @@ static void pf_list_restore_scale(void)
     }
 }
 
+/* Max characters per line at the font-scale-2 list display, so callers can
+ * truncate names before appending them to the list text. A name longer than
+ * this would wrap to a 2nd display line, throwing off the folder/file list
+ * tap handlers' one-line-per-entry row math. */
+static int pf_list_max_cols(void)
+{
+    bool landscape = true;
+    screen_get_landscape(&landscape);
+    return landscape ? 20 : 15;
+}
+
 static void pf_menu_open(void)
 {
     s_menu_active = true;
@@ -7089,10 +7100,17 @@ static void pf_event_handler(const char *event_name,
                     struct stat st;
                     if (stat(fpath, &st) != 0 || !S_ISDIR(st.st_mode)) continue;
                     int nlen = (int)strlen(e->d_name);
-                    if (msg_len + 1 + nlen < (int)sizeof(msg) - 1) {
+                    int disp_len = nlen;
+#if CONFIG_CORE2_HW
+                    /* Truncate long names so this line never wraps, keeping
+                     * the list display's one-line-per-entry tap math valid. */
+                    int max_cols = pf_list_max_cols();
+                    if (disp_len > max_cols) disp_len = max_cols;
+#endif
+                    if (msg_len + 1 + disp_len < (int)sizeof(msg) - 1) {
                         msg[msg_len++] = '\n';
-                        memcpy(msg + msg_len, e->d_name, (size_t)nlen);
-                        msg_len += nlen;
+                        memcpy(msg + msg_len, e->d_name, (size_t)disp_len);
+                        msg_len += disp_len;
                         msg[msg_len] = '\0';
 #if CONFIG_CORE2_HW
                         if (s_folder_list_count < PF_FOLDER_LIST_MAX) {
@@ -7155,7 +7173,20 @@ static void pf_event_handler(const char *event_name,
                 s_file_list_folder_path[sizeof(s_file_list_folder_path) - 1] = '\0';
 #endif
                 char msg[256];
-                int msg_len = snprintf(msg, sizeof(msg), "%s:", s_params);
+                int msg_len;
+#if CONFIG_CORE2_HW
+                /* Truncate the header so it never wraps (reserve 1 char for
+                 * the trailing ':'), keeping the tap math valid. */
+                int max_cols = pf_list_max_cols();
+                {
+                    int hdr_len = (int)strlen(s_params);
+                    if (hdr_len > max_cols - 1) hdr_len = max_cols - 1;
+                    if (hdr_len < 0) hdr_len = 0;
+                    msg_len = snprintf(msg, sizeof(msg), "%.*s:", hdr_len, s_params);
+                }
+#else
+                msg_len = snprintf(msg, sizeof(msg), "%s:", s_params);
+#endif
                 char json_arr[512];
                 int  ja = 0;
                 bool jfirst = true;
@@ -7165,10 +7196,16 @@ static void pf_event_handler(const char *event_name,
                 while ((e = readdir(d)) != NULL) {
                     if (e->d_name[0] == '.') continue;
                     int nlen = (int)strlen(e->d_name);
-                    if (msg_len + 1 + nlen < (int)sizeof(msg) - 1) {
+                    int disp_len = nlen;
+#if CONFIG_CORE2_HW
+                    /* Truncate long names so this line never wraps, keeping
+                     * the list display's one-line-per-entry tap math valid. */
+                    if (disp_len > max_cols) disp_len = max_cols;
+#endif
+                    if (msg_len + 1 + disp_len < (int)sizeof(msg) - 1) {
                         msg[msg_len++] = '\n';
-                        memcpy(msg + msg_len, e->d_name, (size_t)nlen);
-                        msg_len += nlen;
+                        memcpy(msg + msg_len, e->d_name, (size_t)disp_len);
+                        msg_len += disp_len;
                         msg[msg_len] = '\0';
 #if CONFIG_CORE2_HW
                         if (s_file_list_count < PF_FILE_LIST_MAX) {
