@@ -4376,6 +4376,13 @@ static bool pf_touch_handler(int x, int y, screen_gesture_t gesture)
         if (gesture == SCREEN_GESTURE_TAP) return pf_menu_handle_tap(x, y);
         return pf_menu_handle_swipe(gesture);
     }
+    if (s_clock_mode != PF_CLOCK_OFF && gesture == SCREEN_GESTURE_TAP) {
+        /* Tap toggles between digital and analog views; the next main-loop
+         * tick redraws via pf_clock_render(). */
+        s_clock_mode = (s_clock_mode == PF_CLOCK_ANALOG) ? PF_CLOCK_DIGITAL : PF_CLOCK_ANALOG;
+        s_clock_last_sec = -1;
+        return true;
+    }
     if (s_battery_display_active && gesture == SCREEN_GESTURE_TAP) {
         uint8_t vbat_h = 0, vbat_l = 0;
         if (core2_axp_read_reg(0x78, &vbat_h) == ESP_OK &&
