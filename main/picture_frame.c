@@ -422,6 +422,21 @@ static volatile bool s_jpeg_folder_display_active = false;
 static int           s_jpeg_folder_display_idx    = -1;
 static int           s_jpeg_folder_image_idx      = 0;
 
+#if CONFIG_CORE2_HW
+/* Set while the SD-card folder list (from the "folders" command) is on
+ * screen; tapping a folder name runs "files" for that folder. Names are
+ * stored in the same top-to-bottom order they were drawn, one per line
+ * below the "Folders:" header line. */
+#define PF_FOLDER_LIST_MAX 16
+static volatile bool s_folder_list_display_active = false;
+static char          s_folder_list_names[PF_FOLDER_LIST_MAX][MP3_MAX_TRIGGER_LEN];
+static int           s_folder_list_count = 0;
+/* Set by the touch task on tap; consumed by the main task's loop, since
+ * dispatching "files" runs pf_event_handler (SD card I/O) which needs more
+ * stack than touch_poll_task's 3KB. -1 means no tap pending. */
+static volatile int  s_pending_folder_tap_idx = -1;
+#endif
+
 /* Pending run/save — set by the WS event task, consumed by the main loop */
 static char          s_pending_run_id[33]  __attribute__((unused)) = {0};
 static char          s_pending_result[512] __attribute__((unused)) = {0};
@@ -4290,6 +4305,24 @@ static bool pf_touch_handler(int x, int y, screen_gesture_t gesture)
         }
         return true;
     }
+    if (s_folder_list_display_active && gesture == SCREEN_GESTURE_TAP) {
+        /* The folder list was drawn at font scale 2 (32px rows), with the
+         * "Folders:" header on row 0 and folder names on the rows below,
+         * centred vertically the same way pf_menu_render()'s text is. */
+        bool landscape = true;
+        screen_get_landscape(&landscape);
+        int lcd_h_val = landscape ? 240 : 320;
+        int ch = 32;
+        int total_lines = 1 + s_folder_list_count;
+        int start_y = (lcd_h_val - total_lines * ch) / 2;
+        if (start_y < 0) start_y = 0;
+        int row = (y - start_y) / ch;
+        int idx = row - 1;
+        if (idx >= 0 && idx < s_folder_list_count) {
+            s_pending_folder_tap_idx = idx;
+        }
+        return true;
+    }
 #endif
     if (s_jpeg_folder_display_active &&
             (gesture == SCREEN_GESTURE_SWIPE_LEFT || gesture == SCREEN_GESTURE_SWIPE_RIGHT)) {
@@ -6724,6 +6757,7 @@ static void pf_event_handler(const char *event_name,
 
 #if CONFIG_CORE2_HW
     s_battery_display_active = false;
+    s_folder_list_display_active = false;
 #endif
     s_jpeg_folder_display_active = false;
 
@@ -6872,6 +6906,9 @@ static void pf_event_handler(const char *event_name,
             if (!d) {
                 screen_draw_text("No SD card");
             } else {
+#if CONFIG_CORE2_HW
+                s_folder_list_count = 0;
+#endif
                 char msg[256] = "Folders:";
                 int msg_len = (int)strlen(msg);
                 /* JSON array with pre-escaped quotes for embedding in the run/save JSON string.
@@ -6896,6 +6933,15 @@ static void pf_event_handler(const char *event_name,
                         memcpy(msg + msg_len, e->d_name, (size_t)nlen);
                         msg_len += nlen;
                         msg[msg_len] = '\0';
+#if CONFIG_CORE2_HW
+                        if (s_folder_list_count < PF_FOLDER_LIST_MAX) {
+                            strncpy(s_folder_list_names[s_folder_list_count], e->d_name,
+                                    sizeof(s_folder_list_names[0]) - 1);
+                            s_folder_list_names[s_folder_list_count]
+                                [sizeof(s_folder_list_names[0]) - 1] = '\0';
+                            s_folder_list_count++;
+                        }
+#endif
                     }
                     int ja_need = (jfirst ? 0 : 1) + 4 + nlen; /* [,]\"name\" */
                     if (ja + ja_need < (int)sizeof(json_arr) - 2) {
@@ -6916,6 +6962,9 @@ static void pf_event_handler(const char *event_name,
                 s_pending_has_result = true;
                 ESP_LOGI(TAG, "folders: %d folder(s) on SD, result: %s", count, s_pending_result);
                 screen_draw_text(count > 0 ? msg : "No folders\non SD card");
+#if CONFIG_CORE2_HW
+                s_folder_list_display_active = (count > 0);
+#endif
             }
         }
 
@@ -8392,6 +8441,13 @@ void picture_frame_run(void)
                     pf_menu_close();
                 } else {
                     pf_menu_render();
+                }
+            }
+            if (s_pending_folder_tap_idx >= 0) {
+                int idx = s_pending_folder_tap_idx;
+                s_pending_folder_tap_idx = -1;
+                if (idx < s_folder_list_count) {
+                    pf_menu_dispatch("files", s_folder_list_names[idx]);
                 }
             }
 #endif
