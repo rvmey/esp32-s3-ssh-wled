@@ -412,6 +412,10 @@ static int           s_menu_saved_font_scale = -1;
  * pf_menu_execute_item() can run pf_event_handler (SD card I/O, etc.) which
  * needs more stack than touch_poll_task's 3KB. */
 static volatile int  s_menu_pending_item = -1;
+/* Set by pf_menu_execute_item() for items that draw their own result text
+ * (folders, battery, BT status) so pf_menu_close() doesn't immediately
+ * overwrite that result with the pre-menu screen contents. */
+static bool          s_menu_skip_close_redraw = false;
 #endif
 /* Set while a JPEG-folder image is on screen; swipe navigates within the folder. */
 static volatile bool s_jpeg_folder_display_active = false;
@@ -4058,13 +4062,35 @@ static bool pf_menu_execute_item(int idx)
             snprintf(params, sizeof(params), "%d",
                      PF_MENU_FONTSIZES[s_menu_fontsize_idx % PF_MENU_FONTSIZE_COUNT]);
             pf_menu_dispatch("fontsize", params);
+            /* The screen's real font size just changed; update the saved
+             * scale so pf_menu_close() restores this new size instead of
+             * reverting to whatever was active before the menu opened. */
+            s_menu_saved_font_scale = PF_MENU_FONTSIZES[s_menu_fontsize_idx % PF_MENU_FONTSIZE_COUNT];
             return false;
-        case PF_MENU_FOLDERS:         pf_menu_dispatch("folders", "");       return true;
-        case PF_MENU_BATTERY:         pf_menu_dispatch("battery", "");       return true;
-        case PF_MENU_BT_STATUS:       pf_menu_dispatch("btstatus", "");      return true;
-        case PF_MENU_BT_PAIR:         pf_menu_dispatch("pair", "");          return true;
-        case PF_MENU_BT_DISCONNECT:   pf_menu_dispatch("btdisconnect", "");  return true;
-        case PF_MENU_BT_FORGET:       pf_menu_dispatch("btforget", "");      return true;
+        case PF_MENU_FOLDERS:
+            pf_menu_dispatch("folders", "");
+            s_menu_skip_close_redraw = true;
+            return true;
+        case PF_MENU_BATTERY:
+            pf_menu_dispatch("battery", "");
+            s_menu_skip_close_redraw = true;
+            return true;
+        case PF_MENU_BT_STATUS:
+            pf_menu_dispatch("btstatus", "");
+            s_menu_skip_close_redraw = true;
+            return true;
+        case PF_MENU_BT_PAIR:
+            pf_menu_dispatch("pair", "");
+            s_menu_skip_close_redraw = true;
+            return true;
+        case PF_MENU_BT_DISCONNECT:
+            pf_menu_dispatch("btdisconnect", "");
+            s_menu_skip_close_redraw = true;
+            return true;
+        case PF_MENU_BT_FORGET:
+            pf_menu_dispatch("btforget", "");
+            s_menu_skip_close_redraw = true;
+            return true;
         case PF_MENU_PLAY_PAUSE:      pf_menu_dispatch("pause", "");         return true;
         case PF_MENU_STOP:            pf_menu_dispatch("stop", "");          return true;
         case PF_MENU_SEEK_FWD:        pf_menu_dispatch("forward", "");       return true;
@@ -4131,6 +4157,12 @@ static void pf_menu_close(void)
     if (s_menu_saved_font_scale >= 1) {
         screen_set_font_scale_silent(s_menu_saved_font_scale);
         s_menu_saved_font_scale = -1;
+    }
+    if (s_menu_skip_close_redraw) {
+        /* The action just drawn its own result text; leave it on screen
+         * instead of immediately overwriting it below. */
+        s_menu_skip_close_redraw = false;
+        return;
     }
     if (s_jpeg_cache) {
         s_pending_jpeg_redraw = true;
