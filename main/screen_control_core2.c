@@ -428,6 +428,11 @@ static bool touch_read_point(uint16_t *tx, uint16_t *ty)
     return true;
 }
 
+/* Press-and-hold duration that triggers SCREEN_GESTURE_LONG_PRESS. Must be
+ * short enough to feel responsive but long enough to avoid firing on a
+ * normal tap (touch samples land on the 20ms poll period). */
+#define TOUCH_LONG_PRESS_MS 600
+
 static void touch_poll_task(void *arg)
 {
     (void)arg;
@@ -439,6 +444,8 @@ static void touch_poll_task(void *arg)
     int     last_lx      = 0;
     int     last_ly      = 0;
     bool    scroll_consumed = false;
+    bool    long_press_fired = false;
+    TickType_t touch_start_tick = 0;
 
     for (;;) {
         vTaskDelay(pdMS_TO_TICKS(20));
@@ -476,6 +483,8 @@ static void touch_poll_task(void *arg)
             last_lx      = lx;
             last_ly      = ly;
             scroll_consumed = false;
+            long_press_fired = false;
+            touch_start_tick = xTaskGetTickCount();
         } else if (have) {
             int row_h = 16 * s_font_scale;
             if (row_h == 0) continue;
@@ -486,8 +495,20 @@ static void touch_poll_task(void *arg)
             }
             last_lx = lx;
             last_ly = ly;
+
+            if (!long_press_fired && !scroll_consumed && s_touch_handler) {
+                int dx = lx - start_lx;
+                int dy = ly - start_ly;
+                int abs_dx = dx < 0 ? -dx : dx;
+                int abs_dy = dy < 0 ? -dy : dy;
+                if (abs_dx <= 16 && abs_dy <= 16 &&
+                        (xTaskGetTickCount() - touch_start_tick) >= pdMS_TO_TICKS(TOUCH_LONG_PRESS_MS)) {
+                    long_press_fired = true;
+                    (void)s_touch_handler(lx, ly, SCREEN_GESTURE_LONG_PRESS);
+                }
+            }
         } else if (touching) {
-            if (s_touch_handler) {
+            if (s_touch_handler && !long_press_fired) {
                 int dx = last_lx - start_lx;
                 int dy = last_ly - start_ly;
                 int abs_dx = dx < 0 ? -dx : dx;

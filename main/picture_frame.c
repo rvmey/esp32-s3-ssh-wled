@@ -403,6 +403,15 @@ static bool       s_sleep_while_powered = false;
 #if CONFIG_CORE2_HW
 /* Set while the battery readout is on screen; tap refreshes the reading. */
 static volatile bool s_battery_display_active = false;
+
+/* On-screen command menu, opened/closed by a long-press anywhere. */
+static volatile bool s_menu_active           = false;
+static int           s_menu_page             = 0;
+static int           s_menu_saved_font_scale = -1;
+/* Indices into the cycling-preset tables below; each advances on tap. */
+static int           s_menu_fontsize_idx   = 0;
+static int           s_menu_sleeptimer_idx = 0;
+static int           s_menu_ledcolor_idx   = 0;
 #endif
 /* Set while a JPEG-folder image is on screen; swipe navigates within the folder. */
 static volatile bool s_jpeg_folder_display_active = false;
@@ -1359,8 +1368,13 @@ static esp_err_t nvs_write_str(const char *key, const char *val);
 static esp_err_t nvs_erase_key_local(const char *key);
 static inline void mp3_request_ui_refresh(void);
 static bool pf_touch_handler(int x, int y, screen_gesture_t gesture);
+static void pf_event_handler(const char *event_name, const char *payload_json, void *ctx);
 #if CONFIG_CORE2_HW
 static esp_err_t core2_axp_read_reg(uint8_t reg, uint8_t *out);
+static void pf_menu_open(void);
+static void pf_menu_close(void);
+static bool pf_menu_handle_tap(int x, int y);
+static bool pf_menu_handle_swipe(screen_gesture_t gesture);
 #endif
 
 /* Installed only during wifi_connect() -- any tap aborts the retry loop. */
@@ -3905,6 +3919,260 @@ static void mp3_render_now_playing(void)
     screen_draw_text(msg);
 }
 
+/* ── On-screen command menu (Core2 touch) ───────────────────────────────
+ * Long-press anywhere opens an overlay listing the local commands from
+ * picture_frame_commands.json that need no typed input. Tap an item to
+ * run it; swipe left/right to change pages; long-press again to close. */
+#if CONFIG_CORE2_HW
+
+#define PF_MENU_ITEMS_PER_PAGE 12
+
+typedef enum {
+    PF_MENU_REBOOT, PF_MENU_SLEEP_NOW, PF_MENU_SAVE, PF_MENU_SAVEPIC,
+    PF_MENU_LANDSCAPE, PF_MENU_PORTRAIT, PF_MENU_FONTSIZE,
+    PF_MENU_FOLDERS, PF_MENU_BATTERY,
+    PF_MENU_BT_STATUS, PF_MENU_BT_PAIR, PF_MENU_BT_DISCONNECT,
+    PF_MENU_BT_FORGET, PF_MENU_PLAY_PAUSE, PF_MENU_STOP,
+    PF_MENU_SEEK_FWD, PF_MENU_SEEK_REV, PF_MENU_VOL_UP, PF_MENU_VOL_DOWN,
+    PF_MENU_MUTE, PF_MENU_SHUFFLE, PF_MENU_REPEAT_TRACK, PF_MENU_REPEAT_PLAYLIST,
+    PF_MENU_VISUALIZER, PF_MENU_VIZ_NEXT, PF_MENU_VIZ_PREV,
+    PF_MENU_LEDCOLOR, PF_MENU_SLEEP_TIMER, PF_MENU_SLEEP_ON_POWER, PF_MENU_AI_SPEECH,
+    PF_MENU_ITEM_COUNT
+} pf_menu_item_id_t;
+
+#define PF_MENU_PAGE_COUNT \
+    ((PF_MENU_ITEM_COUNT + PF_MENU_ITEMS_PER_PAGE - 1) / PF_MENU_ITEMS_PER_PAGE)
+
+/* Cycling presets for menu items that need a value but have no on-screen
+ * keyboard. Each tap dispatches the *next* value and advances the index. */
+static const int PF_MENU_FONTSIZES[]  = { 1, 2, 3, 4 };
+static const int PF_MENU_SLEEP_MINS[] = { 0, 5, 10, 15, 30, 60 };
+static const char *const PF_MENU_LED_COLORS[] = {
+    "red", "green", "blue", "yellow", "purple", "cyan", "white", "off"
+};
+#define PF_MENU_FONTSIZE_COUNT  (sizeof(PF_MENU_FONTSIZES)  / sizeof(PF_MENU_FONTSIZES[0]))
+#define PF_MENU_SLEEP_MIN_COUNT (sizeof(PF_MENU_SLEEP_MINS) / sizeof(PF_MENU_SLEEP_MINS[0]))
+#define PF_MENU_LED_COLOR_COUNT (sizeof(PF_MENU_LED_COLORS) / sizeof(PF_MENU_LED_COLORS[0]))
+
+/* Build a {"trigger":"...","params":"..."} payload and run it through the
+ * normal command dispatcher, exactly as if it had arrived over the socket --
+ * this reuses every command's existing behaviour (incl. NVS persistence).
+ * An empty/absent "id" suppresses the run/save report back to the cloud. */
+static void pf_menu_dispatch(const char *trigger, const char *params)
+{
+    char payload[320];
+    snprintf(payload, sizeof(payload), "{\"trigger\":\"%s\",\"params\":\"%s\"}",
+             trigger, params ? params : "");
+    pf_event_handler("message", payload, NULL);
+}
+
+static void pf_menu_item_label(int idx, char *out, size_t out_sz)
+{
+    switch ((pf_menu_item_id_t)idx) {
+        case PF_MENU_REBOOT:        snprintf(out, out_sz, "Reboot"); break;
+        case PF_MENU_SLEEP_NOW:     snprintf(out, out_sz, "Sleep Now"); break;
+        case PF_MENU_SAVE:          snprintf(out, out_sz, "Save Settings"); break;
+        case PF_MENU_SAVEPIC:       snprintf(out, out_sz, "Save Picture"); break;
+        case PF_MENU_LANDSCAPE:     snprintf(out, out_sz, "Landscape"); break;
+        case PF_MENU_PORTRAIT:      snprintf(out, out_sz, "Portrait"); break;
+        case PF_MENU_FONTSIZE:
+            snprintf(out, out_sz, "Font Size -> %d",
+                     PF_MENU_FONTSIZES[s_menu_fontsize_idx % PF_MENU_FONTSIZE_COUNT]);
+            break;
+        case PF_MENU_FOLDERS:       snprintf(out, out_sz, "List Folders"); break;
+        case PF_MENU_BATTERY:       snprintf(out, out_sz, "Battery Status"); break;
+        case PF_MENU_BT_STATUS:     snprintf(out, out_sz, "Bluetooth Status"); break;
+        case PF_MENU_BT_PAIR:       snprintf(out, out_sz, "Bluetooth Pair"); break;
+        case PF_MENU_BT_DISCONNECT: snprintf(out, out_sz, "Bluetooth Disconnect"); break;
+        case PF_MENU_BT_FORGET:     snprintf(out, out_sz, "Bluetooth Forget"); break;
+        case PF_MENU_PLAY_PAUSE:
+            snprintf(out, out_sz, "%s", (s_mp3.active && !s_mp3.paused) ? "Pause" : "Play");
+            break;
+        case PF_MENU_STOP:          snprintf(out, out_sz, "Stop"); break;
+        case PF_MENU_SEEK_FWD:      snprintf(out, out_sz, "Seek +10s"); break;
+        case PF_MENU_SEEK_REV:      snprintf(out, out_sz, "Seek -10s"); break;
+        case PF_MENU_VOL_UP:        snprintf(out, out_sz, "Volume Up"); break;
+        case PF_MENU_VOL_DOWN:      snprintf(out, out_sz, "Volume Down"); break;
+        case PF_MENU_MUTE:
+            snprintf(out, out_sz, "Mute: %s", s_mp3.muted ? "On" : "Off");
+            break;
+        case PF_MENU_SHUFFLE:
+            snprintf(out, out_sz, "Shuffle: %s", s_mp3.shuffle ? "On" : "Off");
+            break;
+        case PF_MENU_REPEAT_TRACK:
+            snprintf(out, out_sz, "Repeat Track: %s", s_mp3.repeat_track ? "On" : "Off");
+            break;
+        case PF_MENU_REPEAT_PLAYLIST:
+            snprintf(out, out_sz, "Repeat List: %s", s_mp3.repeat_playlist ? "On" : "Off");
+            break;
+        case PF_MENU_VISUALIZER:
+            snprintf(out, out_sz, "Visualizer: %s", s_mp3.visualizer ? "On" : "Off");
+            break;
+        case PF_MENU_VIZ_NEXT:      snprintf(out, out_sz, "Viz Style Next"); break;
+        case PF_MENU_VIZ_PREV:      snprintf(out, out_sz, "Viz Style Prev"); break;
+        case PF_MENU_LEDCOLOR:
+            snprintf(out, out_sz, "LED Color -> %s",
+                     PF_MENU_LED_COLORS[s_menu_ledcolor_idx % PF_MENU_LED_COLOR_COUNT]);
+            break;
+        case PF_MENU_SLEEP_TIMER:
+            snprintf(out, out_sz, "Sleep Timer -> %d min",
+                     PF_MENU_SLEEP_MINS[s_menu_sleeptimer_idx % PF_MENU_SLEEP_MIN_COUNT]);
+            break;
+        case PF_MENU_SLEEP_ON_POWER:
+            snprintf(out, out_sz, "Sleep On Power: %s", s_sleep_while_powered ? "On" : "Off");
+            break;
+        case PF_MENU_AI_SPEECH:
+            snprintf(out, out_sz, "AI Speech: %s", s_ai_tts_enabled ? "On" : "Off");
+            break;
+        default:
+            snprintf(out, out_sz, "?");
+            break;
+    }
+}
+
+/* Run the action for menu item `idx`. Returns true if the menu should close
+ * (the action draws its own result on screen), false to stay open and
+ * re-render with refreshed item labels. */
+static bool pf_menu_execute_item(int idx)
+{
+    char params[8];
+    switch ((pf_menu_item_id_t)idx) {
+        case PF_MENU_REBOOT:          pf_menu_dispatch("reboot", "");        return true;
+        case PF_MENU_SLEEP_NOW:       pf_menu_dispatch("sleep", "");         return true;
+        case PF_MENU_SAVE:            pf_menu_dispatch("save", "");          return false;
+        case PF_MENU_SAVEPIC:         pf_menu_dispatch("savepic", "");       return true;
+        case PF_MENU_LANDSCAPE:       pf_menu_dispatch("landscape", "");     return true;
+        case PF_MENU_PORTRAIT:        pf_menu_dispatch("portrait", "");      return true;
+        case PF_MENU_FONTSIZE:
+            snprintf(params, sizeof(params), "%d",
+                     PF_MENU_FONTSIZES[s_menu_fontsize_idx % PF_MENU_FONTSIZE_COUNT]);
+            pf_menu_dispatch("fontsize", params);
+            s_menu_fontsize_idx = (s_menu_fontsize_idx + 1) % PF_MENU_FONTSIZE_COUNT;
+            return false;
+        case PF_MENU_FOLDERS:         pf_menu_dispatch("folders", "");       return true;
+        case PF_MENU_BATTERY:         pf_menu_dispatch("battery", "");       return true;
+        case PF_MENU_BT_STATUS:       pf_menu_dispatch("btstatus", "");      return true;
+        case PF_MENU_BT_PAIR:         pf_menu_dispatch("pair", "");          return true;
+        case PF_MENU_BT_DISCONNECT:   pf_menu_dispatch("btdisconnect", "");  return true;
+        case PF_MENU_BT_FORGET:       pf_menu_dispatch("btforget", "");      return true;
+        case PF_MENU_PLAY_PAUSE:      pf_menu_dispatch("pause", "");         return true;
+        case PF_MENU_STOP:            pf_menu_dispatch("stop", "");          return true;
+        case PF_MENU_SEEK_FWD:        pf_menu_dispatch("forward", "");       return true;
+        case PF_MENU_SEEK_REV:        pf_menu_dispatch("reverse", "");       return true;
+        case PF_MENU_VOL_UP:          pf_menu_dispatch("volumeup", "");      return true;
+        case PF_MENU_VOL_DOWN:        pf_menu_dispatch("volumedown", "");    return true;
+        case PF_MENU_MUTE:            pf_menu_dispatch("mute", "");          return false;
+        case PF_MENU_SHUFFLE:         pf_menu_dispatch("shuffle", "");       return false;
+        case PF_MENU_REPEAT_TRACK:    pf_menu_dispatch("repeattrack", "");   return false;
+        case PF_MENU_REPEAT_PLAYLIST: pf_menu_dispatch("repeatplaylist", ""); return false;
+        case PF_MENU_VISUALIZER:      pf_menu_dispatch("visualizer", "");    return false;
+        case PF_MENU_VIZ_NEXT:        pf_menu_dispatch("visualizernext", ""); return false;
+        case PF_MENU_VIZ_PREV:        pf_menu_dispatch("visualizerprevious", ""); return false;
+        case PF_MENU_LEDCOLOR:
+            pf_menu_dispatch("ledcolor", PF_MENU_LED_COLORS[s_menu_ledcolor_idx % PF_MENU_LED_COLOR_COUNT]);
+            s_menu_ledcolor_idx = (s_menu_ledcolor_idx + 1) % PF_MENU_LED_COLOR_COUNT;
+            return false;
+        case PF_MENU_SLEEP_TIMER:
+            snprintf(params, sizeof(params), "%d",
+                     PF_MENU_SLEEP_MINS[s_menu_sleeptimer_idx % PF_MENU_SLEEP_MIN_COUNT]);
+            pf_menu_dispatch("sleeptimer", params);
+            s_menu_sleeptimer_idx = (s_menu_sleeptimer_idx + 1) % PF_MENU_SLEEP_MIN_COUNT;
+            return false;
+        case PF_MENU_SLEEP_ON_POWER:  pf_menu_dispatch("sleeponpower", "");  return false;
+        case PF_MENU_AI_SPEECH:       pf_menu_dispatch("aitts", "");         return false;
+        default: return true;
+    }
+}
+
+static void pf_menu_render(void)
+{
+    char buf[1024];
+    int  len   = 0;
+    int  start = s_menu_page * PF_MENU_ITEMS_PER_PAGE;
+    int  end   = start + PF_MENU_ITEMS_PER_PAGE;
+    if (end > PF_MENU_ITEM_COUNT) end = PF_MENU_ITEM_COUNT;
+
+    len += snprintf(buf + len, sizeof(buf) - len, "== Menu %d/%d ==\n",
+                     s_menu_page + 1, PF_MENU_PAGE_COUNT);
+    for (int i = start; i < end; i++) {
+        char label[40];
+        pf_menu_item_label(i, label, sizeof(label));
+        len += snprintf(buf + len, sizeof(buf) - len, "%s\n", label);
+    }
+    snprintf(buf + len, sizeof(buf) - len, "Swipe=page  Hold=close");
+    screen_draw_text(buf);
+}
+
+static void pf_menu_open(void)
+{
+    s_menu_active = true;
+    s_menu_page = 0;
+    screen_get_font_scale(&s_menu_saved_font_scale);
+    screen_set_font_scale_silent(1);
+    pf_menu_render();
+}
+
+static void pf_menu_close(void)
+{
+    s_menu_active = false;
+    if (s_menu_saved_font_scale >= 1) {
+        screen_set_font_scale_silent(s_menu_saved_font_scale);
+        s_menu_saved_font_scale = -1;
+    }
+    if (s_jpeg_cache) {
+        s_pending_jpeg_redraw = true;
+    } else if (s_mp3.active && s_mp3_ui_override_allowed) {
+        mp3_request_ui_refresh();
+    } else {
+        screen_draw_text(s_last_text[0] ? s_last_text : " ");
+    }
+}
+
+/* Map a tap's y-coordinate to a menu row, using the same centred layout
+ * that pf_menu_render()'s screen_draw_text() call produces at scale 1. */
+static bool pf_menu_handle_tap(int x, int y)
+{
+    (void)x;
+    bool landscape = true;
+    screen_get_landscape(&landscape);
+    int lcd_h_val = landscape ? 240 : 320;
+    int ch = 16; /* 16px rows at font scale 1, used while the menu is open */
+
+    int start = s_menu_page * PF_MENU_ITEMS_PER_PAGE;
+    int end   = start + PF_MENU_ITEMS_PER_PAGE;
+    if (end > PF_MENU_ITEM_COUNT) end = PF_MENU_ITEM_COUNT;
+    int total_lines = (end - start) + 2; /* header + items + footer */
+
+    int start_y = (lcd_h_val - total_lines * ch) / 2;
+    if (start_y < 0) start_y = 0;
+    int row = (y - start_y) / ch;
+
+    if (row >= 1 && row <= (end - start)) {
+        int item = start + (row - 1);
+        if (pf_menu_execute_item(item)) {
+            pf_menu_close();
+        } else {
+            pf_menu_render();
+        }
+    }
+    return true;
+}
+
+static bool pf_menu_handle_swipe(screen_gesture_t gesture)
+{
+    if (gesture == SCREEN_GESTURE_SWIPE_LEFT) {
+        s_menu_page = (s_menu_page + 1) % PF_MENU_PAGE_COUNT;
+        pf_menu_render();
+    } else if (gesture == SCREEN_GESTURE_SWIPE_RIGHT) {
+        s_menu_page = (s_menu_page - 1 + PF_MENU_PAGE_COUNT) % PF_MENU_PAGE_COUNT;
+        pf_menu_render();
+    }
+    /* swipe up/down: ignored, but still consumed while the menu is open */
+    return true;
+}
+
+#endif /* CONFIG_CORE2_HW */
+
 static bool pf_touch_handler(int x, int y, screen_gesture_t gesture)
 {
     (void)x; (void)y;
@@ -3912,6 +4180,18 @@ static bool pf_touch_handler(int x, int y, screen_gesture_t gesture)
     s_last_activity_tick = xTaskGetTickCount();
 #endif
 #if CONFIG_CORE2_HW
+    if (gesture == SCREEN_GESTURE_LONG_PRESS) {
+        if (s_menu_active) {
+            pf_menu_close();
+        } else {
+            pf_menu_open();
+        }
+        return true;
+    }
+    if (s_menu_active) {
+        if (gesture == SCREEN_GESTURE_TAP) return pf_menu_handle_tap(x, y);
+        return pf_menu_handle_swipe(gesture);
+    }
     if (s_battery_display_active && gesture == SCREEN_GESTURE_TAP) {
         uint8_t vbat_h = 0, vbat_l = 0;
         if (core2_axp_read_reg(0x78, &vbat_h) == ESP_OK &&
@@ -4034,6 +4314,9 @@ static bool pf_touch_handler(int x, int y, screen_gesture_t gesture)
             if (s_mp3.volume < 0) s_mp3.volume = 0;
             nvs_write_u8(NVS_KEY_VOLUME, (uint8_t)s_mp3.volume);
             handled = true;
+            break;
+        case SCREEN_GESTURE_LONG_PRESS:
+            /* Handled earlier (menu open/close); never reached. */
             break;
     }
 

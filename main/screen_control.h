@@ -10,6 +10,7 @@ typedef enum {
     SCREEN_GESTURE_SWIPE_RIGHT,
     SCREEN_GESTURE_SWIPE_UP,
     SCREEN_GESTURE_SWIPE_DOWN,
+    SCREEN_GESTURE_LONG_PRESS,
 } screen_gesture_t;
 
 typedef bool (*screen_touch_handler_t)(int x, int y, screen_gesture_t gesture);
