@@ -4139,8 +4139,14 @@ static bool pf_menu_execute_item(int idx)
     switch ((pf_menu_item_id_t)idx) {
         case PF_MENU_REBOOT:          pf_menu_dispatch("reboot", "");        return true;
         case PF_MENU_SLEEP_NOW:       pf_menu_dispatch("sleep", "");         return true;
-        case PF_MENU_SAVE:            pf_menu_dispatch("save", "");          return false;
-        case PF_MENU_SAVEPIC:         pf_menu_dispatch("savepic", "");       return true;
+        case PF_MENU_SAVE:
+            pf_menu_dispatch("save", "");
+            s_menu_skip_close_redraw = true;
+            return true;
+        case PF_MENU_SAVEPIC:
+            pf_menu_dispatch("savepic", "");
+            s_menu_skip_close_redraw = true;
+            return true;
         case PF_MENU_LANDSCAPE:       pf_menu_dispatch("landscape", "");     return true;
         case PF_MENU_PORTRAIT:        pf_menu_dispatch("portrait", "");      return true;
         case PF_MENU_FONTSIZE:
@@ -7263,8 +7269,17 @@ static void pf_event_handler(const char *event_name,
         esp_err_t err = save_display_state_to_nvs();
         if (err != ESP_OK) {
             ESP_LOGE(TAG, "save: failed to persist display state: %s", esp_err_to_name(err));
+            screen_draw_text("Save failed");
         } else {
             ESP_LOGI(TAG, "save: display state persisted");
+            bool landscape = false;
+            int font_scale = 2;
+            screen_get_landscape(&landscape);
+            screen_get_font_scale(&font_scale);
+            char msg[96];
+            snprintf(msg, sizeof(msg), "Saved settings\n%s\nFont size %d",
+                     landscape ? "Landscape" : "Portrait", font_scale);
+            screen_draw_text(msg);
         }
 
     } else if (strcmp(s_trigger, "savepic") == 0) {
