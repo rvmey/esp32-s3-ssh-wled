@@ -412,6 +412,10 @@ static int           s_menu_saved_font_scale = -1;
 static int           s_menu_fontsize_idx   = 0;
 static int           s_menu_sleeptimer_idx = 0;
 static int           s_menu_ledcolor_idx   = 0;
+/* Set by the touch task on tap; consumed by the main task's loop, since
+ * pf_menu_execute_item() can run pf_event_handler (SD card I/O, etc.) which
+ * needs more stack than touch_poll_task's 3KB. */
+static volatile int  s_menu_pending_item = -1;
 #endif
 /* Set while a JPEG-folder image is on screen; swipe navigates within the folder. */
 static volatile bool s_jpeg_folder_display_active = false;
@@ -4149,11 +4153,10 @@ static bool pf_menu_handle_tap(int x, int y)
 
     if (row >= 1 && row <= (end - start)) {
         int item = start + (row - 1);
-        if (pf_menu_execute_item(item)) {
-            pf_menu_close();
-        } else {
-            pf_menu_render();
-        }
+        /* Defer to the main task: pf_menu_execute_item() can call
+         * pf_event_handler(), which does SD card I/O etc. and needs more
+         * stack than this task has. */
+        s_menu_pending_item = item;
     }
     return true;
 }
@@ -8182,6 +8185,17 @@ void picture_frame_run(void)
         }
 
         while (true) {
+#if CONFIG_CORE2_HW
+            if (s_menu_pending_item >= 0) {
+                int item = s_menu_pending_item;
+                s_menu_pending_item = -1;
+                if (pf_menu_execute_item(item)) {
+                    pf_menu_close();
+                } else {
+                    pf_menu_render();
+                }
+            }
+#endif
             if (s_pending_bg_color) {
                 s_pending_bg_color = false;
                 screen_set_color(s_pending_bg_r, s_pending_bg_g, s_pending_bg_b);
