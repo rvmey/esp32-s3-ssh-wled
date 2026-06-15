@@ -5619,9 +5619,17 @@ static void restore_display_state_from_nvs(void)
     if (jpeg_url[0]) {
         strncpy(s_current_jpeg_url, jpeg_url, sizeof(s_current_jpeg_url) - 1);
         s_current_jpeg_url[sizeof(s_current_jpeg_url) - 1] = '\0';
-        strncpy(s_pending_jpeg_url, jpeg_url, sizeof(s_pending_jpeg_url) - 1);
-        s_pending_jpeg_url[sizeof(s_pending_jpeg_url) - 1] = '\0';
-        s_pending_jpeg = true;
+        if (jpeg_url[0] == '/') {
+            /* Local SD card path (e.g. "/sdcard/pictures/foo.jpg"), not a
+             * downloadable URL — load it directly from the filesystem. */
+            strncpy(s_pending_jpeg_file_path, jpeg_url, sizeof(s_pending_jpeg_file_path) - 1);
+            s_pending_jpeg_file_path[sizeof(s_pending_jpeg_file_path) - 1] = '\0';
+            s_pending_jpeg_file = true;
+        } else {
+            strncpy(s_pending_jpeg_url, jpeg_url, sizeof(s_pending_jpeg_url) - 1);
+            s_pending_jpeg_url[sizeof(s_pending_jpeg_url) - 1] = '\0';
+            s_pending_jpeg = true;
+        }
     } else {
         s_current_jpeg_url[0] = '\0';
         if (s_last_text[0]) {
