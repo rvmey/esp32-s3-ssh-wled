@@ -585,6 +585,16 @@ static bool s_mp3_autostart = false;
 static bool s_sd_mount_warned __attribute__((unused)) = false;
 static volatile int32_t s_mp3_seek_target_ms = -1;
 
+/* ── On-screen clock — live digital/analog clock view ───────────────────
+ * "clock digital" or "clock analog" takes over the display with a
+ * once-per-second live clock until any other command/touch interaction
+ * runs. Default style (no/unrecognized params) is digital. */
+#if CONFIG_CORE2_HW
+typedef enum { PF_CLOCK_OFF = 0, PF_CLOCK_DIGITAL, PF_CLOCK_ANALOG } pf_clock_mode_t;
+static pf_clock_mode_t s_clock_mode = PF_CLOCK_OFF;
+static int             s_clock_last_sec = -1;
+#endif
+
 /* ── Audio visualizer — Goertzel per-band energy → Core2 side LEDs ─────── */
 #if CONFIG_CORE2_HW
 
@@ -1450,6 +1460,9 @@ static bool pf_menu_handle_swipe(screen_gesture_t gesture);
 static void pf_free_jpeg_rgb_cache(void);
 static void pf_redraw_jpeg_view(void);
 static void pf_pinch_handler(screen_pinch_phase_t phase, int x1, int y1, int x2, int y2);
+static void pf_clock_stop(void);
+static void pf_clock_start(const char *params);
+static void pf_clock_render(void);
 #endif
 
 /* Installed only during wifi_connect() -- any tap aborts the retry loop. */
@@ -4252,6 +4265,7 @@ static int pf_list_max_cols(void)
 
 static void pf_menu_open(void)
 {
+    pf_clock_stop();
     s_menu_active = true;
     s_menu_page = 0;
     screen_get_font_scale(&s_menu_saved_font_scale);
@@ -5107,6 +5121,7 @@ static int core2_https_post_json(const char *url, const char *token,
 static void do_core2_voice_query(void)
 {
     ESP_LOGI(TAG, "Voice query: starting");
+    pf_clock_stop();
     if (s_mp3_saved_font_scale >= 0) {
         screen_set_font_scale_silent(s_mp3_saved_font_scale);
         s_mp3_saved_font_scale = -1;
@@ -6402,6 +6417,7 @@ static const pf_cmd_t s_pf_cmds[] = {
     { "askgpt",    "askgpt",    "true",  "Ask GPT a general question (no picture context). Example: 'What is the capital of France?'", "\xF0\x9F\x92\xAC" /* 💬 */, "{{result}}" },
 #if CONFIG_CORE2_HW
     { "aitts",     "aitts",     "true",  "Toggle whether AI answers from 'askpic' are spoken aloud via TTS. Default on. Pass 'on'/'off' or omit to toggle.", "\xF0\x9F\x97\xA3\xEF\xB8\x8F" /* 🗣️ */, NULL },
+    { "clock",     "clock",     "true",  "Show a live clock on the display. Pass 'digital' or 'analog' to choose the style (default 'digital'). Stays on screen until another command runs. Example: 'analog'", "\xF0\x9F\x95\x90" /* 🕐 */, NULL },
 #endif
 #endif
 };
@@ -6896,6 +6912,206 @@ static void pf_enter_deep_sleep_with_touch_wake(void)
 }
 #endif /* CONFIG_HARDWARE_CORE2 */
 
+/* ── On-screen clock ─────────────────────────────────────────────────────
+ * "clock" / "clock digital" / "clock analog" replace the screen with a
+ * live-updating clock, refreshed once per second from the main loop.
+ * Any other command (handled at the top of pf_event_handler) or on-screen
+ * menu open stops the clock view. */
+#if CONFIG_CORE2_HW
+
+static void pf_clock_stop(void)
+{
+    if (s_clock_mode == PF_CLOCK_OFF) return;
+    s_clock_mode = PF_CLOCK_OFF;
+    if (s_mp3_saved_font_scale >= 0) {
+        screen_set_font_scale_silent(s_mp3_saved_font_scale);
+        s_mp3_saved_font_scale = -1;
+    }
+}
+
+static void pf_clock_start(const char *params)
+{
+    s_clock_mode = (params && strcasecmp(params, "analog") == 0)
+                       ? PF_CLOCK_ANALOG
+                       : PF_CLOCK_DIGITAL;
+    s_clock_last_sec = -1; /* force an immediate redraw */
+}
+
+/* True if some other on-screen view currently owns the display and the
+ * clock should not draw over it this tick. */
+static bool pf_clock_blocked(void)
+{
+    return s_pending_jpeg || s_pending_jpeg_redraw || s_pending_jpeg_file ||
+           s_pending_text_draw || s_menu_active || s_battery_display_active ||
+           s_folder_list_display_active || s_file_list_display_active ||
+           s_menu_result_active || (s_mp3.active && s_mp3_ui_override_allowed);
+}
+
+static inline void clk_set_px(uint16_t *buf, int dim, int x, int y, uint16_t color)
+{
+    if (x < 0 || x >= dim || y < 0 || y >= dim) return;
+    buf[y * dim + x] = color;
+}
+
+/* Bresenham line with a square "pen" of the given thickness (odd values
+ * center the pen on the line). */
+static void clk_draw_line(uint16_t *buf, int dim, int x0, int y0, int x1, int y1,
+                           uint16_t color, int thickness)
+{
+    int half = thickness / 2;
+    int dx = abs(x1 - x0), sx = (x1 > x0) ? 1 : -1;
+    int dy = -abs(y1 - y0), sy = (y1 > y0) ? 1 : -1;
+    int err = dx + dy;
+    while (1) {
+        for (int ty = -half; ty <= half; ty++) {
+            for (int tx = -half; tx <= half; tx++) {
+                clk_set_px(buf, dim, x0 + tx, y0 + ty, color);
+            }
+        }
+        if (x0 == x1 && y0 == y1) break;
+        int e2 = 2 * err;
+        if (e2 >= dy) { err += dy; x0 += sx; }
+        if (e2 <= dx) { err += dx; y0 += sy; }
+    }
+}
+
+/* Midpoint circle outline, drawn `thickness` pixels deep. */
+static void clk_draw_circle(uint16_t *buf, int dim, int cx, int cy, int r,
+                             uint16_t color, int thickness)
+{
+    for (int t = 0; t < thickness; t++) {
+        int rr = r - t;
+        int x = rr, y = 0;
+        int err = 1 - rr;
+        while (x >= y) {
+            clk_set_px(buf, dim, cx + x, cy + y, color);
+            clk_set_px(buf, dim, cx + y, cy + x, color);
+            clk_set_px(buf, dim, cx - y, cy + x, color);
+            clk_set_px(buf, dim, cx - x, cy + y, color);
+            clk_set_px(buf, dim, cx - x, cy - y, color);
+            clk_set_px(buf, dim, cx - y, cy - x, color);
+            clk_set_px(buf, dim, cx + y, cy - x, color);
+            clk_set_px(buf, dim, cx + x, cy - y, color);
+            y++;
+            if (err < 0) {
+                err += 2 * y + 1;
+            } else {
+                x--;
+                err += 2 * (y - x) + 1;
+            }
+        }
+    }
+}
+
+static void clk_fill_circle(uint16_t *buf, int dim, int cx, int cy, int r, uint16_t color)
+{
+    for (int y = -r; y <= r; y++) {
+        for (int x = -r; x <= r; x++) {
+            if (x * x + y * y <= r * r) clk_set_px(buf, dim, cx + x, cy + y, color);
+        }
+    }
+}
+
+/* Renders a 240x240 analog clock face into an RGB565 buffer and blits it.
+ * screen_draw_rgb565() letterboxes the square face onto the panel using
+ * the current background colour in both orientations. */
+static void pf_clock_render_analog(const struct tm *tm_now)
+{
+    const int dim = 240;
+    uint16_t *buf = heap_caps_malloc((size_t)dim * dim * sizeof(uint16_t),
+                                      MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!buf) buf = heap_caps_malloc((size_t)dim * dim * sizeof(uint16_t), MALLOC_CAP_8BIT);
+    if (!buf) return;
+
+    uint8_t bg_r, bg_g, bg_b, fg_r, fg_g, fg_b;
+    screen_get_color(&bg_r, &bg_g, &bg_b);
+    screen_get_text_color(&fg_r, &fg_g, &fg_b);
+    uint16_t bg = (uint16_t)(((bg_r & 0xF8) << 8) | ((bg_g & 0xFC) << 3) | (bg_b >> 3));
+    uint16_t fg = (uint16_t)(((fg_r & 0xF8) << 8) | ((fg_g & 0xFC) << 3) | (fg_b >> 3));
+
+    for (int i = 0; i < dim * dim; i++) buf[i] = bg;
+
+    const int cx = dim / 2, cy = dim / 2;
+    const int r = dim / 2 - 6;
+
+    clk_draw_circle(buf, dim, cx, cy, r, fg, 2);
+
+    /* Hour ticks */
+    for (int i = 0; i < 12; i++) {
+        float a = (float)i * ((float)M_PI / 6.0f);
+        int x0 = cx + (int)(sinf(a) * (r - 10));
+        int y0 = cy - (int)(cosf(a) * (r - 10));
+        int x1 = cx + (int)(sinf(a) * r);
+        int y1 = cy - (int)(cosf(a) * r);
+        clk_draw_line(buf, dim, x0, y0, x1, y1, fg, 2);
+    }
+
+    int hour = tm_now->tm_hour % 12;
+    int min  = tm_now->tm_min;
+    int sec  = tm_now->tm_sec;
+
+    float hour_angle = ((float)hour + (float)min / 60.0f) * ((float)M_PI / 6.0f);
+    float min_angle  = ((float)min + (float)sec / 60.0f) * ((float)M_PI / 30.0f);
+    float sec_angle  = (float)sec * ((float)M_PI / 30.0f);
+
+    int hx = cx + (int)(sinf(hour_angle) * (r * 0.5f));
+    int hy = cy - (int)(cosf(hour_angle) * (r * 0.5f));
+    clk_draw_line(buf, dim, cx, cy, hx, hy, fg, 5);
+
+    int mx = cx + (int)(sinf(min_angle) * (r * 0.75f));
+    int my = cy - (int)(cosf(min_angle) * (r * 0.75f));
+    clk_draw_line(buf, dim, cx, cy, mx, my, fg, 3);
+
+    int sx = cx + (int)(sinf(sec_angle) * (r * 0.85f));
+    int sy = cy - (int)(cosf(sec_angle) * (r * 0.85f));
+    clk_draw_line(buf, dim, cx, cy, sx, sy, fg, 1);
+
+    clk_fill_circle(buf, dim, cx, cy, 3, fg);
+
+    screen_draw_rgb565((const uint8_t *)buf, dim, dim);
+    free(buf);
+}
+
+static void pf_clock_render_digital(const struct tm *tm_now)
+{
+    char time_buf[16];
+    char date_buf[24];
+    strftime(time_buf, sizeof(time_buf), "%H:%M:%S", tm_now);
+    strftime(date_buf, sizeof(date_buf), "%a %Y-%m-%d", tm_now);
+
+    char msg[64];
+    snprintf(msg, sizeof(msg), "\n\n%s\n\n%s\nUTC", time_buf, date_buf);
+
+    if (s_mp3_saved_font_scale < 0) {
+        int cur = 2;
+        screen_get_font_scale(&cur);
+        s_mp3_saved_font_scale = cur;
+    }
+    screen_set_font_scale_silent(4);
+    screen_draw_text(msg);
+}
+
+/* Called once per main-loop tick while the clock is active; redraws only
+ * when the wall-clock second has changed (or on the first render). */
+static void pf_clock_render(void)
+{
+    if (s_clock_mode == PF_CLOCK_OFF || pf_clock_blocked()) return;
+
+    time_t now = time(NULL);
+    struct tm tm_now;
+    localtime_r(&now, &tm_now);
+    if (tm_now.tm_sec == s_clock_last_sec) return;
+    s_clock_last_sec = tm_now.tm_sec;
+
+    if (s_clock_mode == PF_CLOCK_ANALOG) {
+        pf_clock_render_analog(&tm_now);
+    } else {
+        pf_clock_render_digital(&tm_now);
+    }
+}
+
+#endif /* CONFIG_CORE2_HW */
+
 /* ── Socket.IO event handler ────────────────────────────────────────────── */
 
 static void pf_event_handler(const char *event_name,
@@ -6938,6 +7154,10 @@ static void pf_event_handler(const char *event_name,
     s_folder_list_display_active = false;
     s_file_list_display_active = false;
     s_menu_result_active = false;
+    /* Any command other than "clock" itself takes the screen back. */
+    if (strcmp(s_trigger, "clock") != 0) {
+        pf_clock_stop();
+    }
 #endif
     s_jpeg_folder_display_active = false;
 
@@ -7624,6 +7844,11 @@ static void pf_event_handler(const char *event_name,
         }
         nvs_write_u8(NVS_KEY_AI_TTS, s_ai_tts_enabled ? 1 : 0);
         ESP_LOGI(TAG, "AI TTS: %s", s_ai_tts_enabled ? "on" : "off");
+#endif
+
+#if CONFIG_CORE2_HW
+    } else if (strcmp(s_trigger, "clock") == 0) {
+        pf_clock_start(s_params);
 #endif
 
     } else {
@@ -8864,6 +9089,7 @@ void picture_frame_run(void)
                     (void)core2_axp_write_reg(0x12, vib_reg & (uint8_t)~0x08); /* LDO3 off */
                 }
             }
+            pf_clock_render();
             core2_poll_pwr_key();   /* voice query on PWR short press */
             if (s_pending_voice_query) {
                 s_pending_voice_query = false;
