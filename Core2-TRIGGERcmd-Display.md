@@ -41,7 +41,7 @@ real time.
 | `folders` / `files` | List SD card folders / files in a folder |
 | Per-folder picture commands | Auto-generated for each folder of JPEGs on the SD card — display the Nth (or first/random) image in that folder |
 | Per-folder music commands | Auto-generated for each folder of MP3s on the SD card — play the Nth (or first/random, if shuffle is on) track in that folder (see [Bluetooth MP3 playback](#bluetooth-mp3-playback)) |
-| `save` | Persist display state (colors, font, orientation, text, JPEG URL) to NVS, restored on reboot |
+| `save` | Persist display state (colors, font, orientation, text, JPEG URL) to NVS and, if an SD card is present, to `/sdcard/core2_settings.cfg`; restored on reboot (SD takes priority over NVS) |
 | `askpic` | Ask an AI vision question about the currently displayed picture |
 
 ---
@@ -156,6 +156,39 @@ openai_key=sk-proj-...
 
 The file is read every boot, so credentials can be updated without
 re-flashing. Removing a key from the file does not clear its NVS value.
+
+### Settings file — `core2_settings.cfg`
+
+The `save` command writes a second file, **`/sdcard/core2_settings.cfg`**,
+that stores the current display state:
+
+```
+bg=0,0,0
+fg=255,255,255
+orient=0
+font=2
+mp3=0
+jpeg=https://loremflickr.com/320/240/cat
+text=Hello\nWorld
+```
+
+| Key | Values | Meaning |
+|-----|--------|---------|
+| `bg` | `R,G,B` (0-255) | Background color |
+| `fg` | `R,G,B` (0-255) | Text color |
+| `orient` | `0` / `1` | Portrait / Landscape |
+| `font` | `1`–`8` | Font scale |
+| `mp3` | `0` / `1` | Whether music mode was active at save time |
+| `jpeg` | URL or `/sdcard/…` path | Last displayed image (empty if none) |
+| `text` | string (newlines as `\n`) | Last displayed text (empty if none) |
+
+On boot the firmware tries this file before NVS, so settings here survive a
+firmware reflash. You can also hand-edit the file between reboots — for
+example to pre-configure the background color or starting text on a new
+device using the same SD card.
+
+After a successful `save`, the result screen shows all saved values and
+confirms where they were written ("SD card + NVS" or "NVS only").
 
 ---
 
