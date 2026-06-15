@@ -408,10 +408,6 @@ static volatile bool s_battery_display_active = false;
 static volatile bool s_menu_active           = false;
 static int           s_menu_page             = 0;
 static int           s_menu_saved_font_scale = -1;
-/* Indices into the cycling-preset tables below; each advances on tap. */
-static int           s_menu_fontsize_idx   = 0;
-static int           s_menu_sleeptimer_idx = 0;
-static int           s_menu_ledcolor_idx   = 0;
 /* Set by the touch task on tap; consumed by the main task's loop, since
  * pf_menu_execute_item() can run pf_event_handler (SD card I/O, etc.) which
  * needs more stack than touch_poll_task's 3KB. */
@@ -3929,7 +3925,9 @@ static void mp3_render_now_playing(void)
  * run it; swipe left/right to change pages; long-press again to close. */
 #if CONFIG_CORE2_HW
 
-#define PF_MENU_ITEMS_PER_PAGE 12
+/* At font scale 2 (32px rows) landscape (240px tall) fits 7 rows total,
+ * so 5 items per page leaves room for the header and footer lines. */
+#define PF_MENU_ITEMS_PER_PAGE 5
 
 typedef enum {
     PF_MENU_REBOOT, PF_MENU_SLEEP_NOW, PF_MENU_SAVE, PF_MENU_SAVEPIC,
@@ -3948,7 +3946,7 @@ typedef enum {
     ((PF_MENU_ITEM_COUNT + PF_MENU_ITEMS_PER_PAGE - 1) / PF_MENU_ITEMS_PER_PAGE)
 
 /* Cycling presets for menu items that need a value but have no on-screen
- * keyboard. Each tap dispatches the *next* value and advances the index. */
+ * keyboard. Each tap advances to the next value and dispatches/labels it. */
 static const int PF_MENU_FONTSIZES[]  = { 1, 2, 3, 4 };
 static const int PF_MENU_SLEEP_MINS[] = { 0, 5, 10, 15, 30, 60 };
 static const char *const PF_MENU_LED_COLORS[] = {
@@ -3957,6 +3955,14 @@ static const char *const PF_MENU_LED_COLORS[] = {
 #define PF_MENU_FONTSIZE_COUNT  (sizeof(PF_MENU_FONTSIZES)  / sizeof(PF_MENU_FONTSIZES[0]))
 #define PF_MENU_SLEEP_MIN_COUNT (sizeof(PF_MENU_SLEEP_MINS) / sizeof(PF_MENU_SLEEP_MINS[0]))
 #define PF_MENU_LED_COLOR_COUNT (sizeof(PF_MENU_LED_COLORS) / sizeof(PF_MENU_LED_COLORS[0]))
+
+/* Indices into the cycling-preset tables above. Each tap advances the index
+ * *then* dispatches/labels that entry, so the on-screen label always matches
+ * the value that was just applied. Start at the last entry so the first tap
+ * lands on index 0. */
+static int s_menu_fontsize_idx   = PF_MENU_FONTSIZE_COUNT - 1;
+static int s_menu_sleeptimer_idx = PF_MENU_SLEEP_MIN_COUNT - 1;
+static int s_menu_ledcolor_idx   = PF_MENU_LED_COLOR_COUNT - 1;
 
 /* Build a {"trigger":"...","params":"..."} payload and run it through the
  * normal command dispatcher, exactly as if it had arrived over the socket --
@@ -3980,7 +3986,7 @@ static void pf_menu_item_label(int idx, char *out, size_t out_sz)
         case PF_MENU_LANDSCAPE:     snprintf(out, out_sz, "Landscape"); break;
         case PF_MENU_PORTRAIT:      snprintf(out, out_sz, "Portrait"); break;
         case PF_MENU_FONTSIZE:
-            snprintf(out, out_sz, "Font Size -> %d",
+            snprintf(out, out_sz, "Font Size: %d",
                      PF_MENU_FONTSIZES[s_menu_fontsize_idx % PF_MENU_FONTSIZE_COUNT]);
             break;
         case PF_MENU_FOLDERS:       snprintf(out, out_sz, "List Folders"); break;
@@ -4015,11 +4021,11 @@ static void pf_menu_item_label(int idx, char *out, size_t out_sz)
         case PF_MENU_VIZ_NEXT:      snprintf(out, out_sz, "Viz Style Next"); break;
         case PF_MENU_VIZ_PREV:      snprintf(out, out_sz, "Viz Style Prev"); break;
         case PF_MENU_LEDCOLOR:
-            snprintf(out, out_sz, "LED Color -> %s",
+            snprintf(out, out_sz, "LED Color: %s",
                      PF_MENU_LED_COLORS[s_menu_ledcolor_idx % PF_MENU_LED_COLOR_COUNT]);
             break;
         case PF_MENU_SLEEP_TIMER:
-            snprintf(out, out_sz, "Sleep Timer -> %d min",
+            snprintf(out, out_sz, "Sleep Timer: %d min",
                      PF_MENU_SLEEP_MINS[s_menu_sleeptimer_idx % PF_MENU_SLEEP_MIN_COUNT]);
             break;
         case PF_MENU_SLEEP_ON_POWER:
@@ -4048,10 +4054,10 @@ static bool pf_menu_execute_item(int idx)
         case PF_MENU_LANDSCAPE:       pf_menu_dispatch("landscape", "");     return true;
         case PF_MENU_PORTRAIT:        pf_menu_dispatch("portrait", "");      return true;
         case PF_MENU_FONTSIZE:
+            s_menu_fontsize_idx = (s_menu_fontsize_idx + 1) % PF_MENU_FONTSIZE_COUNT;
             snprintf(params, sizeof(params), "%d",
                      PF_MENU_FONTSIZES[s_menu_fontsize_idx % PF_MENU_FONTSIZE_COUNT]);
             pf_menu_dispatch("fontsize", params);
-            s_menu_fontsize_idx = (s_menu_fontsize_idx + 1) % PF_MENU_FONTSIZE_COUNT;
             return false;
         case PF_MENU_FOLDERS:         pf_menu_dispatch("folders", "");       return true;
         case PF_MENU_BATTERY:         pf_menu_dispatch("battery", "");       return true;
@@ -4073,14 +4079,14 @@ static bool pf_menu_execute_item(int idx)
         case PF_MENU_VIZ_NEXT:        pf_menu_dispatch("visualizernext", ""); return false;
         case PF_MENU_VIZ_PREV:        pf_menu_dispatch("visualizerprevious", ""); return false;
         case PF_MENU_LEDCOLOR:
-            pf_menu_dispatch("ledcolor", PF_MENU_LED_COLORS[s_menu_ledcolor_idx % PF_MENU_LED_COLOR_COUNT]);
             s_menu_ledcolor_idx = (s_menu_ledcolor_idx + 1) % PF_MENU_LED_COLOR_COUNT;
+            pf_menu_dispatch("ledcolor", PF_MENU_LED_COLORS[s_menu_ledcolor_idx]);
             return false;
         case PF_MENU_SLEEP_TIMER:
+            s_menu_sleeptimer_idx = (s_menu_sleeptimer_idx + 1) % PF_MENU_SLEEP_MIN_COUNT;
             snprintf(params, sizeof(params), "%d",
                      PF_MENU_SLEEP_MINS[s_menu_sleeptimer_idx % PF_MENU_SLEEP_MIN_COUNT]);
             pf_menu_dispatch("sleeptimer", params);
-            s_menu_sleeptimer_idx = (s_menu_sleeptimer_idx + 1) % PF_MENU_SLEEP_MIN_COUNT;
             return false;
         case PF_MENU_SLEEP_ON_POWER:  pf_menu_dispatch("sleeponpower", "");  return false;
         case PF_MENU_AI_SPEECH:       pf_menu_dispatch("aitts", "");         return false;
@@ -4103,7 +4109,10 @@ static void pf_menu_render(void)
         pf_menu_item_label(i, label, sizeof(label));
         len += snprintf(buf + len, sizeof(buf) - len, "%s\n", label);
     }
-    snprintf(buf + len, sizeof(buf) - len, "Swipe=page  Hold=close");
+    /* Kept <= 20 chars so it doesn't wrap to a 2nd line in portrait at
+     * font scale 2 (320px / 16px-per-char = 20 cols), which would throw
+     * off pf_menu_handle_tap()'s row math. */
+    snprintf(buf + len, sizeof(buf) - len, "Swipe=pg Hold=close");
     screen_draw_text(buf);
 }
 
@@ -4112,7 +4121,7 @@ static void pf_menu_open(void)
     s_menu_active = true;
     s_menu_page = 0;
     screen_get_font_scale(&s_menu_saved_font_scale);
-    screen_set_font_scale_silent(1);
+    screen_set_font_scale_silent(2);
     pf_menu_render();
 }
 
@@ -4140,7 +4149,7 @@ static bool pf_menu_handle_tap(int x, int y)
     bool landscape = true;
     screen_get_landscape(&landscape);
     int lcd_h_val = landscape ? 240 : 320;
-    int ch = 16; /* 16px rows at font scale 1, used while the menu is open */
+    int ch = 32; /* 32px rows at font scale 2, used while the menu is open */
 
     int start = s_menu_page * PF_MENU_ITEMS_PER_PAGE;
     int end   = start + PF_MENU_ITEMS_PER_PAGE;
