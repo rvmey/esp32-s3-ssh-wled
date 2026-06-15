@@ -416,6 +416,10 @@ static volatile int  s_menu_pending_item = -1;
  * (folders, battery, BT status) so pf_menu_close() doesn't immediately
  * overwrite that result with the pre-menu screen contents. */
 static bool          s_menu_skip_close_redraw = false;
+/* Set while one of those menu-action result screens is on screen, so the
+ * mp3 now-playing UI doesn't immediately redraw over it. Cleared when the
+ * next command/tap dismisses the result screen. */
+static bool          s_menu_result_active = false;
 #endif
 /* Set while a JPEG-folder image is on screen; swipe navigates within the folder. */
 static volatile bool s_jpeg_folder_display_active = false;
@@ -4238,8 +4242,15 @@ static void pf_menu_close(void)
         /* The action just drawn its own result text; leave it on screen
          * instead of immediately overwriting it below. */
         s_menu_skip_close_redraw = false;
+        s_menu_result_active = true;
         return;
     }
+    /* Closing the menu without picking a result-screen action: drop any
+     * lingering result screen so playback/text UI can resume below. */
+    s_menu_result_active = false;
+    s_battery_display_active = false;
+    s_folder_list_display_active = false;
+    s_file_list_display_active = false;
     if (s_jpeg_cache) {
         s_pending_jpeg_redraw = true;
     } else if (s_mp3.active && s_mp3_ui_override_allowed) {
@@ -4383,6 +4394,17 @@ static bool pf_touch_handler(int x, int y, screen_gesture_t gesture)
                 s_pending_jpeg_file_path[sizeof(s_pending_jpeg_file_path) - 1] = '\0';
                 s_pending_jpeg_file = true;
             }
+        }
+        return true;
+    }
+    if (s_menu_result_active && gesture == SCREEN_GESTURE_TAP) {
+        /* Dismiss a plain-text menu-action result (e.g. BT status/pair) that
+         * has no dedicated tap handler of its own. */
+        s_menu_result_active = false;
+        if (s_mp3.active && s_mp3_ui_override_allowed) {
+            mp3_request_ui_refresh();
+        } else {
+            screen_draw_text(s_last_text[0] ? s_last_text : " ");
         }
         return true;
     }
@@ -6863,6 +6885,7 @@ static void pf_event_handler(const char *event_name,
     s_battery_display_active = false;
     s_folder_list_display_active = false;
     s_file_list_display_active = false;
+    s_menu_result_active = false;
 #endif
     s_jpeg_folder_display_active = false;
 
@@ -8681,14 +8704,19 @@ void picture_frame_run(void)
                 } else if (s_mp3_ui_override_allowed && !s_pending_jpeg && !s_pending_jpeg_redraw
 #if CONFIG_CORE2_HW
                            && !s_menu_active
+                           && !s_battery_display_active
+                           && !s_folder_list_display_active
+                           && !s_file_list_display_active
+                           && !s_menu_result_active
 #endif
                           ) {
                     s_mp3_ui_pending = false;
                     mp3_render_now_playing();
                 }
                 /* Keep pending=true when temporarily blocked by JPEG, UI override,
-                 * or the on-screen menu, so the next eligible main-loop tick will
-                 * render now-playing (e.g. once the menu closes). */
+                 * the on-screen menu, or a menu-action result screen, so the
+                 * next eligible main-loop tick will render now-playing once
+                 * that screen is dismissed. */
             }
 
             /* Post command/result — dedicated result payload for commands that
