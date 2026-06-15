@@ -4125,6 +4125,9 @@ static void pf_menu_render(void)
     char buf[1024];
     int  len   = 0;
     int  start = s_menu_page * PF_MENU_ITEMS_PER_PAGE;
+    /* The menu is always shown at font scale 2, independent of the user's
+     * font-size setting (which may have just been changed via this menu). */
+    screen_set_font_scale_silent(2);
     int  end   = start + PF_MENU_ITEMS_PER_PAGE;
     if (end > PF_MENU_ITEM_COUNT) end = PF_MENU_ITEM_COUNT;
 
@@ -4147,6 +4150,14 @@ static void pf_menu_open(void)
     s_menu_active = true;
     s_menu_page = 0;
     screen_get_font_scale(&s_menu_saved_font_scale);
+    /* Sync the cycling index to the actual current font size so the label
+     * shown on open matches reality, even on first open after boot. */
+    for (size_t i = 0; i < PF_MENU_FONTSIZE_COUNT; i++) {
+        if (PF_MENU_FONTSIZES[i] == s_menu_saved_font_scale) {
+            s_menu_fontsize_idx = (int)i;
+            break;
+        }
+    }
     screen_set_font_scale_silent(2);
     pf_menu_render();
 }
@@ -8251,6 +8262,14 @@ void picture_frame_run(void)
             if (s_pending_font_scale > 0) {
                 int scale = s_pending_font_scale;
                 s_pending_font_scale = 0;
+#if CONFIG_CORE2_HW
+                if (s_menu_active) {
+                    /* Track the new size without redrawing the on-screen
+                     * text at it; the menu stays at its own font scale 2
+                     * until it closes. */
+                    screen_set_font_scale_silent(scale);
+                } else
+#endif
                 screen_set_font_scale(scale);
             }
 
