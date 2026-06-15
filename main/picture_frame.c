@@ -8340,12 +8340,17 @@ void picture_frame_run(void)
                         screen_set_font_scale_silent(s_mp3_saved_font_scale);
                         s_mp3_saved_font_scale = -1;
                     }
-                } else if (s_mp3_ui_override_allowed && !s_pending_jpeg && !s_pending_jpeg_redraw) {
+                } else if (s_mp3_ui_override_allowed && !s_pending_jpeg && !s_pending_jpeg_redraw
+#if CONFIG_CORE2_HW
+                           && !s_menu_active
+#endif
+                          ) {
                     s_mp3_ui_pending = false;
                     mp3_render_now_playing();
                 }
-                /* Keep pending=true when temporarily blocked by JPEG or UI override
-                 * so the next eligible main-loop tick will render now-playing. */
+                /* Keep pending=true when temporarily blocked by JPEG, UI override,
+                 * or the on-screen menu, so the next eligible main-loop tick will
+                 * render now-playing (e.g. once the menu closes). */
             }
 
             /* Post command/result — dedicated result payload for commands that
