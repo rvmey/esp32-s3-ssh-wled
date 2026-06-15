@@ -15,6 +15,14 @@ typedef enum {
 
 typedef bool (*screen_touch_handler_t)(int x, int y, screen_gesture_t gesture);
 
+typedef enum {
+    SCREEN_PINCH_BEGIN,
+    SCREEN_PINCH_MOVE,
+    SCREEN_PINCH_END,
+} screen_pinch_phase_t;
+
+typedef void (*screen_pinch_handler_t)(screen_pinch_phase_t phase, int x1, int y1, int x2, int y2);
+
 /**
  * @brief Initialise the AXS15231 QSPI display on the Guition JC3248W535.
  *        Configures the QSPI SPI bus, sends the AXS15231 init sequence,
@@ -162,3 +170,23 @@ void screen_backlight_off(void);
  * was handled and should not be used for text scrolling.
  */
 void screen_set_touch_handler(screen_touch_handler_t handler);
+
+/**
+ * @brief Register a two-finger pinch/zoom callback (Core2 only; the
+ *        FT6336U reports up to 2 simultaneous touch points). BEGIN fires
+ *        when a 2nd finger is detected, MOVE on each subsequent poll while
+ *        both fingers remain down, END once fewer than 2 fingers remain
+ *        (x1/y1/x2/y2 are 0 for END). Coordinates are in current
+ *        logical-orientation space. No-op on hardware without multi-touch.
+ */
+void screen_set_pinch_handler(screen_pinch_handler_t handler);
+
+/**
+ * @brief Blit a sub-region of a pre-decoded RGB565 image to the screen,
+ *        scaled to fit using the same letterbox/aspect behaviour as
+ *        screen_draw_rgb565(), but treating (crop_x, crop_y, crop_w, crop_h)
+ *        as the source rectangle instead of the full image. The full
+ *        image's width (src_w) is used as the row stride.
+ */
+void screen_draw_rgb565_region(const uint8_t *rgb565, int src_w, int src_h,
+                                int crop_x, int crop_y, int crop_w, int crop_h);

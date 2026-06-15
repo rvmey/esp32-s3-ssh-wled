@@ -92,6 +92,7 @@ static int               s_scroll_total = 0;
 
 static SemaphoreHandle_t s_draw_mutex   = NULL;
 static screen_touch_handler_t s_touch_handler = NULL;
+static screen_pinch_handler_t s_pinch_handler = NULL;
 
 /* Logical width/height — NOTE: landscape is the native/default orientation */
 static inline int lcd_w(void) { return s_landscape ? LCD_PHYS_W : LCD_PHYS_H; }
@@ -399,7 +400,17 @@ static void apply_scroll_abs(int target)
 /* Touch (FT6336U)                                                     */
 /* ------------------------------------------------------------------ */
 
-static bool touch_read_point(uint16_t *tx, uint16_t *ty)
+/* Reads up to 2 simultaneous touch points from the FT6336U.
+ * Registers 0x02..0x0C (11 bytes, auto-increment read):
+ *   0x02      TD_STATUS (bits 3:0 = active touch count, 0-2)
+ *   0x03-0x06 Touch1 XH,XL,YH,YL
+ *   0x07-0x08 (weight/misc, unused)
+ *   0x09-0x0C Touch2 XH,XL,YH,YL
+ * *npts is set to the active touch count; (x2,y2) are only valid when
+ * *npts >= 2. Returns false when the I2C transaction fails or no finger
+ * is down. */
+static bool touch_read_points(uint8_t *npts, uint16_t *x1, uint16_t *y1,
+                               uint16_t *x2, uint16_t *y2)
 {
     /* portMAX_DELAY: under BT A2DP + WiFi coexistence the I2C ISR can be
      * delayed 50+ ms by RF arbitration. Any finite timeout triggers
@@ -408,23 +419,22 @@ static bool touch_read_point(uint16_t *tx, uint16_t *ty)
      * eliminates the timeout path entirely; the ISR always completes
      * eventually once BT yields the RF channel. */
     uint8_t reg  = 0x02;
-    uint8_t npts = 0;
+    uint8_t data[11];
     if (i2c_master_write_read_device(AXP_I2C_NUM, TOUCH_I2C_ADDR,
-                                     &reg, 1, &npts, 1,
+                                     &reg, 1, data, sizeof(data),
                                      portMAX_DELAY) != ESP_OK) {
         return false;
     }
-    if (npts == 0 || npts > 5) return false;
+    uint8_t n = data[0] & 0x0F;
+    if (n == 0 || n > 2) return false;
 
-    uint8_t data[4];
-    uint8_t data_reg = 0x03;
-    if (i2c_master_write_read_device(AXP_I2C_NUM, TOUCH_I2C_ADDR,
-                                     &data_reg, 1, data, 4,
-                                     portMAX_DELAY) != ESP_OK) {
-        return false;
+    *npts = n;
+    *x1 = (uint16_t)(((data[1] & 0x0F) << 8) | data[2]);
+    *y1 = (uint16_t)(((data[3] & 0x0F) << 8) | data[4]);
+    if (n >= 2) {
+        *x2 = (uint16_t)(((data[7] & 0x0F) << 8) | data[8]);
+        *y2 = (uint16_t)(((data[9] & 0x0F) << 8) | data[10]);
     }
-    *tx = (uint16_t)(((data[0] & 0x0F) << 8) | data[1]);
-    *ty = (uint16_t)(((data[2] & 0x0F) << 8) | data[3]);
     return true;
 }
 
@@ -446,12 +456,36 @@ static void touch_poll_task(void *arg)
     bool    scroll_consumed = false;
     bool    long_press_fired = false;
     TickType_t touch_start_tick = 0;
+    bool    pinching = false;
 
     for (;;) {
         vTaskDelay(pdMS_TO_TICKS(20));
 
-        uint16_t tx, ty;
-        bool have = touch_read_point(&tx, &ty);
+        uint8_t  npts = 0;
+        uint16_t tx = 0, ty = 0, tx2 = 0, ty2 = 0;
+        bool have = touch_read_points(&npts, &tx, &ty, &tx2, &ty2);
+
+        if (have && npts >= 2) {
+            int lx1, ly1, lx2, ly2;
+            touch_raw_to_logical(tx, ty, &lx1, &ly1);
+            touch_raw_to_logical(tx2, ty2, &lx2, &ly2);
+            if (s_pinch_handler) {
+                s_pinch_handler(pinching ? SCREEN_PINCH_MOVE : SCREEN_PINCH_BEGIN,
+                                lx1, ly1, lx2, ly2);
+            }
+            pinching = true;
+            /* Cancel any in-progress single-finger gesture tracking so
+             * lifting to 1 or 0 fingers afterwards doesn't fire a tap/swipe. */
+            touching = false;
+            continue;
+        }
+        if (pinching) {
+            pinching = false;
+            if (s_pinch_handler) s_pinch_handler(SCREEN_PINCH_END, 0, 0, 0, 0);
+            /* Skip this sample so a lingering single finger doesn't start a
+             * new gesture mid-pinch-release. */
+            continue;
+        }
 
         /*
          * For Core2 (320×240 landscape native), the FT6336U reports:
@@ -678,7 +712,7 @@ esp_err_t screen_init(void)
                                                     portMAX_DELAY);
     if (t_err == ESP_OK) {
         ESP_LOGI(TAG, "FT6336U touch ready (I2C addr=0x%02X)", TOUCH_I2C_ADDR);
-        xTaskCreate(touch_poll_task, "touch_poll", 3072, NULL, 4, NULL);
+        xTaskCreate(touch_poll_task, "touch_poll", 4096, NULL, 4, NULL);
     } else {
         ESP_LOGW(TAG, "FT6336U not found (err=%d) — scroll by touch unavailable", t_err);
     }
@@ -780,6 +814,11 @@ void screen_spi_unlock(void)
 void screen_set_touch_handler(screen_touch_handler_t handler)
 {
     s_touch_handler = handler;
+}
+
+void screen_set_pinch_handler(screen_pinch_handler_t handler)
+{
+    s_pinch_handler = handler;
 }
 
 void screen_draw_text(const char *text)
@@ -972,6 +1011,12 @@ void screen_reinit_display(void)
 
 void screen_draw_rgb565(const uint8_t *rgb565, int src_w, int src_h)
 {
+    screen_draw_rgb565_region(rgb565, src_w, src_h, 0, 0, src_w, src_h);
+}
+
+void screen_draw_rgb565_region(const uint8_t *rgb565, int src_w, int src_h,
+                                int crop_x, int crop_y, int crop_w, int crop_h)
+{
     xSemaphoreTake(s_draw_mutex, portMAX_DELAY);
 
     s_text[0] = '\0';
@@ -980,12 +1025,12 @@ void screen_draw_rgb565(const uint8_t *rgb565, int src_w, int src_h)
     int dst_h = lcd_h();
 
     int img_w, img_h, img_x0, img_y0;
-    if (src_w * dst_h > src_h * dst_w) {
+    if (crop_w * dst_h > crop_h * dst_w) {
         img_w = dst_w;
-        img_h = (src_h * dst_w) / src_w;
+        img_h = (crop_h * dst_w) / crop_w;
     } else {
         img_h = dst_h;
-        img_w = (src_w * dst_h) / src_h;
+        img_w = (crop_w * dst_h) / crop_h;
     }
     img_x0 = (dst_w - img_w) / 2;
     img_y0 = (dst_h - img_h) / 2;
@@ -1020,8 +1065,8 @@ void screen_draw_rgb565(const uint8_t *rgb565, int src_w, int src_h)
                 continue;
             }
 
-            int src_col = ((lx - img_x0) * src_w) / img_w;
-            int src_row = ((ly - img_y0) * src_h) / img_h;
+            int src_col = crop_x + ((lx - img_x0) * crop_w) / img_w;
+            int src_row = crop_y + ((ly - img_y0) * crop_h) / img_h;
             uint16_t pixel = src[src_row * src_w + src_col];
             s_row_buf[x * 2]     = (uint8_t)(pixel >> 8);
             s_row_buf[x * 2 + 1] = (uint8_t)(pixel & 0xFF);

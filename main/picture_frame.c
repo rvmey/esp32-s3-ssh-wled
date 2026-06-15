@@ -482,6 +482,30 @@ static uint8_t      *s_jpeg_cache     __attribute__((unused)) = NULL;
 static int           s_jpeg_cache_len __attribute__((unused)) = 0;
 static volatile bool s_pending_jpeg_redraw = false;
 
+#if CONFIG_CORE2_HW
+/* Decoded RGB565 image kept alongside s_jpeg_cache so pinch-to-zoom can
+ * crop/rescale on every touch sample without re-running the JPEG decoder.
+ * Freed (and zoom/pan reset) whenever s_jpeg_cache is freed or replaced. */
+static uint8_t *s_jpeg_rgb565 = NULL;
+static int      s_jpeg_rgb_w  = 0;
+static int      s_jpeg_rgb_h  = 0;
+
+/* Pinch-to-zoom view state: zoom 1.0 = fit-to-screen (no crop); pan_cx/cy
+ * are the crop rectangle's centre as a 0..1 fraction of the decoded image. */
+#define JPEG_ZOOM_MAX 4.0f
+static float s_jpeg_zoom   = 1.0f;
+static float s_jpeg_pan_cx = 0.5f;
+static float s_jpeg_pan_cy = 0.5f;
+
+/* Pinch gesture baseline, captured on SCREEN_PINCH_BEGIN */
+static float s_pinch_base_dist = 0.0f;
+static float s_pinch_base_zoom = 1.0f;
+static float s_pinch_base_cx   = 0.5f;
+static float s_pinch_base_cy   = 0.5f;
+static int   s_pinch_base_mx   = 0;
+static int   s_pinch_base_my   = 0;
+#endif /* CONFIG_CORE2_HW */
+
 /* Persistable display state (set by commands, committed by 'save'). */
 static char s_last_text[512]         __attribute__((unused)) = {0};
 static char s_current_jpeg_url[512]  __attribute__((unused)) = {0};
@@ -1379,6 +1403,9 @@ static void pf_menu_open(void);
 static void pf_menu_close(void);
 static bool pf_menu_handle_tap(int x, int y);
 static bool pf_menu_handle_swipe(screen_gesture_t gesture);
+static void pf_free_jpeg_rgb_cache(void);
+static void pf_redraw_jpeg_view(void);
+static void pf_pinch_handler(screen_pinch_phase_t phase, int x1, int y1, int x2, int y2);
 #endif
 
 /* Installed only during wifi_connect() -- any tap aborts the retry loop. */
@@ -6703,6 +6730,9 @@ static void pf_event_handler(const char *event_name,
     if (strcmp(s_trigger, "text") == 0) {
         /* Discard any cached JPEG so orientation changes redraw text, not image */
         if (s_jpeg_cache) { free(s_jpeg_cache); s_jpeg_cache = NULL; s_jpeg_cache_len = 0; }
+#if CONFIG_CORE2_HW
+        pf_free_jpeg_rgb_cache();
+#endif
         s_mp3_ui_override_allowed = false;
         s_pending_jpeg = false;
         s_pending_jpeg_redraw = false;
@@ -6718,6 +6748,9 @@ static void pf_event_handler(const char *event_name,
 
     } else if (strcmp(s_trigger, "speak") == 0) {
         if (s_jpeg_cache) { free(s_jpeg_cache); s_jpeg_cache = NULL; s_jpeg_cache_len = 0; }
+#if CONFIG_CORE2_HW
+        pf_free_jpeg_rgb_cache();
+#endif
         s_mp3_ui_override_allowed = false;
         s_pending_jpeg = false;
         s_pending_jpeg_redraw = false;
@@ -7391,6 +7424,101 @@ static esp_err_t jpeg_http_event(esp_http_client_event_t *evt)
     return ESP_OK;
 }
 
+#if CONFIG_CORE2_HW
+/* Frees the cached decoded RGB565 image (if any) and resets pinch-to-zoom
+ * view state to fit-to-screen. Called whenever s_jpeg_cache is freed or
+ * about to be replaced by a new image. */
+static void pf_free_jpeg_rgb_cache(void)
+{
+    if (s_jpeg_rgb565) { free(s_jpeg_rgb565); s_jpeg_rgb565 = NULL; }
+    s_jpeg_rgb_w  = 0;
+    s_jpeg_rgb_h  = 0;
+    s_jpeg_zoom   = 1.0f;
+    s_jpeg_pan_cx = 0.5f;
+    s_jpeg_pan_cy = 0.5f;
+}
+
+/* Blits the current zoom/pan view of s_jpeg_rgb565 to the screen. No-op if
+ * no image is currently decoded. */
+static void pf_redraw_jpeg_view(void)
+{
+    if (!s_jpeg_rgb565 || s_jpeg_rgb_w <= 0 || s_jpeg_rgb_h <= 0) return;
+
+    int crop_w = (int)((float)s_jpeg_rgb_w / s_jpeg_zoom);
+    int crop_h = (int)((float)s_jpeg_rgb_h / s_jpeg_zoom);
+    if (crop_w < 1) crop_w = 1;
+    if (crop_h < 1) crop_h = 1;
+
+    int crop_x = (int)(s_jpeg_pan_cx * (float)s_jpeg_rgb_w) - crop_w / 2;
+    int crop_y = (int)(s_jpeg_pan_cy * (float)s_jpeg_rgb_h) - crop_h / 2;
+    if (crop_x < 0) crop_x = 0;
+    if (crop_y < 0) crop_y = 0;
+    if (crop_x + crop_w > s_jpeg_rgb_w) crop_x = s_jpeg_rgb_w - crop_w;
+    if (crop_y + crop_h > s_jpeg_rgb_h) crop_y = s_jpeg_rgb_h - crop_h;
+
+    screen_draw_rgb565_region(s_jpeg_rgb565, s_jpeg_rgb_w, s_jpeg_rgb_h,
+                               crop_x, crop_y, crop_w, crop_h);
+}
+
+/* Two-finger pinch-to-zoom/pan handler for the JPEG viewer. Runs on the
+ * touch-poll task; redraws directly via screen_draw_rgb565_region(), which
+ * takes the screen driver's own mutex. */
+static void pf_pinch_handler(screen_pinch_phase_t phase, int x1, int y1, int x2, int y2)
+{
+    if (!s_jpeg_rgb565 || s_jpeg_rgb_w <= 0 || s_jpeg_rgb_h <= 0) return;
+    if (phase == SCREEN_PINCH_END) return;
+
+    float dx   = (float)(x2 - x1);
+    float dy   = (float)(y2 - y1);
+    float dist = sqrtf(dx * dx + dy * dy);
+    int   mx   = (x1 + x2) / 2;
+    int   my   = (y1 + y2) / 2;
+
+    if (phase == SCREEN_PINCH_BEGIN) {
+        s_pinch_base_dist = dist;
+        s_pinch_base_zoom = s_jpeg_zoom;
+        s_pinch_base_cx   = s_jpeg_pan_cx;
+        s_pinch_base_cy   = s_jpeg_pan_cy;
+        s_pinch_base_mx   = mx;
+        s_pinch_base_my   = my;
+        return;
+    }
+
+    if (s_pinch_base_dist < 1.0f) return;
+
+    float new_zoom = s_pinch_base_zoom * (dist / s_pinch_base_dist);
+    if (new_zoom < 1.0f) new_zoom = 1.0f;
+    if (new_zoom > JPEG_ZOOM_MAX) new_zoom = JPEG_ZOOM_MAX;
+
+    /* Two-finger drag pans the view: shift the crop centre opposite to the
+     * midpoint's on-screen movement, scaled by the fraction of the image
+     * visible at the baseline zoom, so content tracks the fingers. */
+    bool landscape;
+    screen_get_landscape(&landscape);
+    int screen_w = landscape ? 320 : 240;
+    int screen_h = landscape ? 240 : 320;
+
+    float frac_dx = (float)(mx - s_pinch_base_mx) / (float)screen_w / s_pinch_base_zoom;
+    float frac_dy = (float)(my - s_pinch_base_my) / (float)screen_h / s_pinch_base_zoom;
+
+    float new_cx = s_pinch_base_cx - frac_dx;
+    float new_cy = s_pinch_base_cy - frac_dy;
+
+    float half_w = 0.5f / new_zoom;
+    float half_h = 0.5f / new_zoom;
+    if (new_cx < half_w)        new_cx = half_w;
+    if (new_cx > 1.0f - half_w) new_cx = 1.0f - half_w;
+    if (new_cy < half_h)        new_cy = half_h;
+    if (new_cy > 1.0f - half_h) new_cy = 1.0f - half_h;
+
+    s_jpeg_zoom   = new_zoom;
+    s_jpeg_pan_cx = new_cx;
+    s_jpeg_pan_cy = new_cy;
+
+    pf_redraw_jpeg_view();
+}
+#endif /* CONFIG_CORE2_HW */
+
 /*
  * Decode compressed JPEG bytes (buf, len) to RGB565 and blit to the screen.
  * Called both after a fresh download and when re-blitting on orientation change.
@@ -7438,8 +7566,18 @@ static bool decode_and_show_jpeg(const uint8_t *buf, int len)
     }
 
     ESP_LOGI(TAG, "jpeg: decoded %ux%u → blitting", out.width, out.height);
+#if CONFIG_CORE2_HW
+    /* Keep the decoded image so pinch-to-zoom can crop/rescale it without
+     * re-decoding on every touch sample. */
+    if (s_jpeg_rgb565) free(s_jpeg_rgb565);
+    s_jpeg_rgb565 = rgb565_buf;
+    s_jpeg_rgb_w  = (int)out.width;
+    s_jpeg_rgb_h  = (int)out.height;
+    pf_redraw_jpeg_view();
+#else
     screen_draw_rgb565(rgb565_buf, (int)out.width, (int)out.height);
     free(rgb565_buf);
+#endif
     return true;
 }
 
@@ -7578,6 +7716,9 @@ static bool download_and_show_jpeg(const char *url)
 
     /* Replace cache — keep compressed bytes for orientation-change redraws */
     if (s_jpeg_cache) { free(s_jpeg_cache); s_jpeg_cache = NULL; }
+#if CONFIG_CORE2_HW
+    pf_free_jpeg_rgb_cache();
+#endif
     s_jpeg_cache     = jpeg_buf;   /* take ownership — do NOT free */
     s_jpeg_cache_len = total;
 
@@ -7627,6 +7768,9 @@ static bool load_and_show_jpeg_file(const char *path)
     }
 
     if (s_jpeg_cache) { free(s_jpeg_cache); s_jpeg_cache = NULL; }
+#if CONFIG_CORE2_HW
+    pf_free_jpeg_rgb_cache();
+#endif
     s_jpeg_cache     = buf;
     s_jpeg_cache_len = (int)nr;
 
@@ -7879,6 +8023,9 @@ void picture_frame_run(void)
      * screen_draw_*() helpers require.  Must happen before any screen call. */
     screen_init();
     screen_set_touch_handler(pf_touch_handler);
+#if CONFIG_CORE2_HW
+    screen_set_pinch_handler(pf_pinch_handler);
+#endif
     ESP_LOGI(TAG, "firmware version %s", g_firmware_version);
     mp3_ensure_task();
     sd_apply_config_if_present();
