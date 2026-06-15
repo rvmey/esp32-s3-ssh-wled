@@ -533,6 +533,13 @@ static float s_pinch_base_cx   = 0.5f;
 static float s_pinch_base_cy   = 0.5f;
 static int   s_pinch_base_mx   = 0;
 static int   s_pinch_base_my   = 0;
+
+/* Double-tap detection for zoom reset */
+#define JPEG_DOUBLE_TAP_MS   400
+#define JPEG_DOUBLE_TAP_DIST 30
+static TickType_t s_jpeg_last_tap_tick = 0;
+static int        s_jpeg_last_tap_x    = 0;
+static int        s_jpeg_last_tap_y    = 0;
 #endif /* CONFIG_CORE2_HW */
 
 /* Persistable display state (set by commands, committed by 'save'). */
@@ -4288,7 +4295,9 @@ static bool pf_menu_handle_swipe(screen_gesture_t gesture)
 
 static bool pf_touch_handler(int x, int y, screen_gesture_t gesture)
 {
+#if !CONFIG_CORE2_HW
     (void)x; (void)y;
+#endif
 #if CONFIG_HARDWARE_CORE2
     s_last_activity_tick = xTaskGetTickCount();
 #endif
@@ -4376,6 +4385,26 @@ static bool pf_touch_handler(int x, int y, screen_gesture_t gesture)
             }
         }
         return true;
+    }
+    if (s_jpeg_rgb565 && gesture == SCREEN_GESTURE_TAP) {
+        TickType_t now = xTaskGetTickCount();
+        int dx = x - s_jpeg_last_tap_x;
+        int dy = y - s_jpeg_last_tap_y;
+        int abs_dx = dx < 0 ? -dx : dx;
+        int abs_dy = dy < 0 ? -dy : dy;
+        bool is_double_tap = (now - s_jpeg_last_tap_tick) <= pdMS_TO_TICKS(JPEG_DOUBLE_TAP_MS) &&
+                              abs_dx <= JPEG_DOUBLE_TAP_DIST && abs_dy <= JPEG_DOUBLE_TAP_DIST;
+        s_jpeg_last_tap_tick = now;
+        s_jpeg_last_tap_x    = x;
+        s_jpeg_last_tap_y    = y;
+        if (is_double_tap && s_jpeg_zoom > 1.0f) {
+            s_jpeg_zoom   = 1.0f;
+            s_jpeg_pan_cx = 0.5f;
+            s_jpeg_pan_cy = 0.5f;
+            pf_redraw_jpeg_view();
+            s_jpeg_last_tap_tick = 0; /* don't chain into a 3rd tap */
+            return true;
+        }
     }
     if (s_jpeg_rgb565 && s_jpeg_zoom > 1.0f &&
             (gesture == SCREEN_GESTURE_SWIPE_LEFT || gesture == SCREEN_GESTURE_SWIPE_RIGHT ||
