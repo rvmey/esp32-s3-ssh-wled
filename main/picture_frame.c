@@ -290,6 +290,7 @@ static const char *TAG = "pf";
 extern const char g_firmware_version[];
 
 #define MP3_ROOT_PATH        "/sdcard"
+#define SD_SETTINGS_PATH     MP3_ROOT_PATH "/core2_settings.cfg"
 #define MP3_MAX_FOLDERS      32
 #define MP3_MAX_TRIGGER_LEN  64
 #define MP3_MAX_PATH_LEN     256
@@ -5523,6 +5524,197 @@ static void rebuild_jpeg_folder_index(void)
     ESP_LOGI(TAG, "jpeg: discovered %u folders with jpeg content", (unsigned)s_jpeg_folder_count);
 }
 
+/* Encode embedded newline bytes as the two-char sequence \n for line-based storage. */
+static void text_encode_newlines(const char *src, char *dst, size_t dst_sz)
+{
+    size_t out = 0;
+    for (size_t i = 0; src[i] && out + 1 < dst_sz; i++) {
+        if (src[i] == '\n') {
+            if (out + 2 >= dst_sz) break;
+            dst[out++] = '\\';
+            dst[out++] = 'n';
+        } else {
+            dst[out++] = src[i];
+        }
+    }
+    dst[out] = '\0';
+}
+
+/* Decode two-char \n sequence back to a newline byte. */
+static void text_decode_newlines(const char *src, char *dst, size_t dst_sz)
+{
+    size_t out = 0;
+    for (size_t i = 0; src[i] && out + 1 < dst_sz; i++) {
+        if (src[i] == '\\' && src[i + 1] == 'n') {
+            dst[out++] = '\n';
+            i++;
+        } else {
+            dst[out++] = src[i];
+        }
+    }
+    dst[out] = '\0';
+}
+
+/* Apply a fully-populated display state — shared by SD and NVS restore paths. */
+static void apply_restored_display_state(uint8_t bg_r, uint8_t bg_g, uint8_t bg_b,
+                                          uint8_t fg_r, uint8_t fg_g, uint8_t fg_b,
+                                          uint8_t orient, uint8_t font_scale,
+                                          const char *text, uint8_t mp3_mode,
+                                          const char *jpeg_url)
+{
+    /* Guard against invisible text when saved fg/bg are identical or near-identical. */
+    {
+        int dr = (int)fg_r - (int)bg_r; if (dr < 0) dr = -dr;
+        int dg = (int)fg_g - (int)bg_g; if (dg < 0) dg = -dg;
+        int db = (int)fg_b - (int)bg_b; if (db < 0) db = -db;
+        if (dr < 24 && dg < 24 && db < 24) {
+            int luma = ((int)bg_r * 299 + (int)bg_g * 587 + (int)bg_b * 114) / 1000;
+            if (luma >= 128) { fg_r = fg_g = fg_b = 0; }
+            else             { fg_r = fg_g = fg_b = 255; }
+            ESP_LOGW(TAG, "restore: adjusted text color for contrast");
+        }
+    }
+
+    if (font_scale < 1) font_scale = 1;
+    if (font_scale > 8) font_scale = 8;
+
+    screen_set_landscape(orient != 0);
+    screen_set_color(bg_r, bg_g, bg_b);
+    screen_set_text_color(fg_r, fg_g, fg_b);
+    screen_set_font_scale(font_scale);
+
+    strncpy(s_last_text, text, sizeof(s_last_text) - 1);
+    s_last_text[sizeof(s_last_text) - 1] = '\0';
+
+    if (mp3_mode) {
+        if (s_sd_mounted && s_mp3_folder_count > 0) {
+            mp3_start_track(0, -1, false);
+            ESP_LOGI(TAG, "Restored saved display state (music mode — started immediately)");
+        } else {
+            s_mp3_autostart = true;
+            ESP_LOGI(TAG, "Restored saved display state (music mode — autostart pending SD mount)");
+        }
+        return;
+    }
+
+    if (jpeg_url[0]) {
+        strncpy(s_current_jpeg_url, jpeg_url, sizeof(s_current_jpeg_url) - 1);
+        s_current_jpeg_url[sizeof(s_current_jpeg_url) - 1] = '\0';
+        if (jpeg_url[0] == '/') {
+            strncpy(s_pending_jpeg_file_path, jpeg_url, sizeof(s_pending_jpeg_file_path) - 1);
+            s_pending_jpeg_file_path[sizeof(s_pending_jpeg_file_path) - 1] = '\0';
+            s_pending_jpeg_file = true;
+        } else {
+            strncpy(s_pending_jpeg_url, jpeg_url, sizeof(s_pending_jpeg_url) - 1);
+            s_pending_jpeg_url[sizeof(s_pending_jpeg_url) - 1] = '\0';
+            s_pending_jpeg = true;
+        }
+    } else {
+        s_current_jpeg_url[0] = '\0';
+        if (s_last_text[0]) {
+            screen_draw_text(s_last_text);
+        } else {
+            strncpy(s_last_text, "Connected!\nWaiting for\ncommands...", sizeof(s_last_text) - 1);
+            s_last_text[sizeof(s_last_text) - 1] = '\0';
+            screen_draw_text(s_last_text);
+        }
+    }
+}
+
+/* Write display settings to SD card as a plain-text key=value file.
+ * Called alongside NVS save so settings survive a reflash or card swap. */
+static bool save_display_state_to_sd(void)
+{
+    if (!mount_sd_card_if_needed()) return false;
+
+    uint8_t bg_r = 0, bg_g = 0, bg_b = 0;
+    uint8_t fg_r = 255, fg_g = 255, fg_b = 255;
+    bool landscape = false;
+    int font_scale = 2;
+    screen_get_color(&bg_r, &bg_g, &bg_b);
+    screen_get_text_color(&fg_r, &fg_g, &fg_b);
+    screen_get_landscape(&landscape);
+    screen_get_font_scale(&font_scale);
+
+    bool music_active = s_mp3.active && s_mp3_ui_override_allowed;
+    const char *jpeg_url = "";
+    if (!music_active && s_jpeg_cache && s_jpeg_cache_len > 0 && s_current_jpeg_url[0]) {
+        jpeg_url = s_current_jpeg_url;
+    }
+
+    char text_enc[sizeof(s_last_text) * 2 + 1];
+    text_encode_newlines(s_last_text, text_enc, sizeof(text_enc));
+
+    FILE *f = fopen(SD_SETTINGS_PATH, "w");
+    if (!f) {
+        ESP_LOGW(TAG, "save_sd: cannot create %s", SD_SETTINGS_PATH);
+        return false;
+    }
+    fprintf(f, "bg=%u,%u,%u\n",  bg_r, bg_g, bg_b);
+    fprintf(f, "fg=%u,%u,%u\n",  fg_r, fg_g, fg_b);
+    fprintf(f, "orient=%u\n",    (unsigned)(landscape ? 1 : 0));
+    fprintf(f, "font=%d\n",      font_scale);
+    fprintf(f, "mp3=%u\n",       (unsigned)(music_active ? 1 : 0));
+    fprintf(f, "jpeg=%s\n",      jpeg_url);
+    fprintf(f, "text=%s\n",      text_enc);
+    fclose(f);
+    ESP_LOGI(TAG, "save_sd: settings written to %s", SD_SETTINGS_PATH);
+    return true;
+}
+
+/* Try to read display settings from the SD card.  Returns true and applies
+ * the state when the file is found; returns false if no SD or no file. */
+static bool restore_display_state_from_sd(void)
+{
+    if (!mount_sd_card_if_needed()) return false;
+
+    FILE *f = fopen(SD_SETTINGS_PATH, "r");
+    if (!f) return false;
+
+    uint8_t bg_r = 0, bg_g = 0, bg_b = 0;
+    uint8_t fg_r = 255, fg_g = 255, fg_b = 255;
+    uint8_t orient = 0, font_scale = 2, mp3_mode = 0;
+    /* Encode buffer: worst case every char in s_last_text is a newline (2× size) */
+    char text_enc[sizeof(s_last_text) * 2 + 1] = {0};
+    char jpeg_url[sizeof(s_current_jpeg_url)] = {0};
+
+    /* Line buffer: big enough for the text= line (encoded + key + newline) */
+    char line[sizeof(s_last_text) * 2 + 16];
+    while (fgets(line, (int)sizeof(line), f)) {
+        size_t len = strlen(line);
+        while (len > 0 && (line[len - 1] == '\n' || line[len - 1] == '\r'))
+            line[--len] = '\0';
+
+        unsigned int a, b, c;
+        if      (sscanf(line, "bg=%u,%u,%u", &a, &b, &c) == 3) {
+            bg_r = (uint8_t)a; bg_g = (uint8_t)b; bg_b = (uint8_t)c;
+        } else if (sscanf(line, "fg=%u,%u,%u", &a, &b, &c) == 3) {
+            fg_r = (uint8_t)a; fg_g = (uint8_t)b; fg_b = (uint8_t)c;
+        } else if (sscanf(line, "orient=%u", &a) == 1) {
+            orient = (uint8_t)a;
+        } else if (sscanf(line, "font=%u",   &a) == 1) {
+            font_scale = (uint8_t)a;
+        } else if (sscanf(line, "mp3=%u",    &a) == 1) {
+            mp3_mode = (uint8_t)a;
+        } else if (strncmp(line, "jpeg=", 5) == 0) {
+            strncpy(jpeg_url, line + 5, sizeof(jpeg_url) - 1);
+            jpeg_url[sizeof(jpeg_url) - 1] = '\0';
+        } else if (strncmp(line, "text=", 5) == 0) {
+            strncpy(text_enc, line + 5, sizeof(text_enc) - 1);
+            text_enc[sizeof(text_enc) - 1] = '\0';
+        }
+    }
+    fclose(f);
+
+    char text[sizeof(s_last_text)] = {0};
+    text_decode_newlines(text_enc, text, sizeof(text));
+
+    apply_restored_display_state(bg_r, bg_g, bg_b, fg_r, fg_g, fg_b,
+                                  orient, font_scale, text, mp3_mode, jpeg_url);
+    ESP_LOGI(TAG, "restore: display state loaded from SD card (%s)", SD_SETTINGS_PATH);
+    return true;
+}
+
 static esp_err_t save_display_state_to_nvs(void)
 {
     uint8_t bg_r = 0, bg_g = 0, bg_b = 0;
@@ -5557,11 +5749,18 @@ static esp_err_t save_display_state_to_nvs(void)
         if ((err = nvs_erase_key_local(NVS_KEY_JPEGURL)) != ESP_OK) return err;
     }
 
-    return nvs_write_u8(NVS_KEY_SAVED, 1);
+    esp_err_t result = nvs_write_u8(NVS_KEY_SAVED, 1);
+    if (result == ESP_OK) {
+        save_display_state_to_sd();   /* best-effort; failures are logged and ignored */
+    }
+    return result;
 }
 
 static void restore_display_state_from_nvs(void)
 {
+    /* SD card takes priority — settings there survive reflashing or device swap. */
+    if (restore_display_state_from_sd()) return;
+
     uint8_t saved = 0;
     if (!nvs_read_u8(NVS_KEY_SAVED, &saved) || saved != 1) {
         /* Nothing saved yet (e.g. right after pairing) — show the idle
@@ -5574,8 +5773,7 @@ static void restore_display_state_from_nvs(void)
 
     uint8_t bg_r = 0, bg_g = 0, bg_b = 0;
     uint8_t fg_r = 255, fg_g = 255, fg_b = 255;
-    uint8_t orient = 0;
-    uint8_t font_scale = 2;
+    uint8_t orient = 0, font_scale = 2;
     char text[sizeof(s_last_text)] = {0};
     char jpeg_url[sizeof(s_current_jpeg_url)] = {0};
 
@@ -5592,84 +5790,23 @@ static void restore_display_state_from_nvs(void)
         screen_get_font_scale(&fs);
         font_scale = (uint8_t)fs;
     }
-    nvs_read_u8(NVS_KEY_BG_R, &bg_r);
-    nvs_read_u8(NVS_KEY_BG_G, &bg_g);
-    nvs_read_u8(NVS_KEY_BG_B, &bg_b);
-    nvs_read_u8(NVS_KEY_FG_R, &fg_r);
-    nvs_read_u8(NVS_KEY_FG_G, &fg_g);
-    nvs_read_u8(NVS_KEY_FG_B, &fg_b);
+    nvs_read_u8(NVS_KEY_BG_R,  &bg_r);
+    nvs_read_u8(NVS_KEY_BG_G,  &bg_g);
+    nvs_read_u8(NVS_KEY_BG_B,  &bg_b);
+    nvs_read_u8(NVS_KEY_FG_R,  &fg_r);
+    nvs_read_u8(NVS_KEY_FG_G,  &fg_g);
+    nvs_read_u8(NVS_KEY_FG_B,  &fg_b);
     nvs_read_u8(NVS_KEY_ORIENT, &orient);
-    nvs_read_u8(NVS_KEY_FONT, &font_scale);
-    nvs_read_str(NVS_KEY_TEXT, text, sizeof(text));
+    nvs_read_u8(NVS_KEY_FONT,   &font_scale);
+    nvs_read_str(NVS_KEY_TEXT,    text,     sizeof(text));
     nvs_read_str(NVS_KEY_JPEGURL, jpeg_url, sizeof(jpeg_url));
-
-    /* Guard against invisible text when saved fg/bg are identical or near-identical. */
-    {
-        int dr = (int)fg_r - (int)bg_r; if (dr < 0) dr = -dr;
-        int dg = (int)fg_g - (int)bg_g; if (dg < 0) dg = -dg;
-        int db = (int)fg_b - (int)bg_b; if (db < 0) db = -db;
-        if (dr < 24 && dg < 24 && db < 24) {
-            int luma = ((int)bg_r * 299 + (int)bg_g * 587 + (int)bg_b * 114) / 1000;
-            if (luma >= 128) {
-                fg_r = fg_g = fg_b = 0;
-            } else {
-                fg_r = fg_g = fg_b = 255;
-            }
-            ESP_LOGW(TAG, "restore: adjusted text color for contrast");
-        }
-    }
-
-    if (font_scale < 1) font_scale = 1;
-    if (font_scale > 8) font_scale = 8;
-
-    screen_set_landscape(orient != 0);
-    screen_set_color(bg_r, bg_g, bg_b);
-    screen_set_text_color(fg_r, fg_g, fg_b);
-    screen_set_font_scale(font_scale);
-
-    strncpy(s_last_text, text, sizeof(s_last_text) - 1);
-    s_last_text[sizeof(s_last_text) - 1] = '\0';
 
     uint8_t mp3_mode = 0;
     nvs_read_u8(NVS_KEY_MP3_MODE, &mp3_mode);
 
-    if (mp3_mode) {
-        if (s_sd_mounted && s_mp3_folder_count > 0) {
-            mp3_start_track(0, -1, false);
-            ESP_LOGI(TAG, "Restored saved display state (music mode — started immediately)");
-        } else {
-            s_mp3_autostart = true;
-            ESP_LOGI(TAG, "Restored saved display state (music mode — autostart pending SD mount)");
-        }
-        return;
-    }
-
-    if (jpeg_url[0]) {
-        strncpy(s_current_jpeg_url, jpeg_url, sizeof(s_current_jpeg_url) - 1);
-        s_current_jpeg_url[sizeof(s_current_jpeg_url) - 1] = '\0';
-        if (jpeg_url[0] == '/') {
-            /* Local SD card path (e.g. "/sdcard/pictures/foo.jpg"), not a
-             * downloadable URL — load it directly from the filesystem. */
-            strncpy(s_pending_jpeg_file_path, jpeg_url, sizeof(s_pending_jpeg_file_path) - 1);
-            s_pending_jpeg_file_path[sizeof(s_pending_jpeg_file_path) - 1] = '\0';
-            s_pending_jpeg_file = true;
-        } else {
-            strncpy(s_pending_jpeg_url, jpeg_url, sizeof(s_pending_jpeg_url) - 1);
-            s_pending_jpeg_url[sizeof(s_pending_jpeg_url) - 1] = '\0';
-            s_pending_jpeg = true;
-        }
-    } else {
-        s_current_jpeg_url[0] = '\0';
-        if (s_last_text[0]) {
-            screen_draw_text(s_last_text);
-        } else {
-            strncpy(s_last_text, "Connected!\nWaiting for\ncommands...", sizeof(s_last_text) - 1);
-            s_last_text[sizeof(s_last_text) - 1] = '\0';
-            screen_draw_text(s_last_text);
-        }
-    }
-
-    ESP_LOGI(TAG, "Restored saved display state");
+    apply_restored_display_state(bg_r, bg_g, bg_b, fg_r, fg_g, fg_b,
+                                  orient, font_scale, text, mp3_mode, jpeg_url);
+    ESP_LOGI(TAG, "Restored saved display state from NVS");
 }
 
 
@@ -7274,11 +7411,35 @@ static void pf_event_handler(const char *event_name,
             ESP_LOGI(TAG, "save: display state persisted");
             bool landscape = false;
             int font_scale = 2;
+            uint8_t bg_r = 0, bg_g = 0, bg_b = 0;
+            uint8_t fg_r = 255, fg_g = 255, fg_b = 255;
             screen_get_landscape(&landscape);
             screen_get_font_scale(&font_scale);
-            char msg[96];
-            snprintf(msg, sizeof(msg), "Saved settings\n%s\nFont size %d",
-                     landscape ? "Landscape" : "Portrait", font_scale);
+            screen_get_color(&bg_r, &bg_g, &bg_b);
+            screen_get_text_color(&fg_r, &fg_g, &fg_b);
+            bool music_active = s_mp3.active && s_mp3_ui_override_allowed;
+            char msg[256];
+            int mlen = 0;
+            mlen += snprintf(msg + mlen, sizeof(msg) - mlen,
+                             "Saved settings\n%s Font%d\nBG %u,%u,%u\nFG %u,%u,%u\n",
+                             landscape ? "Land" : "Port", font_scale,
+                             bg_r, bg_g, bg_b, fg_r, fg_g, fg_b);
+            if (music_active) {
+                mlen += snprintf(msg + mlen, sizeof(msg) - mlen, "Music: On\n");
+            } else if (s_jpeg_cache && s_jpeg_cache_len > 0 && s_current_jpeg_url[0]) {
+                mlen += snprintf(msg + mlen, sizeof(msg) - mlen,
+                                 "%.18s\n", s_current_jpeg_url);
+            } else if (s_last_text[0]) {
+                /* Show first line of text, up to 16 chars */
+                char tline[17];
+                strncpy(tline, s_last_text, sizeof(tline) - 1);
+                tline[sizeof(tline) - 1] = '\0';
+                char *nl = strchr(tline, '\n');
+                if (nl) *nl = '\0';
+                mlen += snprintf(msg + mlen, sizeof(msg) - mlen, "Txt:%.13s\n", tline);
+            }
+            snprintf(msg + mlen, sizeof(msg) - mlen, "%s",
+                     s_sd_mounted ? "SD card + NVS" : "NVS only");
             screen_draw_text(msg);
         }
 
