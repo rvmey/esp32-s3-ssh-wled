@@ -435,6 +435,20 @@ static int           s_folder_list_count = 0;
  * dispatching "files" runs pf_event_handler (SD card I/O) which needs more
  * stack than touch_poll_task's 3KB. -1 means no tap pending. */
 static volatile int  s_pending_folder_tap_idx = -1;
+
+/* Set while the SD-card file list (from the "files" command) is on screen;
+ * tapping an .mp3 plays it and tapping a .jpg/.jpeg displays it. Names,
+ * types, and per-type indices are stored in the same top-to-bottom order
+ * they were drawn, one per line below the "<folder>:" header line. */
+#define PF_FILE_LIST_MAX 16
+typedef enum { PF_FILE_OTHER, PF_FILE_MP3, PF_FILE_JPEG } pf_file_type_t;
+static volatile bool  s_file_list_display_active = false;
+static char           s_file_list_folder_trigger[MP3_MAX_TRIGGER_LEN];
+static char           s_file_list_folder_path[MP3_MAX_PATH_LEN];
+static char           s_file_list_names[PF_FILE_LIST_MAX][MP3_MAX_FILE_LEN];
+static pf_file_type_t s_file_list_types[PF_FILE_LIST_MAX];
+static int            s_file_list_subidx[PF_FILE_LIST_MAX];
+static int            s_file_list_count = 0;
 #endif
 
 /* Pending run/save — set by the WS event task, consumed by the main loop */
@@ -1440,6 +1454,8 @@ static bool pf_reboot_touch_handler(int x, int y, screen_gesture_t gesture)
 }
 static bool mp3_advance_track(int step, const char *reason);
 static bool mp3_start_track(int folder_idx, int track_idx, bool keep_position);
+static int  mp3_find_folder_trigger(const char *trigger);
+static int  jpeg_find_folder_trigger(const char *trigger);
 static bool mp3_handle_track_end(void);
 static bool mp3_queue_seek_relative(int32_t delta_ms, const char *reason);
 static void mp3_log_mode_status(const char *reason);
@@ -4323,6 +4339,44 @@ static bool pf_touch_handler(int x, int y, screen_gesture_t gesture)
         }
         return true;
     }
+    if (s_file_list_display_active && gesture == SCREEN_GESTURE_TAP) {
+        /* The file list was drawn at font scale 2 (32px rows), with the
+         * "<folder>:" header on row 0 and file names on the rows below. */
+        bool landscape = true;
+        screen_get_landscape(&landscape);
+        int lcd_h_val = landscape ? 240 : 320;
+        int ch = 32;
+        int total_lines = 1 + s_file_list_count;
+        int start_y = (lcd_h_val - total_lines * ch) / 2;
+        if (start_y < 0) start_y = 0;
+        int row = (y - start_y) / ch;
+        int idx = row - 1;
+        if (idx >= 0 && idx < s_file_list_count) {
+            s_file_list_display_active = false;
+            if (s_file_list_types[idx] == PF_FILE_MP3) {
+                int folder_idx = mp3_find_folder_trigger(s_file_list_folder_trigger);
+                if (folder_idx >= 0) {
+                    mp3_start_track(folder_idx, s_file_list_subidx[idx], false);
+                }
+            } else if (s_file_list_types[idx] == PF_FILE_JPEG) {
+                int jpeg_folder_idx = jpeg_find_folder_trigger(s_file_list_folder_trigger);
+                char file_path[MP3_MAX_PATH_LEN + MP3_MAX_FILE_LEN + 4];
+                snprintf(file_path, sizeof(file_path), "%s/%s",
+                         s_file_list_folder_path, s_file_list_names[idx]);
+                s_mp3_ui_override_allowed = false;
+                s_pending_jpeg = false;
+                if (jpeg_folder_idx >= 0) {
+                    s_jpeg_folder_display_active = true;
+                    s_jpeg_folder_display_idx    = jpeg_folder_idx;
+                    s_jpeg_folder_image_idx       = s_file_list_subidx[idx];
+                }
+                strncpy(s_pending_jpeg_file_path, file_path, sizeof(s_pending_jpeg_file_path) - 1);
+                s_pending_jpeg_file_path[sizeof(s_pending_jpeg_file_path) - 1] = '\0';
+                s_pending_jpeg_file = true;
+            }
+        }
+        return true;
+    }
 #endif
     if (s_jpeg_folder_display_active &&
             (gesture == SCREEN_GESTURE_SWIPE_LEFT || gesture == SCREEN_GESTURE_SWIPE_RIGHT)) {
@@ -6758,6 +6812,7 @@ static void pf_event_handler(const char *event_name,
 #if CONFIG_CORE2_HW
     s_battery_display_active = false;
     s_folder_list_display_active = false;
+    s_file_list_display_active = false;
 #endif
     s_jpeg_folder_display_active = false;
 
@@ -6982,6 +7037,14 @@ static void pf_event_handler(const char *event_name,
             if (!d) {
                 screen_draw_text("Folder not\nfound");
             } else {
+#if CONFIG_CORE2_HW
+                s_file_list_count = 0;
+                int mp3_idx = 0, jpeg_idx = 0;
+                strncpy(s_file_list_folder_trigger, s_params, sizeof(s_file_list_folder_trigger) - 1);
+                s_file_list_folder_trigger[sizeof(s_file_list_folder_trigger) - 1] = '\0';
+                strncpy(s_file_list_folder_path, dir_path, sizeof(s_file_list_folder_path) - 1);
+                s_file_list_folder_path[sizeof(s_file_list_folder_path) - 1] = '\0';
+#endif
                 char msg[256];
                 int msg_len = snprintf(msg, sizeof(msg), "%s:", s_params);
                 char json_arr[512];
@@ -6998,6 +7061,25 @@ static void pf_event_handler(const char *event_name,
                         memcpy(msg + msg_len, e->d_name, (size_t)nlen);
                         msg_len += nlen;
                         msg[msg_len] = '\0';
+#if CONFIG_CORE2_HW
+                        if (s_file_list_count < PF_FILE_LIST_MAX) {
+                            strncpy(s_file_list_names[s_file_list_count], e->d_name,
+                                    sizeof(s_file_list_names[0]) - 1);
+                            s_file_list_names[s_file_list_count]
+                                [sizeof(s_file_list_names[0]) - 1] = '\0';
+                            if (is_mp3_file_name(e->d_name)) {
+                                s_file_list_types[s_file_list_count]  = PF_FILE_MP3;
+                                s_file_list_subidx[s_file_list_count] = mp3_idx++;
+                            } else if (is_jpeg_file_name(e->d_name)) {
+                                s_file_list_types[s_file_list_count]  = PF_FILE_JPEG;
+                                s_file_list_subidx[s_file_list_count] = jpeg_idx++;
+                            } else {
+                                s_file_list_types[s_file_list_count]  = PF_FILE_OTHER;
+                                s_file_list_subidx[s_file_list_count] = -1;
+                            }
+                            s_file_list_count++;
+                        }
+#endif
                     }
                     int ja_need = (jfirst ? 0 : 1) + 4 + nlen;
                     if (ja + ja_need < (int)sizeof(json_arr) - 2) {
@@ -7018,6 +7100,9 @@ static void pf_event_handler(const char *event_name,
                 s_pending_has_result = true;
                 ESP_LOGI(TAG, "files: %d file(s) in %s, result: %s", count, dir_path, s_pending_result);
                 screen_draw_text(count > 0 ? msg : "Empty folder");
+#if CONFIG_CORE2_HW
+                s_file_list_display_active = (count > 0);
+#endif
             }
         }
 
