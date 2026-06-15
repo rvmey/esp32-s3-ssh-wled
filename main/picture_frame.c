@@ -453,6 +453,10 @@ static char           s_file_list_names[PF_FILE_LIST_MAX][MP3_MAX_FILE_LEN];
 static pf_file_type_t s_file_list_types[PF_FILE_LIST_MAX];
 static int            s_file_list_subidx[PF_FILE_LIST_MAX];
 static int            s_file_list_count = 0;
+
+/* Font scale saved when entering the folder/file list display, like the
+ * menu's own saved scale; -1 means not currently saved. */
+static int            s_list_saved_font_scale = -1;
 #endif
 
 /* Pending run/save — set by the WS event task, consumed by the main loop */
@@ -4214,6 +4218,27 @@ static void pf_menu_render(void)
     screen_draw_text(buf);
 }
 
+/* The folder/file list screens are always shown at font scale 2, like the
+ * menu, independent of the user's font-size setting. Call before drawing
+ * either list; saves the current scale on first entry (no-op on the
+ * folders -> files transition, which stays in list mode). */
+static void pf_list_enter_scale2(void)
+{
+    if (s_list_saved_font_scale < 0) {
+        screen_get_font_scale(&s_list_saved_font_scale);
+    }
+    screen_set_font_scale_silent(2);
+}
+
+/* Restore the font scale saved by pf_list_enter_scale2(), if any. */
+static void pf_list_restore_scale(void)
+{
+    if (s_list_saved_font_scale >= 1) {
+        screen_set_font_scale_silent(s_list_saved_font_scale);
+        s_list_saved_font_scale = -1;
+    }
+}
+
 static void pf_menu_open(void)
 {
     s_menu_active = true;
@@ -4251,6 +4276,7 @@ static void pf_menu_close(void)
     s_battery_display_active = false;
     s_folder_list_display_active = false;
     s_file_list_display_active = false;
+    pf_list_restore_scale();
     if (s_jpeg_cache) {
         s_pending_jpeg_redraw = true;
     } else if (s_mp3.active && s_mp3_ui_override_allowed) {
@@ -4373,6 +4399,7 @@ static bool pf_touch_handler(int x, int y, screen_gesture_t gesture)
         int idx = row - 1;
         if (idx >= 0 && idx < s_file_list_count) {
             s_file_list_display_active = false;
+            pf_list_restore_scale();
             if (s_file_list_types[idx] == PF_FILE_MP3) {
                 int folder_idx = mp3_find_folder_trigger(s_file_list_folder_trigger);
                 if (folder_idx >= 0) {
@@ -6882,6 +6909,12 @@ static void pf_event_handler(const char *event_name,
              s_trigger, s_id, s_params);
 
 #if CONFIG_CORE2_HW
+    /* Leaving the folder/file list display for anything other than the
+     * folders -> files drill-down: restore the pre-list font scale. */
+    if ((s_folder_list_display_active || s_file_list_display_active) &&
+        strcmp(s_trigger, "files") != 0) {
+        pf_list_restore_scale();
+    }
     s_battery_display_active = false;
     s_folder_list_display_active = false;
     s_file_list_display_active = false;
@@ -7089,6 +7122,9 @@ static void pf_event_handler(const char *event_name,
                 s_pending_result[sizeof(s_pending_result) - 1] = '\0';
                 s_pending_has_result = true;
                 ESP_LOGI(TAG, "folders: %d folder(s) on SD, result: %s", count, s_pending_result);
+#if CONFIG_CORE2_HW
+                if (count > 0) pf_list_enter_scale2();
+#endif
                 screen_draw_text(count > 0 ? msg : "No folders\non SD card");
 #if CONFIG_CORE2_HW
                 s_folder_list_display_active = (count > 0);
@@ -7172,6 +7208,9 @@ static void pf_event_handler(const char *event_name,
                 s_pending_result[sizeof(s_pending_result) - 1] = '\0';
                 s_pending_has_result = true;
                 ESP_LOGI(TAG, "files: %d file(s) in %s, result: %s", count, dir_path, s_pending_result);
+#if CONFIG_CORE2_HW
+                if (count > 0) pf_list_enter_scale2();
+#endif
                 screen_draw_text(count > 0 ? msg : "Empty folder");
 #if CONFIG_CORE2_HW
                 s_file_list_display_active = (count > 0);
