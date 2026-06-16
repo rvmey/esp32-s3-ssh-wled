@@ -39,6 +39,7 @@ real time.
 | `jpeg` | Download and display a JPEG from a URL |
 | `savepic` | Save the currently displayed JPEG to `/saved-jpegs` on the SD card |
 | `folders` / `files` | List SD card folders / files in a folder |
+| `backup` | Upload the entire SD card to a server — one file per request, preserving the folder structure (set `backup_url` in [`config.txt`](#sd-card-configuration)) |
 | Per-folder picture commands | Auto-generated for each folder of JPEGs on the SD card — display the Nth (or first/random) image in that folder |
 | Per-folder music commands | Auto-generated for each folder of MP3s on the SD card — play the Nth (or first/random, if shuffle is on) track in that folder (see [Bluetooth MP3 playback](#bluetooth-mp3-playback)) |
 | `save` | Persist display state (colors, font, orientation, text, JPEG URL) to NVS and, if an SD card is present, to `/sdcard/core2_settings.cfg`; restored on reboot (SD takes priority over NVS) |
@@ -154,9 +155,15 @@ password3=thirdpass
 # OpenAI API key (used for listen/askpic/askgpt/speak)
 openai_key=sk-proj-...
 
+# Optional: server endpoint for the `backup` command
+backup_url=http://192.168.1.10:8080/upload
+
 # Optional: keep secrets on the SD card only (do not copy them to NVS)
 # secrets_in_sd=1
 ```
+
+`backup_url` is not a secret, so it is never moved to NVS and stays in
+`config.txt`; the `backup` command reads it fresh each time it runs.
 
 #### Default behaviour (`secrets_in_sd` absent or `=0`)
 
@@ -217,6 +224,51 @@ device using the same SD card.
 
 After a successful `save`, the result screen shows all saved values and
 confirms where they were written ("SD card + NVS" or "NVS only").
+
+---
+
+## Backing up the SD card
+
+The `backup` command walks the **entire** SD card and uploads every file to a
+server you run, so you can archive your pictures, music, and configuration off
+the device.
+
+1. Add a `backup_url` line to [`config.txt`](#sd-card-configuration) pointing at
+   your server (HTTP or HTTPS).
+2. Run the `backup` command from TRIGGERcmd. The screen shows a running file
+   count while it works and a summary (`Backup done / N files`) when finished;
+   the TRIGGERcmd run result reports the same count.
+
+Each file is sent as its own `multipart/form-data` POST with two fields:
+
+| Field | Contents |
+|-------|----------|
+| `path` | The file's path relative to the SD root, e.g. `music/song.mp3` (use this to recreate the folder structure) |
+| `file` | The raw file bytes (streamed in chunks, so large files work without exhausting RAM) |
+
+A POST is considered successful on any HTTP `2xx` response; failures are retried
+once and then counted in the summary. Dotfiles and the transient `tmp_tts.mp3`
+are skipped.
+
+A minimal Python/Flask receiver:
+
+```python
+import os
+from flask import Flask, request
+
+app = Flask(__name__)
+DEST = "backups"
+
+@app.post("/upload")
+def upload():
+    rel = request.form["path"]
+    dst = os.path.join(DEST, rel)
+    os.makedirs(os.path.dirname(dst), exist_ok=True)
+    request.files["file"].save(dst)
+    return "ok"
+
+app.run(host="0.0.0.0", port=8080)
+```
 
 ---
 
