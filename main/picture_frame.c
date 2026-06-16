@@ -6291,8 +6291,14 @@ static bool pf_upload_file(const char *fullpath, const char *relpath, const char
     if (stat(fullpath, &st) != 0 || !S_ISREG(st.st_mode)) return false;
     long fsize = (long)st.st_size;
 
-    char part_hdr[1024];
-    int hdr_len = snprintf(part_hdr, sizeof(part_hdr),
+    /* Allocate the multipart header from PSRAM (with internal fallback) so it
+     * does not consume the internal stack, which is already deep by the time
+     * we reach this function (pf_backup_task → pf_backup_sd → pf_backup_dir
+     * → pf_upload_file) and esp_http_client_open adds several more KB. */
+    char *part_hdr = heap_caps_malloc(1024, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!part_hdr) part_hdr = heap_caps_malloc(1024, MALLOC_CAP_8BIT);
+    if (!part_hdr) return false;
+    int hdr_len = snprintf(part_hdr, 1024,
         "--" PF_BACKUP_BOUNDARY "\r\n"
         "Content-Disposition: form-data; name=\"path\"\r\n\r\n"
         "%s\r\n"
@@ -6302,7 +6308,7 @@ static bool pf_upload_file(const char *fullpath, const char *relpath, const char
         relpath, relpath);
     static const char FOOTER[] = "\r\n--" PF_BACKUP_BOUNDARY "--\r\n";
     int footer_len = (int)strlen(FOOTER);
-    if (hdr_len < 0 || hdr_len >= (int)sizeof(part_hdr)) return false;
+    if (hdr_len < 0 || hdr_len >= 1024) { free(part_hdr); return false; }
 
     int total_len = hdr_len + (int)fsize + footer_len;
     char content_type[] = "multipart/form-data; boundary=" PF_BACKUP_BOUNDARY;
@@ -6310,7 +6316,7 @@ static bool pf_upload_file(const char *fullpath, const char *relpath, const char
     bool ok = false;
     for (int attempt = 1; attempt <= 2 && !ok; attempt++) {
         FILE *fp = fopen(fullpath, "rb");
-        if (!fp) return false;
+        if (!fp) { free(part_hdr); return false; }
 
         esp_http_client_config_t cfg = {
             .url               = url,
@@ -6328,7 +6334,7 @@ static bool pf_upload_file(const char *fullpath, const char *relpath, const char
             cfg.crt_bundle_attach = esp_crt_bundle_attach;
 
         esp_http_client_handle_t client = esp_http_client_init(&cfg);
-        if (!client) { fclose(fp); return false; }
+        if (!client) { fclose(fp); free(part_hdr); return false; }
         esp_http_client_set_header(client, "Content-Type", content_type);
 
         if (esp_http_client_open(client, total_len) != ESP_OK) {
@@ -6369,6 +6375,7 @@ static bool pf_upload_file(const char *fullpath, const char *relpath, const char
         fclose(fp);
         if (!ok && attempt < 2) vTaskDelay(pdMS_TO_TICKS(300));
     }
+    free(part_hdr);
     return ok;
 }
 
@@ -6383,18 +6390,29 @@ static void pf_backup_dir(const char *dirpath, const char *relbase,
 {
     DIR *d = opendir(dirpath);
     if (!d) return;
+
+    /* Allocate path buffers from PSRAM so they don't eat the task stack at
+     * every recursion level (pf_backup_task → pf_backup_sd → pf_backup_dir
+     * is already several hundred bytes before we reach this call). */
+    size_t path_buf_sz = (size_t)(MP3_MAX_PATH_LEN + 64);
+    char *child = heap_caps_malloc(path_buf_sz, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!child) child = heap_caps_malloc(path_buf_sz, MALLOC_CAP_8BIT);
+    char *rel   = heap_caps_malloc(path_buf_sz, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!rel)   rel   = heap_caps_malloc(path_buf_sz, MALLOC_CAP_8BIT);
+    if (!child || !rel) {
+        free(child); free(rel); closedir(d); return;
+    }
+
     struct dirent *e;
     while ((e = readdir(d)) != NULL) {
         if (e->d_name[0] == '.') continue;                    /* . .. and dotfiles */
         if (strcmp(e->d_name, "tmp_tts.mp3") == 0) continue;  /* transient TTS file */
 
-        char child[MP3_MAX_PATH_LEN + 64];
-        snprintf(child, sizeof(child), "%s/%s", dirpath, e->d_name);
-        char rel[MP3_MAX_PATH_LEN + 64];
+        snprintf(child, path_buf_sz, "%s/%s", dirpath, e->d_name);
         if (relbase[0])
-            snprintf(rel, sizeof(rel), "%s/%s", relbase, e->d_name);
+            snprintf(rel, path_buf_sz, "%s/%s", relbase, e->d_name);
         else
-            snprintf(rel, sizeof(rel), "%s", e->d_name);
+            snprintf(rel, path_buf_sz, "%s", e->d_name);
 
         struct stat st;
         if (stat(child, &st) != 0) continue;
@@ -6411,6 +6429,8 @@ static void pf_backup_dir(const char *dirpath, const char *relbase,
             vTaskDelay(pdMS_TO_TICKS(10));   /* yield SPI/CPU between files */
         }
     }
+    free(child);
+    free(rel);
     closedir(d);
 }
 
@@ -9871,7 +9891,7 @@ void picture_frame_run(void)
                     ESP_LOGW(TAG, "backup: already running, ignoring re-dispatch");
                 } else {
                     s_backup_running = true;
-                    if (xTaskCreate(pf_backup_task, "pf_backup", 8192, NULL,
+                    if (xTaskCreate(pf_backup_task, "pf_backup", 16384, NULL,
                                     4, NULL) != pdPASS) {
                         s_backup_running = false;
                         ESP_LOGE(TAG, "backup: failed to create task");
