@@ -383,6 +383,7 @@ static const char *tcmd_display_host(void)
 #define NVS_KEY_MIC_SRC "mic_src"  /* 0 = built-in PDM (default), 1 = Grove ADC */
 #define NVS_KEY_CLOCK_MODE "clock_mode" /* 0=off, 1=digital, 2=analog */
 #define NVS_KEY_BOOT_SHOW  "boot_show"  /* 1=clock-digital, 2=clock-analog, 3=music, 4=jpeg, 5=text */
+#define NVS_KEY_TIMEZONE   "tz"         /* POSIX TZ string, default "EST5EDT,M3.2.0,M11.1.0" */
 
 #define HW_TOKEN_MAX_LEN    513   /* 512 payload + NUL */
 #define COMPUTER_ID_MAX_LEN  33   /* 32 payload + NUL  */
@@ -623,6 +624,8 @@ static volatile int32_t s_mp3_seek_target_ms = -1;
 typedef enum { PF_CLOCK_OFF = 0, PF_CLOCK_DIGITAL, PF_CLOCK_ANALOG } pf_clock_mode_t;
 static pf_clock_mode_t s_clock_mode = PF_CLOCK_OFF;
 static int             s_clock_last_sec = -1;
+static char            s_timezone[64]   = "EST5EDT,M3.2.0,M11.1.0"; /* POSIX TZ, default Eastern */
+static void apply_timezone(const char *tz_str);
 #endif
 
 /* ── Audio visualizer — Goertzel per-band energy → Core2 side LEDs ─────── */
@@ -5728,6 +5731,7 @@ static bool save_display_state_to_sd(void)
                      (jpeg_url[0])                        ? 4 : 5;
         fprintf(f, "boot_show=%u\n", (unsigned)bs);
     }
+    fprintf(f, "timezone=%s\n", s_timezone);
 #endif
     fclose(f);
     ESP_LOGI(TAG, "save_sd: settings written to %s", SD_SETTINGS_PATH);
@@ -5749,6 +5753,7 @@ static bool restore_display_state_from_sd(void)
 #if CONFIG_CORE2_HW
     uint8_t clock_mode_sd = 0;
     uint8_t boot_show_sd = 0;
+    char    tz_sd[sizeof(s_timezone)] = {0};
 #endif
     /* Encode buffer: worst case every char in s_last_text is a newline (2× size) */
     char text_enc[sizeof(s_last_text) * 2 + 1] = {0};
@@ -5777,6 +5782,9 @@ static bool restore_display_state_from_sd(void)
             clock_mode_sd = (uint8_t)a;
         } else if (sscanf(line, "boot_show=%u", &a) == 1) {
             boot_show_sd = (uint8_t)a;
+        } else if (strncmp(line, "timezone=", 9) == 0) {
+            strncpy(tz_sd, line + 9, sizeof(tz_sd) - 1);
+            tz_sd[sizeof(tz_sd) - 1] = '\0';
 #endif
         } else if (strncmp(line, "jpeg=", 5) == 0) {
             strncpy(jpeg_url, line + 5, sizeof(jpeg_url) - 1);
@@ -5797,6 +5805,10 @@ static bool restore_display_state_from_sd(void)
     /* Also persist to NVS so the boot clock-start path picks it up uniformly. */
     nvs_write_u8(NVS_KEY_CLOCK_MODE, clock_mode_sd);
     nvs_write_u8(NVS_KEY_BOOT_SHOW, boot_show_sd);
+    if (tz_sd[0]) {
+        apply_timezone(tz_sd);
+        nvs_write_str(NVS_KEY_TIMEZONE, s_timezone);
+    }
 #endif
     ESP_LOGI(TAG, "restore: display state loaded from SD card (%s)", SD_SETTINGS_PATH);
     return true;
@@ -5845,6 +5857,7 @@ static esp_err_t save_display_state_to_nvs(void)
                             (s_jpeg_cache && s_jpeg_cache_len > 0 && s_current_jpeg_url[0]) ? 4 : 5;
         if ((err = nvs_write_u8(NVS_KEY_BOOT_SHOW, boot_show)) != ESP_OK) return err;
     }
+    if ((err = nvs_write_str(NVS_KEY_TIMEZONE, s_timezone)) != ESP_OK) return err;
 #endif
 
     esp_err_t result = nvs_write_u8(NVS_KEY_SAVED, 1);
@@ -6935,6 +6948,7 @@ static const pf_cmd_t s_pf_cmds[] = {
     { "aitts",     "aitts",     "true",  "Toggle whether AI answers from 'askpic' are spoken aloud via TTS. Default on. Pass 'on'/'off' or omit to toggle.", "\xF0\x9F\x97\xA3\xEF\xB8\x8F" /* 🗣️ */, NULL },
     { "micsrc",    "micsrc",    "true",  "Switch the microphone source between the built-in PDM mic ('pdm') and the external Grove analog mic ('grove'). Omit to toggle.", "\xF0\x9F\x8E\x99\xEF\xB8\x8F" /* 🎙️ */, NULL },
     { "clock",     "clock",     "true",  "Show a live clock on the display. Pass 'digital' or 'analog' to choose the style (default 'digital'). Stays on screen until another command runs. Example: 'analog'", "\xF0\x9F\x95\x90" /* 🕐 */, NULL },
+    { "timezone",  "timezone",  "true",  "Set the clock timezone. Examples: 'eastern', 'central', 'mountain', 'pacific', 'alaska', 'hawaii', 'utc', 'london', 'europe', or a raw POSIX TZ string. Default: eastern.", "\xF0\x9F\x8C\x90" /* 🌐 */, NULL },
 #endif
 #endif
 };
@@ -7454,6 +7468,53 @@ static void pf_clock_start(const char *params)
     s_clock_last_sec = -1; /* force an immediate redraw */
 }
 
+/* Set TZ from a friendly alias or raw POSIX string, then call tzset(). */
+static void apply_timezone(const char *tz_str)
+{
+    const char *posix;
+    if      (strcasecmp(tz_str, "eastern")       == 0 ||
+             strcasecmp(tz_str, "est")            == 0 ||
+             strcasecmp(tz_str, "edt")            == 0)
+        posix = "EST5EDT,M3.2.0,M11.1.0";
+    else if (strcasecmp(tz_str, "central")       == 0 ||
+             strcasecmp(tz_str, "cst")            == 0 ||
+             strcasecmp(tz_str, "cdt")            == 0)
+        posix = "CST6CDT,M3.2.0,M11.1.0";
+    else if (strcasecmp(tz_str, "mountain")      == 0 ||
+             strcasecmp(tz_str, "mst")            == 0 ||
+             strcasecmp(tz_str, "mdt")            == 0)
+        posix = "MST7MDT,M3.2.0,M11.1.0";
+    else if (strcasecmp(tz_str, "pacific")       == 0 ||
+             strcasecmp(tz_str, "pst")            == 0 ||
+             strcasecmp(tz_str, "pdt")            == 0)
+        posix = "PST8PDT,M3.2.0,M11.1.0";
+    else if (strcasecmp(tz_str, "alaska")        == 0 ||
+             strcasecmp(tz_str, "akst")           == 0 ||
+             strcasecmp(tz_str, "akdt")           == 0)
+        posix = "AKST9AKDT,M3.2.0,M11.1.0";
+    else if (strcasecmp(tz_str, "hawaii")        == 0 ||
+             strcasecmp(tz_str, "hst")            == 0)
+        posix = "HST10";
+    else if (strcasecmp(tz_str, "utc")           == 0 ||
+             strcasecmp(tz_str, "gmt")            == 0)
+        posix = "UTC0";
+    else if (strcasecmp(tz_str, "london")        == 0 ||
+             strcasecmp(tz_str, "uk")             == 0 ||
+             strcasecmp(tz_str, "bst")            == 0)
+        posix = "GMT0BST,M3.5.0/1,M10.5.0";
+    else if (strcasecmp(tz_str, "central_europe") == 0 ||
+             strcasecmp(tz_str, "cet")            == 0 ||
+             strcasecmp(tz_str, "europe")         == 0)
+        posix = "CET-1CEST,M3.5.0,M10.5.0/3";
+    else
+        posix = tz_str; /* treat as raw POSIX TZ string */
+    strncpy(s_timezone, posix, sizeof(s_timezone) - 1);
+    s_timezone[sizeof(s_timezone) - 1] = '\0';
+    setenv("TZ", s_timezone, 1);
+    tzset();
+    s_clock_last_sec = -1; /* force clock redraw with new zone */
+}
+
 /* True if some other on-screen view currently owns the display and the
  * clock should not draw over it this tick. */
 static bool pf_clock_blocked(void)
@@ -7677,7 +7738,8 @@ static void pf_event_handler(const char *event_name,
     /* Any command other than "clock" or "save" takes the screen back.
      * "save" is excluded so it captures the live clock state rather than
      * stopping it before save_display_state_to_nvs() runs. */
-    if (strcmp(s_trigger, "clock") != 0 && strcmp(s_trigger, "save") != 0) {
+    if (strcmp(s_trigger, "clock") != 0 && strcmp(s_trigger, "save") != 0 &&
+        strcmp(s_trigger, "timezone") != 0) {
         if (s_clock_mode != PF_CLOCK_OFF)
             nvs_write_u8(NVS_KEY_CLOCK_MODE, 0);
         pf_clock_stop();
@@ -8396,6 +8458,12 @@ static void pf_event_handler(const char *event_name,
     } else if (strcmp(s_trigger, "clock") == 0) {
         pf_clock_start(s_params);
         nvs_write_u8(NVS_KEY_CLOCK_MODE, (uint8_t)s_clock_mode);
+    } else if (strcmp(s_trigger, "timezone") == 0) {
+        if (s_params[0]) {
+            apply_timezone(s_params);
+            nvs_write_str(NVS_KEY_TIMEZONE, s_timezone);
+            ESP_LOGI(TAG, "Timezone set to: %s", s_timezone);
+        }
 #endif
 
     } else {
@@ -9339,6 +9407,13 @@ void picture_frame_run(void)
         uint8_t mic_src = 0;
         nvs_read_u8(NVS_KEY_MIC_SRC, &mic_src);
         s_mic_src_grove = (mic_src != 0);
+        {
+            char tz[sizeof(s_timezone)] = {0};
+            if (nvs_read_str(NVS_KEY_TIMEZONE, tz, sizeof(tz)) && tz[0])
+                strncpy(s_timezone, tz, sizeof(s_timezone) - 1);
+        }
+        setenv("TZ", s_timezone, 1);
+        tzset();
 #endif
     }
     /* Defer SD mount/index work until the main loop so boot UI is responsive. */
@@ -9820,6 +9895,20 @@ void picture_frame_run(void)
                             music_active                         ? "Music" :
                             (s_jpeg_cache && s_jpeg_cache_len > 0 && s_current_jpeg_url[0]) ? "JPEG" : "Text";
                         mlen += snprintf(msg + mlen, sizeof(msg) - mlen, "Boot: %s\n", bs);
+                    }
+                    {
+                        const char *tz_label;
+                        if      (strcmp(s_timezone, "EST5EDT,M3.2.0,M11.1.0")      == 0) tz_label = "Eastern";
+                        else if (strcmp(s_timezone, "CST6CDT,M3.2.0,M11.1.0")      == 0) tz_label = "Central";
+                        else if (strcmp(s_timezone, "MST7MDT,M3.2.0,M11.1.0")      == 0) tz_label = "Mountain";
+                        else if (strcmp(s_timezone, "PST8PDT,M3.2.0,M11.1.0")      == 0) tz_label = "Pacific";
+                        else if (strcmp(s_timezone, "AKST9AKDT,M3.2.0,M11.1.0")    == 0) tz_label = "Alaska";
+                        else if (strcmp(s_timezone, "HST10")                        == 0) tz_label = "Hawaii";
+                        else if (strcmp(s_timezone, "UTC0")                         == 0) tz_label = "UTC";
+                        else if (strcmp(s_timezone, "GMT0BST,M3.5.0/1,M10.5.0")    == 0) tz_label = "London";
+                        else if (strcmp(s_timezone, "CET-1CEST,M3.5.0,M10.5.0/3")  == 0) tz_label = "C.Europe";
+                        else tz_label = s_timezone;
+                        mlen += snprintf(msg + mlen, sizeof(msg) - mlen, "TZ: %s\n", tz_label);
                     }
 #endif
                     if (!music_active && s_jpeg_cache && s_jpeg_cache_len > 0 && s_current_jpeg_url[0]) {
