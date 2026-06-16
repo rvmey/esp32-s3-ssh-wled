@@ -291,7 +291,7 @@ static const char *TAG = "pf";
 extern const char g_firmware_version[];
 
 #define MP3_ROOT_PATH        "/sdcard"
-#define SD_SETTINGS_PATH     MP3_ROOT_PATH "/core2_settings.cfg"
+#define SD_SETTINGS_PATH     MP3_ROOT_PATH "/core2_config.txt"
 #define MP3_MAX_FOLDERS      32
 #define MP3_MAX_TRIGGER_LEN  64
 #define MP3_MAX_PATH_LEN     256
@@ -574,7 +574,7 @@ static char s_current_jpeg_url[512]  __attribute__((unused)) = {0};
 static sdmmc_card_t *s_sd_card __attribute__((unused)) = NULL;
 static bool          s_sd_mounted __attribute__((unused)) = false;
 
-/* Set when config.txt contains secrets_in_sd=1.  Secrets read from config.txt
+/* Set when secrets_config.txt contains secrets_in_sd=1.  Secrets read from secrets_config.txt
  * are kept in these vars and used directly; they are NOT written to NVS. */
 static bool s_sd_secrets_only = false;
 static char s_sd_wifi_ssid[3][64]  = {{0}};
@@ -6243,13 +6243,13 @@ static void pf_report_ai_result(const char *answer, const char *run_id)
 #define PF_BACKUP_BOUNDARY "----TCMDCore2BackupBoundary7f3a"
 #define PF_BACKUP_CHUNK    4096
 
-/* Read the "backup_url" value from /sdcard/config.txt into out.
+/* Read the "backup_url" value from /sdcard/secrets_config.txt into out.
  * Uses the same line-parsing style as sd_apply_config_if_present().
  * Returns true if the key is present and non-empty. */
 static bool pf_read_backup_url(char *out, size_t out_sz)
 {
     out[0] = '\0';
-    FILE *f = fopen("/sdcard/config.txt", "r");
+    FILE *f = fopen("/sdcard/secrets_config.txt", "r");
     if (!f) return false;
     char line[384];
     while (fgets(line, sizeof(line), f)) {
@@ -6396,7 +6396,7 @@ static int pf_backup_dir(const char *dirpath, const char *relbase,
     return uploaded;
 }
 
-/* Back up the entire SD card to the server in backup_url (config.txt).
+/* Back up the entire SD card to the server in backup_url (secrets_config.txt).
  * Runs on the main task (deferred from the WS handler) and reports the
  * outcome back to TRIGGERcmd via pf_report_ai_result(). */
 static void pf_backup_sd(const char *run_id)
@@ -6408,8 +6408,8 @@ static void pf_backup_sd(const char *run_id)
     }
     char url[256];
     if (!pf_read_backup_url(url, sizeof(url))) {
-        screen_draw_text("No backup_url\nin config.txt");
-        pf_report_ai_result("No backup_url in config.txt", run_id);
+        screen_draw_text("No backup_url\nin secrets_config.txt");
+        pf_report_ai_result("No backup_url in secrets_config.txt", run_id);
         return;
     }
     ESP_LOGI(TAG, "backup: starting → %s", url);
@@ -6838,7 +6838,7 @@ static const pf_cmd_t s_pf_cmds[] = {
 #endif
     { "folders",   "folders",   "false", "List the folders on the SD card.", "\xF0\x9F\x93\x82" /* 📂 */, "{{result}}" },
     { "files",     "files",     "true",  "List files in a folder on the SD card. Example: 'music'", "\xF0\x9F\x93\x84" /* 📄 */, "{{result}}" },
-    { "backup",    "backup",    "false", "Back up the entire SD card to the server set by 'backup_url' in config.txt (one upload per file).", "\xF0\x9F\x92\xBE" /* 💾 */, "{{result}}" },
+    { "backup",    "backup",    "false", "Back up the entire SD card to the server set by 'backup_url' in secrets_config.txt (one upload per file).", "\xF0\x9F\x92\xBE" /* 💾 */, "{{result}}" },
     { "reboot",    "reboot",    "false", "Reboot the device.", "\xF0\x9F\x94\x81" /* 🔁 */, NULL },
     { "sleeptimer","sleeptimer","true",  "Set minutes of inactivity before the device sleeps (0 = never). Example: '10'", "\xF0\x9F\x98\xB4" /* 😴 */, NULL },
     { "sleep",     "sleep",     "false", "Put the device into deep sleep immediately. Wake by touching the screen.", "\xF0\x9F\x92\xA4" /* 💤 */, NULL },
@@ -8902,11 +8902,11 @@ static bool sd_is_secret_key(const char *key)
             strcmp(key, "openai_key") == 0);
 }
 
-/* Read /sdcard/config.txt (key=value lines) and process secrets.
+/* Read /sdcard/secrets_config.txt (key=value lines) and process secrets.
  *
  * Default (secrets_in_sd absent or =0):
  *   Write secrets to NVS and, if all writes succeed, remove the secret lines
- *   from config.txt so the file no longer contains plaintext credentials.
+ *   from secrets_config.txt so the file no longer contains plaintext credentials.
  *
  * secrets_in_sd=1:
  *   Keep secrets on the SD card only — store in module-level vars, do NOT
@@ -8917,9 +8917,9 @@ static void sd_apply_config_if_present(void)
 {
     if (!mount_sd_card_if_needed()) return;
 
-    FILE *f = fopen("/sdcard/config.txt", "r");
+    FILE *f = fopen("/sdcard/secrets_config.txt", "r");
     if (!f) {
-        ESP_LOGI(TAG, "sd config: no config.txt on SD card");
+        ESP_LOGI(TAG, "sd config: no secrets_config.txt on SD card");
         return;
     }
 
@@ -9015,7 +9015,7 @@ static void sd_apply_config_if_present(void)
         return;
     }
 
-    /* Default: write secrets to NVS, then remove them from config.txt. */
+    /* Default: write secrets to NVS, then remove them from secrets_config.txt. */
     bool any_secret = ssid[0] || ssid2[0] || ssid3[0];
 #if CONFIG_CORE2_HW
     any_secret = any_secret || openai_key[0];
@@ -9064,10 +9064,10 @@ static void sd_apply_config_if_present(void)
     }
 #endif
 
-    /* If all secrets were written to NVS, strip them from config.txt so the
+    /* If all secrets were written to NVS, strip them from secrets_config.txt so the
      * file no longer contains plaintext credentials. */
     if (any_secret && all_ok) {
-        FILE *rf = fopen("/sdcard/config.txt", "r");
+        FILE *rf = fopen("/sdcard/secrets_config.txt", "r");
         if (rf) {
             char *keep = (char *)malloc(4096);
             size_t keep_len = 0;
@@ -9100,16 +9100,16 @@ static void sd_apply_config_if_present(void)
                     }
                 }
                 fclose(rf);
-                FILE *wf = fopen("/sdcard/config.txt", "w");
+                FILE *wf = fopen("/sdcard/secrets_config.txt", "w");
                 if (wf) {
                     fwrite(keep, 1, keep_len, wf);
                     fclose(wf);
-                    ESP_LOGI(TAG, "sd config: secrets moved to NVS and removed from config.txt");
+                    ESP_LOGI(TAG, "sd config: secrets moved to NVS and removed from secrets_config.txt");
                 }
                 free(keep);
             } else {
                 fclose(rf);
-                ESP_LOGW(TAG, "sd config: malloc failed, secrets left in config.txt");
+                ESP_LOGW(TAG, "sd config: malloc failed, secrets left in secrets_config.txt");
             }
         }
     }
@@ -9148,7 +9148,7 @@ void picture_frame_run(void)
 
     esp_err_t wifi_ret;
     if (s_sd_secrets_only && s_sd_wifi_count > 0) {
-        /* SD-only mode: connect directly with config.txt credentials; skip NVS. */
+        /* SD-only mode: connect directly with secrets_config.txt credentials; skip NVS. */
         screen_set_touch_handler(pf_wifi_skip_touch_handler);
         wifi_ret = ESP_FAIL;
         for (int i = 0; i < s_sd_wifi_count && wifi_ret != ESP_OK; i++) {

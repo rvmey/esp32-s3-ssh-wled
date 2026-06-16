@@ -39,10 +39,10 @@ real time.
 | `jpeg` | Download and display a JPEG from a URL |
 | `savepic` | Save the currently displayed JPEG to `/saved-jpegs` on the SD card |
 | `folders` / `files` | List SD card folders / files in a folder |
-| `backup` | Upload the entire SD card to a server — one file per request, preserving the folder structure (set `backup_url` in [`config.txt`](#sd-card-configuration)) |
+| `backup` | Upload the entire SD card to a server — one file per request, preserving the folder structure (set `backup_url` in [`secrets_config.txt`](#sd-card-configuration)) |
 | Per-folder picture commands | Auto-generated for each folder of JPEGs on the SD card — display the Nth (or first/random) image in that folder |
 | Per-folder music commands | Auto-generated for each folder of MP3s on the SD card — play the Nth (or first/random, if shuffle is on) track in that folder (see [Bluetooth MP3 playback](#bluetooth-mp3-playback)) |
-| `save` | Persist display state (colors, font, orientation, text, JPEG URL) to NVS and, if an SD card is present, to `/sdcard/core2_settings.cfg`; restored on reboot (SD takes priority over NVS) |
+| `save` | Persist display state (colors, font, orientation, text, JPEG URL) to NVS and, if an SD card is present, to `/sdcard/core2_config.txt`; restored on reboot (SD takes priority over NVS) |
 | `askpic` | Ask an AI vision question about the currently displayed picture |
 
 ---
@@ -132,14 +132,14 @@ On first boot, the Core2 starts a SoftAP named **`TCMD-Core2-XXXXXX`**:
 2. Browse to **`http://192.168.4.1`** and enter your Wi-Fi SSID and password.
 3. Click **Save & Connect** — the device restarts and joins your network.
 
-Alternatively, place a [`config.txt`](#sd-card-configuration) file on the SD
+Alternatively, place a [`secrets_config.txt`](#sd-card-configuration) file on the SD
 card before first boot to skip the SoftAP flow entirely.
 
 ---
 
 ## SD card configuration
 
-On boot, the firmware checks for **`config.txt`** in the root of the SD card
+On boot, the firmware checks for **`secrets_config.txt`** in the root of the SD card
 and writes any credentials it contains to NVS (overwriting existing values)
 before connecting to Wi-Fi:
 
@@ -163,24 +163,24 @@ backup_url=http://192.168.1.10:8080/upload
 ```
 
 `backup_url` is not a secret, so it is never moved to NVS and stays in
-`config.txt`; the `backup` command reads it fresh each time it runs.
+`secrets_config.txt`; the `backup` command reads it fresh each time it runs.
 
 #### Default behaviour (`secrets_in_sd` absent or `=0`)
 
 Secrets are **moved** to NVS on first boot:
 
 1. Each secret key is written to NVS.
-2. If all writes succeed, the secret lines are removed from `config.txt` so
+2. If all writes succeed, the secret lines are removed from `secrets_config.txt` so
    the file no longer contains plaintext credentials.
 3. The device reconnects on every subsequent boot using NVS alone — the SD
    card is not required.
 
-If any NVS write fails, the secrets are left in `config.txt` intact so they
+If any NVS write fails, the secrets are left in `secrets_config.txt` intact so they
 can be retried on the next boot.
 
 #### `secrets_in_sd=1` — SD-only mode
 
-Secrets are **never written to NVS** and remain in `config.txt`:
+Secrets are **never written to NVS** and remain in `secrets_config.txt`:
 
 - WiFi credentials and the OpenAI key are loaded into RAM only for the
   current boot, read fresh from the card each time.
@@ -192,9 +192,9 @@ Secrets are **never written to NVS** and remain in `config.txt`:
 Use this when you want physical control over access: pulling the SD card makes
 the credentials unavailable to anyone who reflashes the device.
 
-### Settings file — `core2_settings.cfg`
+### Settings file — `core2_config.txt`
 
-The `save` command writes a second file, **`/sdcard/core2_settings.cfg`**,
+The `save` command writes a second file, **`/sdcard/core2_config.txt`**,
 that stores the current display state:
 
 ```
@@ -233,7 +233,7 @@ The `backup` command walks the **entire** SD card and uploads every file to a
 server you run, so you can archive your pictures, music, and configuration off
 the device.
 
-1. Add a `backup_url` line to [`config.txt`](#sd-card-configuration) pointing at
+1. Add a `backup_url` line to [`secrets_config.txt`](#sd-card-configuration) pointing at
    your server (HTTP or HTTPS).
 2. Run the `backup` command from TRIGGERcmd. The screen shows a running file
    count while it works and a summary (`Backup done / N files`) when finished;

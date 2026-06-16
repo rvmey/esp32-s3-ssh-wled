@@ -65,7 +65,7 @@ The Picture Frame receives the `jpeg` command over Socket.IO and immediately dow
 
 ## SD card configuration
 
-On boot, the firmware checks for a file named **`config.txt`** in the root of
+On boot, the firmware checks for a file named **`secrets_config.txt`** in the root of
 the SD card.  If the file exists, any credentials it contains are written to
 NVS (overwriting previously stored values) before Wi-Fi connects.
 
@@ -94,7 +94,7 @@ openai_key=sk-proj-...
 
 - The file is read every boot, so you can update credentials by editing the
   file and rebooting — no re-flashing required.
-- If the SD card is absent or `config.txt` does not exist, boot continues
+- If the SD card is absent or `secrets_config.txt` does not exist, boot continues
   normally with whatever credentials are already in NVS.
 - Values overwrite NVS unconditionally, so removing a key from the file on a
   subsequent boot does **not** clear the previously saved NVS value.
