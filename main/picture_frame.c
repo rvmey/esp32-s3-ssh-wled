@@ -6329,8 +6329,12 @@ static bool pf_post_chunk(const char *url, const char *relpath,
     int total_len = hdr_len + (int)len + footer_len;
     char content_type[] = "multipart/form-data; boundary=" PF_BACKUP_BOUNDARY;
 
+    /* Each chunk opens its own TCP connection (we must close it before the next
+     * SD read), so rapid connect/close churn occasionally hits a transient
+     * "Connection already in progress" / server stall.  Retry a few times with a
+     * growing delay so one blip doesn't fail the whole (possibly large) file. */
     bool ok = false;
-    for (int attempt = 1; attempt <= 2 && !ok; attempt++) {
+    for (int attempt = 1; attempt <= 4 && !ok; attempt++) {
         esp_http_client_config_t cfg = {
             .url               = url,
             .method            = HTTP_METHOD_POST,
@@ -6349,7 +6353,7 @@ static bool pf_post_chunk(const char *url, const char *relpath,
 
         if (esp_http_client_open(client, total_len) != ESP_OK) {
             esp_http_client_cleanup(client);
-            if (attempt < 2) vTaskDelay(pdMS_TO_TICKS(300));
+            if (attempt < 4) vTaskDelay(pdMS_TO_TICKS(500 * attempt));
             continue;
         }
 
@@ -6373,7 +6377,7 @@ static bool pf_post_chunk(const char *url, const char *relpath,
         }
         esp_http_client_close(client);
         esp_http_client_cleanup(client);
-        if (!ok && attempt < 2) vTaskDelay(pdMS_TO_TICKS(300));
+        if (!ok && attempt < 4) vTaskDelay(pdMS_TO_TICKS(500 * attempt));
     }
     free(part_hdr);
     return ok;
@@ -6423,13 +6427,14 @@ static bool pf_upload_file(const char *fullpath, const char *relpath, const char
         }
         offset += (long)got;
 
-        /* For multi-chunk (large) files, show progress and yield between parts. */
+        /* For multi-chunk (large) files, show progress and yield between parts.
+         * Use 64-bit math: offset*100 overflows a 32-bit long past ~21 MB. */
         if (fsize > (long)chunk_cap) {
             const char *base = strrchr(relpath, '/');
             base = base ? base + 1 : relpath;
+            int pct = fsize ? (int)((long long)offset * 100 / fsize) : 100;
             char scr[80];
-            snprintf(scr, sizeof(scr), "Backing up...\n%.40s\n%ld%%",
-                     base, fsize ? (offset * 100 / fsize) : 100);
+            snprintf(scr, sizeof(scr), "Backing up...\n%.40s\n%d%%", base, pct);
             screen_draw_text(scr);
             vTaskDelay(pdMS_TO_TICKS(10));
         }
