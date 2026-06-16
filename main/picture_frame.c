@@ -382,7 +382,7 @@ static const char *tcmd_display_host(void)
 #define NVS_KEY_AI_TTS  "ai_tts"
 #define NVS_KEY_MIC_SRC "mic_src"  /* 0 = built-in PDM (default), 1 = Grove ADC */
 #define NVS_KEY_CLOCK_MODE "clock_mode" /* 0=off, 1=digital, 2=analog */
-#define NVS_KEY_BOOT_SHOW  "boot_show"  /* 1=clock, 2=music, 3=jpeg, 4=text */
+#define NVS_KEY_BOOT_SHOW  "boot_show"  /* 1=clock-digital, 2=clock-analog, 3=music, 4=jpeg, 5=text */
 
 #define HW_TOKEN_MAX_LEN    513   /* 512 payload + NUL */
 #define COMPUTER_ID_MAX_LEN  33   /* 32 payload + NUL  */
@@ -490,10 +490,13 @@ static char          s_pending_askgpt_text[256]   __attribute__((unused)) = {0};
 static char          s_pending_askgpt_run_id[33]  __attribute__((unused)) = {0};
 static volatile bool s_pending_askgpt             __attribute__((unused)) = false;
 
-/* Pending "backup" — set by the WS event task, consumed by the main loop
- * (uploading the whole SD card is long network I/O, so it runs on the main task). */
+/* Pending "backup" — set by the WS event task, consumed by the main loop, which
+ * spawns a dedicated task.  The upload of a whole SD card can take minutes, so it
+ * must NOT run on the main loop: that would starve the Socket.IO keepalive and
+ * run/save acks, making the server drop the connection mid-backup. */
 static char          s_pending_backup_run_id[33]  __attribute__((unused)) = {0};
 static volatile bool s_pending_backup             __attribute__((unused)) = false;
+static volatile bool s_backup_running             __attribute__((unused)) = false;
 #if CONFIG_CORE2_HW
 /* Whether "askpic" answers are also spoken aloud via TTS. Default on,
  * overridden from NVS at boot, toggled by the "aitts" command. */
@@ -5719,9 +5722,10 @@ static bool save_display_state_to_sd(void)
 #if CONFIG_CORE2_HW
     fprintf(f, "clock=%u\n",     (unsigned)s_clock_mode);
     {
-        uint8_t bs = (s_clock_mode != PF_CLOCK_OFF) ? 1 :
-                     music_active                    ? 2 :
-                     (jpeg_url[0])                   ? 3 : 4;
+        uint8_t bs = (s_clock_mode == PF_CLOCK_ANALOG)  ? 2 :
+                     (s_clock_mode == PF_CLOCK_DIGITAL)  ? 1 :
+                     music_active                         ? 3 :
+                     (jpeg_url[0])                        ? 4 : 5;
         fprintf(f, "boot_show=%u\n", (unsigned)bs);
     }
 #endif
@@ -5835,9 +5839,10 @@ static esp_err_t save_display_state_to_nvs(void)
 #if CONFIG_CORE2_HW
     if ((err = nvs_write_u8(NVS_KEY_CLOCK_MODE, (uint8_t)s_clock_mode)) != ESP_OK) return err;
     {
-        uint8_t boot_show = (s_clock_mode != PF_CLOCK_OFF) ? 1 :
-                            music_active                    ? 2 :
-                            (s_jpeg_cache && s_jpeg_cache_len > 0 && s_current_jpeg_url[0]) ? 3 : 4;
+        uint8_t boot_show = (s_clock_mode == PF_CLOCK_ANALOG)  ? 2 :
+                            (s_clock_mode == PF_CLOCK_DIGITAL)  ? 1 :
+                            music_active                         ? 3 :
+                            (s_jpeg_cache && s_jpeg_cache_len > 0 && s_current_jpeg_url[0]) ? 4 : 5;
         if ((err = nvs_write_u8(NVS_KEY_BOOT_SHOW, boot_show)) != ESP_OK) return err;
     }
 #endif
@@ -6397,8 +6402,9 @@ static int pf_backup_dir(const char *dirpath, const char *relbase,
 }
 
 /* Back up the entire SD card to the server in backup_url (secrets_config.txt).
- * Runs on the main task (deferred from the WS handler) and reports the
- * outcome back to TRIGGERcmd via pf_report_ai_result(). */
+ * Runs on its own task (see pf_backup_task) so the main loop stays free to
+ * service Socket.IO.  Reports the outcome back to TRIGGERcmd via
+ * pf_report_ai_result(). */
 static void pf_backup_sd(const char *run_id)
 {
     if (!mount_sd_card_if_needed()) {
@@ -6412,6 +6418,14 @@ static void pf_backup_sd(const char *run_id)
         pf_report_ai_result("No backup_url in secrets_config.txt", run_id);
         return;
     }
+
+    /* Ack the run immediately so TRIGGERcmd marks the command as run and does
+     * not re-dispatch it (which would otherwise start the backup over) while
+     * the upload — potentially several minutes — is still in progress. */
+    strncpy(s_pending_run_id, run_id, sizeof(s_pending_run_id) - 1);
+    s_pending_run_id[sizeof(s_pending_run_id) - 1] = '\0';
+    s_pending_run = true;
+
     ESP_LOGI(TAG, "backup: starting → %s", url);
     screen_draw_text("Backing up...");
 
@@ -6426,6 +6440,20 @@ static void pf_backup_sd(const char *run_id)
     screen_draw_text(msg);
     pf_report_ai_result(msg, run_id);
     ESP_LOGI(TAG, "backup: %d uploaded, %d failed", uploaded, fail);
+}
+
+/* Dedicated task that runs one backup then exits.  s_backup_running guards
+ * against a second backup starting while one is in progress. */
+static void pf_backup_task(void *arg)
+{
+    char run_id[33];
+    strncpy(run_id, s_pending_backup_run_id, sizeof(run_id) - 1);
+    run_id[sizeof(run_id) - 1] = '\0';
+
+    pf_backup_sd(run_id);
+
+    s_backup_running = false;
+    vTaskDelete(NULL);
 }
 
 /*
@@ -9212,10 +9240,6 @@ void picture_frame_run(void)
     http_pf_config_start(NULL);
 #endif
 
-#if CONFIG_CORE2_HW
-    uint8_t clock_mode_saved = 0;
-    uint8_t boot_show_saved = 0;
-#endif
     {
         uint8_t shuffle = 0;
         if (nvs_read_u8(NVS_KEY_SHUFFLE, &shuffle)) {
@@ -9261,8 +9285,6 @@ void picture_frame_run(void)
         uint8_t mic_src = 0;
         nvs_read_u8(NVS_KEY_MIC_SRC, &mic_src);
         s_mic_src_grove = (mic_src != 0);
-        nvs_read_u8(NVS_KEY_CLOCK_MODE, &clock_mode_saved);
-        nvs_read_u8(NVS_KEY_BOOT_SHOW, &boot_show_saved);
 #endif
     }
     /* Defer SD mount/index work until the main loop so boot UI is responsive. */
@@ -9504,14 +9526,22 @@ void picture_frame_run(void)
             restore_display_state_from_nvs();
 #if CONFIG_CORE2_HW
             {
-                bool show_clock = (boot_show_saved == 1) ||
-                                  (boot_show_saved == 0 && clock_mode_saved != 0);
-                if (show_clock) {
+                /* Read after restore so the SD-card restore path (which writes
+                 * NVS) has already set the authoritative values. */
+                uint8_t bs = 0, cm = 0;
+                nvs_read_u8(NVS_KEY_BOOT_SHOW,  &bs);
+                nvs_read_u8(NVS_KEY_CLOCK_MODE, &cm);
+                /* bs 1=digital 2=analog; bs=0 legacy: infer from clock_mode */
+                bool start_clock = (bs == 1 || bs == 2) ||
+                                   (bs == 0 && cm != 0);
+                if (start_clock) {
                     s_pending_jpeg = false;
                     s_pending_jpeg_file = false;
                     s_pending_jpeg_url[0] = '\0';
                     s_pending_jpeg_file_path[0] = '\0';
-                    pf_clock_start(clock_mode_saved == (uint8_t)PF_CLOCK_ANALOG ? "analog" : "digital");
+                    bool analog = (bs == 2) ||
+                                  (bs == 0 && cm == (uint8_t)PF_CLOCK_ANALOG);
+                    pf_clock_start(analog ? "analog" : "digital");
                 }
             }
 #endif
@@ -9731,8 +9761,9 @@ void picture_frame_run(void)
                                      s_clock_mode == PF_CLOCK_DIGITAL ? "Digital" : "Off");
                     {
                         const char *bs =
-                            (s_clock_mode != PF_CLOCK_OFF) ? "Clock" :
-                            music_active                    ? "Music" :
+                            (s_clock_mode == PF_CLOCK_ANALOG)  ? "Analog clock" :
+                            (s_clock_mode == PF_CLOCK_DIGITAL)  ? "Digital clock" :
+                            music_active                         ? "Music" :
                             (s_jpeg_cache && s_jpeg_cache_len > 0 && s_current_jpeg_url[0]) ? "JPEG" : "Text";
                         mlen += snprintf(msg + mlen, sizeof(msg) - mlen, "Boot: %s\n", bs);
                     }
@@ -9822,7 +9853,17 @@ void picture_frame_run(void)
 #endif
             if (s_pending_backup) {
                 s_pending_backup = false;
-                pf_backup_sd(s_pending_backup_run_id);
+                if (s_backup_running) {
+                    ESP_LOGW(TAG, "backup: already running, ignoring re-dispatch");
+                } else {
+                    s_backup_running = true;
+                    if (xTaskCreate(pf_backup_task, "pf_backup", 8192, NULL,
+                                    4, NULL) != pdPASS) {
+                        s_backup_running = false;
+                        ESP_LOGE(TAG, "backup: failed to create task");
+                        screen_draw_text("Backup failed\n(no memory)");
+                    }
+                }
             }
 
 #if CONFIG_CORE2_HW
