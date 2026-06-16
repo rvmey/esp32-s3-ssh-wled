@@ -31,6 +31,7 @@ elseif(CONFIG_HARDWARE_CORE2 OR CONFIG_HARDWARE_CYD)
         "screen_control_core2.c"
         "core2_audio.c"
         "core2_mic.c"
+        "core2_adc_mic.c"
         "core2_leds.c"
         "mpu6886.c"
         "picture_frame.c"

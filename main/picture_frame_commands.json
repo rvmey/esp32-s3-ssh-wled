@@ -296,6 +296,14 @@
   "icon": "🗣️"
  },
  {
+  "trigger": "micsrc",
+  "command": "micsrc",
+  "voice": "micsrc",
+  "allowParams": "true",
+  "mcpToolDescription": "Switch the microphone source on the user's Core2 device between the built-in PDM mic ('pdm') and the external Grove analog mic ('grove', e.g. MAX4466 breakout on Grove Port B). Omit the parameter to toggle.",
+  "icon": "🎙️"
+ },
+ {
   "trigger": "clock",
   "command": "clock",
   "voice": "clock",

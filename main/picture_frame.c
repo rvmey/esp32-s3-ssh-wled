@@ -68,6 +68,7 @@
 /* SoftAP provisioning for Core2 (classic ESP32 — no USB-JTAG Improv) */
 #include "core2_audio.h"
 #include "core2_mic.h"
+#include "core2_adc_mic.h"
 #include "mpu6886.h"
 #include "esp_sleep.h"
 #include "driver/rtc_io.h"
@@ -379,6 +380,7 @@ static const char *tcmd_display_host(void)
 #define NVS_KEY_SLEEP_ON_PWR "sleep_on_pwr"
 #define NVS_KEY_OPENAI  "stt_key"   /* shared OpenAI key (also used by askpic) */
 #define NVS_KEY_AI_TTS  "ai_tts"
+#define NVS_KEY_MIC_SRC "mic_src"  /* 0 = built-in PDM (default), 1 = Grove ADC */
 
 #define HW_TOKEN_MAX_LEN    513   /* 512 payload + NUL */
 #define COMPUTER_ID_MAX_LEN  33   /* 32 payload + NUL  */
@@ -485,6 +487,9 @@ static volatile bool s_pending_askgpt             __attribute__((unused)) = fals
 /* Whether "askpic" answers are also spoken aloud via TTS. Default on,
  * overridden from NVS at boot, toggled by the "aitts" command. */
 static bool          s_ai_tts_enabled = true;
+/* Microphone source: false = built-in PDM (SPM1423), true = Grove ADC (MAX4466).
+ * Overridden from NVS at boot, toggled by the "micsrc" command. */
+static bool          s_mic_src_grove  = false;
 #endif
 
 /* Pending AVRCP actions — set by bt_avrc_tg_cb, consumed by the main loop */
@@ -5175,14 +5180,24 @@ static void do_core2_voice_query(void)
 
     uint8_t *wav    = NULL;
     size_t   wav_len = 0;
-    if (core2_mic_init() == ESP_OK) {
-        wav_len = core2_mic_record(&wav, 4000);
-        core2_mic_deinit();
+    if (s_mic_src_grove) {
+        if (core2_adc_mic_init() == ESP_OK) {
+            wav_len = core2_adc_mic_record(&wav, 4000);
+            core2_adc_mic_deinit();
+        } else {
+            ESP_LOGW(TAG, "Voice query: ADC mic init failed");
+            screen_draw_text("Voice: mic init\nfailed");
+        }
     } else {
-        ESP_LOGW(TAG, "Voice query: mic init failed (DMA alloc)");
-        screen_draw_text("Voice: mic init\nfailed");
+        if (core2_mic_init() == ESP_OK) {
+            wav_len = core2_mic_record(&wav, 4000);
+            core2_mic_deinit();
+        } else {
+            ESP_LOGW(TAG, "Voice query: PDM mic init failed (DMA alloc)");
+            screen_draw_text("Voice: mic init\nfailed");
+        }
     }
-    /* GPIO 0 is now free; I2S1 stays disabled; mp3 task stays suspended. */
+    /* I2S1 stays disabled; mp3 task stays suspended. */
 
     /* ── All HTTP work happens here with audio fully quiescent ──────────── */
 
@@ -6588,6 +6603,7 @@ static const pf_cmd_t s_pf_cmds[] = {
     { "askgpt",    "askgpt",    "true",  "Ask GPT a general question (no picture context). Example: 'What is the capital of France?'", "\xF0\x9F\x92\xAC" /* 💬 */, "{{result}}" },
 #if CONFIG_CORE2_HW
     { "aitts",     "aitts",     "true",  "Toggle whether AI answers from 'askpic' are spoken aloud via TTS. Default on. Pass 'on'/'off' or omit to toggle.", "\xF0\x9F\x97\xA3\xEF\xB8\x8F" /* 🗣️ */, NULL },
+    { "micsrc",    "micsrc",    "true",  "Switch the microphone source between the built-in PDM mic ('pdm') and the external Grove analog mic ('grove'). Omit to toggle.", "\xF0\x9F\x8E\x99\xEF\xB8\x8F" /* 🎙️ */, NULL },
     { "clock",     "clock",     "true",  "Show a live clock on the display. Pass 'digital' or 'analog' to choose the style (default 'digital'). Stays on screen until another command runs. Example: 'analog'", "\xF0\x9F\x95\x90" /* 🕐 */, NULL },
 #endif
 #endif
@@ -8048,6 +8064,20 @@ static void pf_event_handler(const char *event_name,
         }
         nvs_write_u8(NVS_KEY_AI_TTS, s_ai_tts_enabled ? 1 : 0);
         ESP_LOGI(TAG, "AI TTS: %s", s_ai_tts_enabled ? "on" : "off");
+
+    } else if (strcmp(s_trigger, "micsrc") == 0) {
+        char mode[16] = {0};
+        strncpy(mode, s_params, sizeof(mode) - 1);
+        for (size_t i = 0; mode[i]; i++) mode[i] = (char)tolower((unsigned char)mode[i]);
+        if (strcmp(mode, "grove") == 0) {
+            s_mic_src_grove = true;
+        } else if (strcmp(mode, "pdm") == 0) {
+            s_mic_src_grove = false;
+        } else {
+            s_mic_src_grove = !s_mic_src_grove;
+        }
+        nvs_write_u8(NVS_KEY_MIC_SRC, s_mic_src_grove ? 1 : 0);
+        ESP_LOGI(TAG, "Mic source: %s", s_mic_src_grove ? "grove (ADC)" : "pdm (built-in)");
 #endif
 
 #if CONFIG_CORE2_HW
@@ -8993,6 +9023,9 @@ void picture_frame_run(void)
         uint8_t ai_tts = 1;
         nvs_read_u8(NVS_KEY_AI_TTS, &ai_tts);
         s_ai_tts_enabled = (ai_tts != 0);
+        uint8_t mic_src = 0;
+        nvs_read_u8(NVS_KEY_MIC_SRC, &mic_src);
+        s_mic_src_grove = (mic_src != 0);
 #endif
     }
     /* Defer SD mount/index work until the main loop so boot UI is responsive. */
