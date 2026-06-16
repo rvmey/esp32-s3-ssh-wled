@@ -488,6 +488,11 @@ static volatile bool s_pending_ask_pic         __attribute__((unused)) = false;
 static char          s_pending_askgpt_text[256]   __attribute__((unused)) = {0};
 static char          s_pending_askgpt_run_id[33]  __attribute__((unused)) = {0};
 static volatile bool s_pending_askgpt             __attribute__((unused)) = false;
+
+/* Pending "backup" — set by the WS event task, consumed by the main loop
+ * (uploading the whole SD card is long network I/O, so it runs on the main task). */
+static char          s_pending_backup_run_id[33]  __attribute__((unused)) = {0};
+static volatile bool s_pending_backup             __attribute__((unused)) = false;
 #if CONFIG_CORE2_HW
 /* Whether "askpic" answers are also spoken aloud via TTS. Default on,
  * overridden from NVS at boot, toggled by the "aitts" command. */
@@ -6198,6 +6203,196 @@ static void pf_report_ai_result(const char *answer, const char *run_id)
 #endif
 }
 
+/* ── SD-card backup: upload every file to a user-configured HTTP(S) server ── */
+
+#define PF_BACKUP_BOUNDARY "----TCMDCore2BackupBoundary7f3a"
+#define PF_BACKUP_CHUNK    4096
+
+/* Read the "backup_url" value from /sdcard/config.txt into out.
+ * Uses the same line-parsing style as sd_apply_config_if_present().
+ * Returns true if the key is present and non-empty. */
+static bool pf_read_backup_url(char *out, size_t out_sz)
+{
+    out[0] = '\0';
+    FILE *f = fopen("/sdcard/config.txt", "r");
+    if (!f) return false;
+    char line[384];
+    while (fgets(line, sizeof(line), f)) {
+        size_t ln = strlen(line);
+        while (ln > 0 && (line[ln - 1] == '\r' || line[ln - 1] == '\n'))
+            line[--ln] = '\0';
+        char *p = line;
+        while (*p == ' ' || *p == '\t') p++;
+        if (*p == '\0' || *p == '#') continue;
+        char *eq = strchr(p, '=');
+        if (!eq) continue;
+        *eq = '\0';
+        char *key = p;
+        char *val = eq + 1;
+        char *ke = key + strlen(key) - 1;
+        while (ke >= key && (*ke == ' ' || *ke == '\t')) *ke-- = '\0';
+        while (*val == ' ' || *val == '\t') val++;
+        if (strcmp(key, "backup_url") == 0) {
+            snprintf(out, out_sz, "%s", val);
+            break;
+        }
+    }
+    fclose(f);
+    return out[0] != '\0';
+}
+
+/* Upload a single file via multipart/form-data POST.  The relative path is
+ * sent as a "path" form field (so the server can recreate the directory tree)
+ * and the file body is streamed from SD in PF_BACKUP_CHUNK-sized reads — the
+ * file is never loaded whole into RAM.  Returns true on HTTP 2xx. */
+static bool pf_upload_file(const char *fullpath, const char *relpath, const char *url)
+{
+    struct stat st;
+    if (stat(fullpath, &st) != 0 || !S_ISREG(st.st_mode)) return false;
+    long fsize = (long)st.st_size;
+
+    char part_hdr[1024];
+    int hdr_len = snprintf(part_hdr, sizeof(part_hdr),
+        "--" PF_BACKUP_BOUNDARY "\r\n"
+        "Content-Disposition: form-data; name=\"path\"\r\n\r\n"
+        "%s\r\n"
+        "--" PF_BACKUP_BOUNDARY "\r\n"
+        "Content-Disposition: form-data; name=\"file\"; filename=\"%s\"\r\n"
+        "Content-Type: application/octet-stream\r\n\r\n",
+        relpath, relpath);
+    static const char FOOTER[] = "\r\n--" PF_BACKUP_BOUNDARY "--\r\n";
+    int footer_len = (int)strlen(FOOTER);
+    if (hdr_len < 0 || hdr_len >= (int)sizeof(part_hdr)) return false;
+
+    int total_len = hdr_len + (int)fsize + footer_len;
+    char content_type[] = "multipart/form-data; boundary=" PF_BACKUP_BOUNDARY;
+
+    bool ok = false;
+    for (int attempt = 1; attempt <= 2 && !ok; attempt++) {
+        FILE *fp = fopen(fullpath, "rb");
+        if (!fp) return false;
+
+        esp_http_client_config_t cfg = {
+            .url               = url,
+            .method            = HTTP_METHOD_POST,
+            .timeout_ms        = 20000,
+            .buffer_size       = 4096,
+            .buffer_size_tx    = 4096,
+            .keep_alive_enable = false,
+        };
+        if (strncmp(url, "https://", 8) == 0)
+            cfg.crt_bundle_attach = esp_crt_bundle_attach;
+
+        esp_http_client_handle_t client = esp_http_client_init(&cfg);
+        if (!client) { fclose(fp); return false; }
+        esp_http_client_set_header(client, "Content-Type", content_type);
+
+        if (esp_http_client_open(client, total_len) != ESP_OK) {
+            esp_http_client_cleanup(client);
+            fclose(fp);
+            if (attempt < 2) vTaskDelay(pdMS_TO_TICKS(300));
+            continue;
+        }
+
+        bool write_ok = (esp_http_client_write(client, part_hdr, hdr_len) == hdr_len);
+        char *buf = write_ok ? malloc(PF_BACKUP_CHUNK) : NULL;
+        if (buf) {
+            size_t n;
+            while (write_ok && (n = fread(buf, 1, PF_BACKUP_CHUNK, fp)) > 0) {
+                if (esp_http_client_write(client, buf, (int)n) != (int)n) write_ok = false;
+            }
+            free(buf);
+        } else {
+            write_ok = false;
+        }
+        if (write_ok)
+            write_ok = (esp_http_client_write(client, FOOTER, footer_len) == footer_len);
+
+        if (write_ok) {
+            esp_http_client_fetch_headers(client);
+            int status = esp_http_client_get_status_code(client);
+            ok = (status >= 200 && status < 300);
+            if (!ok) ESP_LOGW(TAG, "backup: %s HTTP %d", relpath, status);
+        }
+        esp_http_client_close(client);
+        esp_http_client_cleanup(client);
+        fclose(fp);
+        if (!ok && attempt < 2) vTaskDelay(pdMS_TO_TICKS(300));
+    }
+    return ok;
+}
+
+/* Recursively walk dirpath (e.g. "/sdcard"), uploading every regular file.
+ * relbase is the path relative to the SD root ("" at the top level), used to
+ * preserve the tree on the server.  Returns the count uploaded; *fail
+ * accumulates failures.  Keeps the screen updated with the running count. */
+static int pf_backup_dir(const char *dirpath, const char *relbase,
+                         const char *url, int *fail)
+{
+    DIR *d = opendir(dirpath);
+    if (!d) return 0;
+    int uploaded = 0;
+    struct dirent *e;
+    while ((e = readdir(d)) != NULL) {
+        if (e->d_name[0] == '.') continue;                    /* . .. and dotfiles */
+        if (strcmp(e->d_name, "tmp_tts.mp3") == 0) continue;  /* transient TTS file */
+
+        char child[MP3_MAX_PATH_LEN + 64];
+        snprintf(child, sizeof(child), "%s/%s", dirpath, e->d_name);
+        char rel[MP3_MAX_PATH_LEN + 64];
+        if (relbase[0])
+            snprintf(rel, sizeof(rel), "%s/%s", relbase, e->d_name);
+        else
+            snprintf(rel, sizeof(rel), "%s", e->d_name);
+
+        struct stat st;
+        if (stat(child, &st) != 0) continue;
+        if (S_ISDIR(st.st_mode)) {
+            uploaded += pf_backup_dir(child, rel, url, fail);
+        } else if (S_ISREG(st.st_mode)) {
+            if (pf_upload_file(child, rel, url)) uploaded++;
+            else                                 (*fail)++;
+            char scr[48];
+            snprintf(scr, sizeof(scr), "Backing up...\n%d files", uploaded);
+            screen_draw_text(scr);
+        }
+    }
+    closedir(d);
+    return uploaded;
+}
+
+/* Back up the entire SD card to the server in backup_url (config.txt).
+ * Runs on the main task (deferred from the WS handler) and reports the
+ * outcome back to TRIGGERcmd via pf_report_ai_result(). */
+static void pf_backup_sd(const char *run_id)
+{
+    if (!mount_sd_card_if_needed()) {
+        screen_draw_text("No SD card");
+        pf_report_ai_result("No SD card", run_id);
+        return;
+    }
+    char url[256];
+    if (!pf_read_backup_url(url, sizeof(url))) {
+        screen_draw_text("No backup_url\nin config.txt");
+        pf_report_ai_result("No backup_url in config.txt", run_id);
+        return;
+    }
+    ESP_LOGI(TAG, "backup: starting → %s", url);
+    screen_draw_text("Backing up...");
+
+    int fail = 0;
+    int uploaded = pf_backup_dir(MP3_ROOT_PATH, "", url, &fail);
+
+    char msg[64];
+    if (fail)
+        snprintf(msg, sizeof(msg), "Backup done\n%d ok, %d failed", uploaded, fail);
+    else
+        snprintf(msg, sizeof(msg), "Backup done\n%d files", uploaded);
+    screen_draw_text(msg);
+    pf_report_ai_result(msg, run_id);
+    ESP_LOGI(TAG, "backup: %d uploaded, %d failed", uploaded, fail);
+}
+
 /*
  * Sends the currently displayed JPEG plus a question to OpenAI's vision-
  * capable chat endpoint, shows the answer on screen, optionally speaks it
@@ -6608,6 +6803,7 @@ static const pf_cmd_t s_pf_cmds[] = {
 #endif
     { "folders",   "folders",   "false", "List the folders on the SD card.", "\xF0\x9F\x93\x82" /* 📂 */, "{{result}}" },
     { "files",     "files",     "true",  "List files in a folder on the SD card. Example: 'music'", "\xF0\x9F\x93\x84" /* 📄 */, "{{result}}" },
+    { "backup",    "backup",    "false", "Back up the entire SD card to the server set by 'backup_url' in config.txt (one upload per file).", "\xF0\x9F\x92\xBE" /* 💾 */, "{{result}}" },
     { "reboot",    "reboot",    "false", "Reboot the device.", "\xF0\x9F\x94\x81" /* 🔁 */, NULL },
     { "sleeptimer","sleeptimer","true",  "Set minutes of inactivity before the device sleeps (0 = never). Example: '10'", "\xF0\x9F\x98\xB4" /* 😴 */, NULL },
     { "sleep",     "sleep",     "false", "Put the device into deep sleep immediately. Wake by touching the screen.", "\xF0\x9F\x92\xA4" /* 💤 */, NULL },
@@ -8039,6 +8235,13 @@ static void pf_event_handler(const char *event_name,
         s_id[0] = '\0';   /* suppress the generic run/save below — pf_ask_gpt()
                            * sends run/save + command/result together once done */
 #endif
+
+    } else if (strcmp(s_trigger, "backup") == 0) {
+        strncpy(s_pending_backup_run_id, s_id, sizeof(s_pending_backup_run_id) - 1);
+        s_pending_backup_run_id[sizeof(s_pending_backup_run_id) - 1] = '\0';
+        s_pending_backup = true;
+        s_id[0] = '\0';   /* suppress the generic run/save below — pf_backup_sd()
+                           * reports run/save + command/result once the upload finishes */
 
 #if CONFIG_CORE2_HW
     } else if (strcmp(s_trigger, "aitts") == 0) {
@@ -9562,6 +9765,10 @@ void picture_frame_run(void)
                 pf_ask_gpt(s_pending_askgpt_text, s_pending_askgpt_run_id);
             }
 #endif
+            if (s_pending_backup) {
+                s_pending_backup = false;
+                pf_backup_sd(s_pending_backup_run_id);
+            }
 
 #if CONFIG_CORE2_HW
             {

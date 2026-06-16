@@ -94,6 +94,14 @@
   "icon": "📄"
  },
  {
+  "trigger": "backup",
+  "command": "backup",
+  "allowParams": "false",
+  "voiceReply": "{{result}}",
+  "mcpToolDescription": "Back up the entire SD card on the user's Core2 device to the server configured by 'backup_url' in config.txt (uploads one file per request).",
+  "icon": "💾"
+ },
+ {
   "trigger": "reboot",
   "command": "reboot",
   "allowParams": "false",
