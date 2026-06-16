@@ -7042,7 +7042,7 @@ static const pf_cmd_t s_pf_cmds[] = {
      * echo the text, so it is not registered there. */
     { "speak",     "speak",     "true",  "Speak text aloud via TTS. Example: 'Hello world!'",           "\xF0\x9F\x94\x8A" /* 🔊 */, NULL },
 #endif
-    { "color",     "color",     "true",  "Change the display color. Example: 'red' or '#FF0000'", "\xF0\x9F\x94\xA4" /* 🔤 */, NULL },
+    { "color",     "color",     "true",  "Change the display background color on the user's Core2 device. Example: 'red' or '#FF0000'", "\xF0\x9F\x94\xA4" /* 🔤 */, NULL },
     { "textcolor", "textcolor", "true",  "Change the text color. Example: 'blue' or '#0000FF'", "\xF0\x9F\x8E\xA8" /* 🎨 */, NULL },
     { "fontsize",  "fontsize",  "true",  "Change the font size (1-4). Example: '3'",                     "\xF0\x9F\x94\xA1" /* 🔡 */, NULL },
     { "landscape", "landscape", "false", "Set the display to landscape orientation.",                        "\xE2\x86\x94\xEF\xB8\x8F" /* ↔️ */, NULL },
@@ -7279,7 +7279,7 @@ static void sync_remove_stale_mp3_commands(const char *del_url,
 static pf_cmd_t mp3_folder_pf_cmd(const mp3_folder_t *folder, char *desc, size_t desc_sz)
 {
     snprintf(desc, desc_sz,
-             "Play mp3 files in the %s folder. If the parameter is a number from 1 to 100 to specify one of the mp3 files, otherwise, this command will play the first mp3 file, or a random file in the folder if shuffle mode is on.",
+             "Play mp3 files in the %s folder. If the parameter is a number from 1 to 100, it specifies one of the mp3 files, otherwise, this command will play the first mp3 file, or a random file in the folder if shuffle mode is on.",
              folder->trigger);
     return (pf_cmd_t){
         .trigger = folder->trigger,
@@ -8141,7 +8141,18 @@ static void pf_event_handler(const char *event_name,
                      * the list display's one-line-per-entry tap math valid. */
                     if (disp_len > max_cols) disp_len = max_cols;
 #endif
-                    if (msg_len + 1 + disp_len < (int)sizeof(msg) - 1) {
+                    int ja_need = (jfirst ? 0 : 1) + 4 + nlen;
+                    bool msg_fits  = (msg_len + 1 + disp_len < (int)sizeof(msg) - 1);
+                    bool json_fits = (ja + ja_need < (int)sizeof(json_arr) - 2);
+#if CONFIG_CORE2_HW
+                    /* Stop early once all three storage areas are full — avoids
+                     * exhausting a large directory and missing the result timeout. */
+                    if (count > 0 && !msg_fits && !json_fits &&
+                            s_file_list_count >= PF_FILE_LIST_MAX) break;
+#else
+                    if (count > 0 && !msg_fits && !json_fits) break;
+#endif
+                    if (msg_fits) {
                         msg[msg_len++] = '\n';
                         memcpy(msg + msg_len, e->d_name, (size_t)disp_len);
                         msg_len += disp_len;
@@ -8166,8 +8177,7 @@ static void pf_event_handler(const char *event_name,
                         }
 #endif
                     }
-                    int ja_need = (jfirst ? 0 : 1) + 4 + nlen;
-                    if (ja + ja_need < (int)sizeof(json_arr) - 2) {
+                    if (json_fits) {
                         if (!jfirst) json_arr[ja++] = ',';
                         json_arr[ja++] = '\\'; json_arr[ja++] = '"';
                         memcpy(json_arr + ja, e->d_name, (size_t)nlen);
