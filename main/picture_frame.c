@@ -6316,8 +6316,12 @@ static bool pf_upload_file(const char *fullpath, const char *relpath, const char
             .url               = url,
             .method            = HTTP_METHOD_POST,
             .timeout_ms        = 20000,
-            .buffer_size       = 4096,
-            .buffer_size_tx    = 4096,
+            /* Keep the HTTP buffers small: they come from internal RAM, which is
+             * scarce on the BT-enabled Core2 and shared with the SD/display SPI
+             * DMA pool — large buffers here starved that pool and crashed the
+             * SD driver (setup_dma_priv_buffer: Failed to allocate priv RX buffer). */
+            .buffer_size       = 1024,
+            .buffer_size_tx    = 1024,
             .keep_alive_enable = false,
         };
         if (strncmp(url, "https://", 8) == 0)
@@ -6335,7 +6339,13 @@ static bool pf_upload_file(const char *fullpath, const char *relpath, const char
         }
 
         bool write_ok = (esp_http_client_write(client, part_hdr, hdr_len) == hdr_len);
-        char *buf = write_ok ? malloc(PF_BACKUP_CHUNK) : NULL;
+        /* Read buffer from PSRAM (with internal fallback) so it does not consume
+         * the internal DMA pool the SD driver needs. */
+        char *buf = NULL;
+        if (write_ok) {
+            buf = heap_caps_malloc(PF_BACKUP_CHUNK, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+            if (!buf) buf = heap_caps_malloc(PF_BACKUP_CHUNK, MALLOC_CAP_8BIT);
+        }
         if (buf) {
             size_t n;
             while (write_ok && (n = fread(buf, 1, PF_BACKUP_CHUNK, fp)) > 0) {
@@ -6364,14 +6374,15 @@ static bool pf_upload_file(const char *fullpath, const char *relpath, const char
 
 /* Recursively walk dirpath (e.g. "/sdcard"), uploading every regular file.
  * relbase is the path relative to the SD root ("" at the top level), used to
- * preserve the tree on the server.  Returns the count uploaded; *fail
- * accumulates failures.  Keeps the screen updated with the running count. */
-static int pf_backup_dir(const char *dirpath, const char *relbase,
-                         const char *url, int *fail)
+ * preserve the tree on the server.  *uploaded / *fail accumulate the global
+ * counts across the whole tree so the on-screen total never resets when the
+ * walk crosses into a subfolder.  The screen is updated only every few files to
+ * limit SPI/DMA contention with the main loop. */
+static void pf_backup_dir(const char *dirpath, const char *relbase,
+                          const char *url, int *uploaded, int *fail)
 {
     DIR *d = opendir(dirpath);
-    if (!d) return 0;
-    int uploaded = 0;
+    if (!d) return;
     struct dirent *e;
     while ((e = readdir(d)) != NULL) {
         if (e->d_name[0] == '.') continue;                    /* . .. and dotfiles */
@@ -6388,17 +6399,19 @@ static int pf_backup_dir(const char *dirpath, const char *relbase,
         struct stat st;
         if (stat(child, &st) != 0) continue;
         if (S_ISDIR(st.st_mode)) {
-            uploaded += pf_backup_dir(child, rel, url, fail);
+            pf_backup_dir(child, rel, url, uploaded, fail);
         } else if (S_ISREG(st.st_mode)) {
-            if (pf_upload_file(child, rel, url)) uploaded++;
+            if (pf_upload_file(child, rel, url)) (*uploaded)++;
             else                                 (*fail)++;
-            char scr[48];
-            snprintf(scr, sizeof(scr), "Backing up...\n%d files", uploaded);
-            screen_draw_text(scr);
+            if ((*uploaded + *fail) % 5 == 0) {
+                char scr[48];
+                snprintf(scr, sizeof(scr), "Backing up...\n%d files", *uploaded);
+                screen_draw_text(scr);
+            }
+            vTaskDelay(pdMS_TO_TICKS(10));   /* yield SPI/CPU between files */
         }
     }
     closedir(d);
-    return uploaded;
 }
 
 /* Back up the entire SD card to the server in backup_url (secrets_config.txt).
@@ -6430,7 +6443,8 @@ static void pf_backup_sd(const char *run_id)
     screen_draw_text("Backing up...");
 
     int fail = 0;
-    int uploaded = pf_backup_dir(MP3_ROOT_PATH, "", url, &fail);
+    int uploaded = 0;
+    pf_backup_dir(MP3_ROOT_PATH, "", url, &uploaded, &fail);
 
     char msg[64];
     if (fail)
