@@ -157,21 +157,28 @@ openai_key=sk-proj-...
 # secrets_in_sd=1
 ```
 
-The file is read every boot, so credentials can be updated without
-re-flashing. Removing a key from the file does not clear its NVS value.
+#### Default behaviour (`secrets_in_sd` absent or `=0`)
+
+Secrets are **moved** to NVS on first boot:
+
+1. Each secret key is written to NVS.
+2. If all writes succeed, the secret lines are removed from `config.txt` so
+   the file no longer contains plaintext credentials.
+3. The device reconnects on every subsequent boot using NVS alone — the SD
+   card is not required.
+
+If any NVS write fails, the secrets are left in `config.txt` intact so they
+can be retried on the next boot.
 
 #### `secrets_in_sd=1` — SD-only mode
 
-By default the firmware copies secrets from `config.txt` into NVS so the
-device can reconnect after the SD card is removed.  Adding `secrets_in_sd=1`
-disables that:
+Secrets are **never written to NVS** and remain in `config.txt`:
 
-- WiFi credentials and the OpenAI key are **never written to NVS**.
-- They are held only in RAM for the current boot, read fresh from the SD card
-  each time.
+- WiFi credentials and the OpenAI key are loaded into RAM only for the
+  current boot, read fresh from the card each time.
 - If the SD card is absent at boot, the device falls back to whatever NVS
-  already contains (which may be empty).
-- Existing NVS credentials are not erased — this setting just suppresses new
+  already contains (which may be empty, triggering SoftAP provisioning).
+- Existing NVS credentials are not erased — the setting only suppresses new
   writes.
 
 Use this when you want physical control over access: pulling the SD card makes

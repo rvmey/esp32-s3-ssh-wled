@@ -8632,10 +8632,25 @@ static esp_err_t connect_and_subscribe(bool initial_connect)
 
 /* ── SD card boot-time config ───────────────────────────────────────────── */
 
-/* Read /sdcard/config.txt (key=value lines) and write any found WiFi
- * credentials or OpenAI key to NVS, overwriting previously stored values.
- * If the file contains "secrets_in_sd=1", secrets are kept in module-level
- * vars and used directly without being written to NVS.
+/* Returns true for key names whose values are secrets (WiFi creds, API keys). */
+static bool sd_is_secret_key(const char *key)
+{
+    return (strcmp(key, "ssid")       == 0 || strcmp(key, "password")  == 0 ||
+            strcmp(key, "ssid2")      == 0 || strcmp(key, "password2") == 0 ||
+            strcmp(key, "ssid3")      == 0 || strcmp(key, "password3") == 0 ||
+            strcmp(key, "openai_key") == 0);
+}
+
+/* Read /sdcard/config.txt (key=value lines) and process secrets.
+ *
+ * Default (secrets_in_sd absent or =0):
+ *   Write secrets to NVS and, if all writes succeed, remove the secret lines
+ *   from config.txt so the file no longer contains plaintext credentials.
+ *
+ * secrets_in_sd=1:
+ *   Keep secrets on the SD card only — store in module-level vars, do NOT
+ *   write to NVS.  Credentials are unavailable if the card is removed.
+ *
  * Silently skips if the SD card is absent or the file does not exist. */
 static void sd_apply_config_if_present(void)
 {
@@ -8739,29 +8754,41 @@ static void sd_apply_config_if_present(void)
         return;
     }
 
-    /* Default: write secrets to NVS so they persist without the SD card. */
+    /* Default: write secrets to NVS, then remove them from config.txt. */
+    bool any_secret = ssid[0] || ssid2[0] || ssid3[0];
+#if CONFIG_CORE2_HW
+    any_secret = any_secret || openai_key[0];
+#endif
+    bool all_ok = true;
+
     if (ssid[0]) {
         esp_err_t err = wifi_save_credentials(ssid, password);
         if (err == ESP_OK)
             ESP_LOGI(TAG, "sd config: saved WiFi SSID '%s'", ssid);
-        else
+        else {
             ESP_LOGE(TAG, "sd config: WiFi save failed: %s", esp_err_to_name(err));
+            all_ok = false;
+        }
     }
 
     if (ssid2[0]) {
         esp_err_t err = wifi_save_credentials2(ssid2, password2);
         if (err == ESP_OK)
             ESP_LOGI(TAG, "sd config: saved WiFi SSID2 '%s'", ssid2);
-        else
+        else {
             ESP_LOGE(TAG, "sd config: WiFi2 save failed: %s", esp_err_to_name(err));
+            all_ok = false;
+        }
     }
 
     if (ssid3[0]) {
         esp_err_t err = wifi_save_credentials3(ssid3, password3);
         if (err == ESP_OK)
             ESP_LOGI(TAG, "sd config: saved WiFi SSID3 '%s'", ssid3);
-        else
+        else {
             ESP_LOGE(TAG, "sd config: WiFi3 save failed: %s", esp_err_to_name(err));
+            all_ok = false;
+        }
     }
 
 #if CONFIG_CORE2_HW
@@ -8769,10 +8796,62 @@ static void sd_apply_config_if_present(void)
         esp_err_t err = nvs_write_str(NVS_KEY_STT, openai_key);
         if (err == ESP_OK)
             ESP_LOGI(TAG, "sd config: saved OpenAI key");
-        else
+        else {
             ESP_LOGE(TAG, "sd config: OpenAI key save failed: %s", esp_err_to_name(err));
+            all_ok = false;
+        }
     }
 #endif
+
+    /* If all secrets were written to NVS, strip them from config.txt so the
+     * file no longer contains plaintext credentials. */
+    if (any_secret && all_ok) {
+        FILE *rf = fopen("/sdcard/config.txt", "r");
+        if (rf) {
+            char *keep = (char *)malloc(4096);
+            size_t keep_len = 0;
+            if (keep) {
+                char rline[384];
+                while (fgets(rline, sizeof(rline), rf)) {
+                    /* Identify the key on this line without modifying rline. */
+                    char tmp[384];
+                    strncpy(tmp, rline, sizeof(tmp) - 1);
+                    tmp[sizeof(tmp) - 1] = '\0';
+                    char *rp = tmp;
+                    while (*rp == ' ' || *rp == '\t') rp++;
+                    bool is_secret_line = false;
+                    if (*rp != '\0' && *rp != '#') {
+                        char *req = strchr(rp, '=');
+                        if (req) {
+                            *req = '\0';
+                            char *rke = rp + strlen(rp) - 1;
+                            while (rke >= rp && (*rke == ' ' || *rke == '\t'))
+                                *rke-- = '\0';
+                            is_secret_line = sd_is_secret_key(rp);
+                        }
+                    }
+                    if (!is_secret_line) {
+                        size_t rlen = strlen(rline);
+                        if (keep_len + rlen < 4096) {
+                            memcpy(keep + keep_len, rline, rlen);
+                            keep_len += rlen;
+                        }
+                    }
+                }
+                fclose(rf);
+                FILE *wf = fopen("/sdcard/config.txt", "w");
+                if (wf) {
+                    fwrite(keep, 1, keep_len, wf);
+                    fclose(wf);
+                    ESP_LOGI(TAG, "sd config: secrets moved to NVS and removed from config.txt");
+                }
+                free(keep);
+            } else {
+                fclose(rf);
+                ESP_LOGW(TAG, "sd config: malloc failed, secrets left in config.txt");
+            }
+        }
+    }
 }
 
 /* ── Main entry point ───────────────────────────────────────────────────── */
