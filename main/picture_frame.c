@@ -7331,9 +7331,11 @@ static void pf_event_handler(const char *event_name,
              s_trigger, s_id, s_params);
 
 #if CONFIG_CORE2_HW
-    /* Leaving the folder/file list display for anything other than the
-     * folders -> files drill-down: restore the pre-list font scale. */
-    if ((s_folder_list_display_active || s_file_list_display_active) &&
+    /* Leaving any scale-2 UI screen (battery/folder/file list): restore the
+     * pre-display font scale. The folders -> files drill-down is the one
+     * exception where we stay in list mode and keep the saved scale. */
+    if ((s_battery_display_active ||
+         s_folder_list_display_active || s_file_list_display_active) &&
         strcmp(s_trigger, "files") != 0) {
         pf_list_restore_scale();
     }
@@ -8013,6 +8015,7 @@ static void pf_event_handler(const char *event_name,
             char scr[80];
             snprintf(scr, sizeof(scr), "Battery: %d%%\n%d mV%s", level, vbat,
                      charging ? "\nCharging" : "");
+            pf_list_enter_scale2();
             screen_draw_text(scr);
             s_battery_display_active = true;
             snprintf(s_pending_result, sizeof(s_pending_result),
