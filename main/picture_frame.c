@@ -467,6 +467,7 @@ static char          s_pending_run_id[33]  __attribute__((unused)) = {0};
 static char          s_pending_result[512] __attribute__((unused)) = {0};
 static volatile bool s_pending_has_result  __attribute__((unused)) = false;
 static volatile bool s_pending_run        = false;
+static volatile bool s_pending_save       = false;  /* deferred to main loop — NVS+SD writes overflow WS task stack */
 static volatile bool s_pending_vibrate    __attribute__((unused)) = false;
 static volatile bool s_pending_voice_query __attribute__((unused)) = false;
 static volatile bool s_pending_speak       __attribute__((unused)) = false;
@@ -7442,45 +7443,12 @@ static void pf_event_handler(const char *event_name,
         }
 
     } else if (strcmp(s_trigger, "save") == 0) {
-        esp_err_t err = save_display_state_to_nvs();
-        if (err != ESP_OK) {
-            ESP_LOGE(TAG, "save: failed to persist display state: %s", esp_err_to_name(err));
-            screen_draw_text("Save failed");
-        } else {
-            ESP_LOGI(TAG, "save: display state persisted");
-            bool landscape = false;
-            int font_scale = 2;
-            uint8_t bg_r = 0, bg_g = 0, bg_b = 0;
-            uint8_t fg_r = 255, fg_g = 255, fg_b = 255;
-            screen_get_landscape(&landscape);
-            screen_get_font_scale(&font_scale);
-            screen_get_color(&bg_r, &bg_g, &bg_b);
-            screen_get_text_color(&fg_r, &fg_g, &fg_b);
-            bool music_active = s_mp3.active && s_mp3_ui_override_allowed;
-            char msg[256];
-            int mlen = 0;
-            mlen += snprintf(msg + mlen, sizeof(msg) - mlen,
-                             "Saved settings\n%s Font%d\nBG %u,%u,%u\nFG %u,%u,%u\n",
-                             landscape ? "Land" : "Port", font_scale,
-                             bg_r, bg_g, bg_b, fg_r, fg_g, fg_b);
-            if (music_active) {
-                mlen += snprintf(msg + mlen, sizeof(msg) - mlen, "Music: On\n");
-            } else if (s_jpeg_cache && s_jpeg_cache_len > 0 && s_current_jpeg_url[0]) {
-                mlen += snprintf(msg + mlen, sizeof(msg) - mlen,
-                                 "%.18s\n", s_current_jpeg_url);
-            } else if (s_last_text[0]) {
-                /* Show first line of text, up to 16 chars */
-                char tline[17];
-                strncpy(tline, s_last_text, sizeof(tline) - 1);
-                tline[sizeof(tline) - 1] = '\0';
-                char *nl = strchr(tline, '\n');
-                if (nl) *nl = '\0';
-                mlen += snprintf(msg + mlen, sizeof(msg) - mlen, "Txt:%.13s\n", tline);
-            }
-            snprintf(msg + mlen, sizeof(msg) - mlen, "%s",
-                     s_sd_mounted ? "SD card + NVS" : "NVS only");
-            screen_draw_text(msg);
-        }
+        /* Defer to main loop: save_display_state_to_nvs() calls NVS flash ops
+         * and save_display_state_to_sd() allocates ~1 KB on the stack for
+         * text encoding and then calls FatFS (f_open/fprintf/fclose, ~2-3 KB).
+         * Combined with the WS task's baseline stack usage this overflows
+         * the 6 KB websocket_task stack. */
+        s_pending_save = true;
 
     } else if (strcmp(s_trigger, "savepic") == 0) {
         /* Preserve JPEG folder navigation state across savepic so swipe still works. */
@@ -9445,6 +9413,48 @@ void picture_frame_run(void)
                                  (unsigned long)(backoff * portTICK_PERIOD_MS),
                                  s_pending_run_id);
                     }
+                }
+            }
+
+            if (s_pending_save) {
+                s_pending_save = false;
+                esp_err_t save_err = save_display_state_to_nvs();
+                if (save_err != ESP_OK) {
+                    ESP_LOGE(TAG, "save: NVS failed: %s", esp_err_to_name(save_err));
+                    screen_draw_text("Save failed");
+                } else {
+                    ESP_LOGI(TAG, "save: display state persisted");
+                    bool landscape = false;
+                    int font_scale = 2;
+                    uint8_t bg_r = 0, bg_g = 0, bg_b = 0;
+                    uint8_t fg_r = 255, fg_g = 255, fg_b = 255;
+                    screen_get_landscape(&landscape);
+                    screen_get_font_scale(&font_scale);
+                    screen_get_color(&bg_r, &bg_g, &bg_b);
+                    screen_get_text_color(&fg_r, &fg_g, &fg_b);
+                    bool music_active = s_mp3.active && s_mp3_ui_override_allowed;
+                    char msg[256];
+                    int mlen = 0;
+                    mlen += snprintf(msg + mlen, sizeof(msg) - mlen,
+                                     "Saved settings\n%s Font%d\nBG %u,%u,%u\nFG %u,%u,%u\n",
+                                     landscape ? "Land" : "Port", font_scale,
+                                     bg_r, bg_g, bg_b, fg_r, fg_g, fg_b);
+                    if (music_active) {
+                        mlen += snprintf(msg + mlen, sizeof(msg) - mlen, "Music: On\n");
+                    } else if (s_jpeg_cache && s_jpeg_cache_len > 0 && s_current_jpeg_url[0]) {
+                        mlen += snprintf(msg + mlen, sizeof(msg) - mlen,
+                                         "%.18s\n", s_current_jpeg_url);
+                    } else if (s_last_text[0]) {
+                        char tline[17];
+                        strncpy(tline, s_last_text, sizeof(tline) - 1);
+                        tline[sizeof(tline) - 1] = '\0';
+                        char *nl = strchr(tline, '\n');
+                        if (nl) *nl = '\0';
+                        mlen += snprintf(msg + mlen, sizeof(msg) - mlen, "Txt:%.13s\n", tline);
+                    }
+                    snprintf(msg + mlen, sizeof(msg) - mlen, "%s",
+                             s_sd_mounted ? "SD card + NVS" : "NVS only");
+                    screen_draw_text(msg);
                 }
             }
 
