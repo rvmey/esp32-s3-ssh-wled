@@ -423,6 +423,9 @@ static bool          s_menu_skip_close_redraw = false;
  * mp3 now-playing UI doesn't immediately redraw over it. Cleared when the
  * next command/tap dismisses the result screen. */
 static bool          s_menu_result_active = false;
+/* When the "save" result screen forces font scale to 1, this holds the original
+ * scale so it can be restored when the result is dismissed. -1 = not overridden. */
+static int           s_save_result_saved_font_scale = -1;
 #endif
 /* Set while a JPEG-folder image is on screen; swipe navigates within the folder. */
 static volatile bool s_jpeg_folder_display_active = false;
@@ -4046,6 +4049,7 @@ typedef enum {
     PF_MENU_MUTE, PF_MENU_SHUFFLE, PF_MENU_REPEAT_TRACK, PF_MENU_REPEAT_PLAYLIST,
     PF_MENU_VISUALIZER, PF_MENU_VIZ_NEXT, PF_MENU_VIZ_PREV,
     PF_MENU_LEDCOLOR, PF_MENU_SLEEP_TIMER, PF_MENU_SLEEP_ON_POWER, PF_MENU_AI_SPEECH,
+    PF_MENU_CLOCK,
     PF_MENU_ITEM_COUNT
 } pf_menu_item_id_t;
 
@@ -4141,6 +4145,11 @@ static void pf_menu_item_label(int idx, char *out, size_t out_sz)
         case PF_MENU_AI_SPEECH:
             snprintf(out, out_sz, "AI Speech: %s", s_ai_tts_enabled ? "On" : "Off");
             break;
+        case PF_MENU_CLOCK:
+            snprintf(out, out_sz, "Clock: %s",
+                     s_clock_mode == PF_CLOCK_ANALOG ? "Analog" :
+                     s_clock_mode == PF_CLOCK_DIGITAL ? "Digital" : "Off");
+            break;
         default:
             snprintf(out, out_sz, "?");
             break;
@@ -4225,6 +4234,7 @@ static bool pf_menu_execute_item(int idx)
             return false;
         case PF_MENU_SLEEP_ON_POWER:  pf_menu_dispatch("sleeponpower", "");  return false;
         case PF_MENU_AI_SPEECH:       pf_menu_dispatch("aitts", "");         return false;
+        case PF_MENU_CLOCK:           pf_menu_dispatch("clock", "");         return true;
         default: return true;
     }
 }
@@ -4480,9 +4490,13 @@ static bool pf_touch_handler(int x, int y, screen_gesture_t gesture)
         return true;
     }
     if (s_menu_result_active && gesture == SCREEN_GESTURE_TAP) {
-        /* Dismiss a plain-text menu-action result (e.g. BT status/pair) that
+        /* Dismiss a plain-text menu-action result (e.g. BT status/pair/save) that
          * has no dedicated tap handler of its own. */
         s_menu_result_active = false;
+        if (s_save_result_saved_font_scale >= 1) {
+            screen_set_font_scale_silent(s_save_result_saved_font_scale);
+            s_save_result_saved_font_scale = -1;
+        }
         if (s_mp3.active && s_mp3_ui_override_allowed) {
             mp3_request_ui_refresh();
         } else {
@@ -7264,11 +7278,11 @@ static void pf_clock_render_digital(const struct tm *tm_now)
 {
     char time_buf[16];
     char date_buf[24];
-    strftime(time_buf, sizeof(time_buf), "%H:%M:%S", tm_now);
+    strftime(time_buf, sizeof(time_buf), "%I:%M:%S %p", tm_now);
     strftime(date_buf, sizeof(date_buf), "%a %Y-%m-%d", tm_now);
 
     char msg[64];
-    snprintf(msg, sizeof(msg), "\n\n%s\n\n%s\nUTC", time_buf, date_buf);
+    snprintf(msg, sizeof(msg), "\n\n%s\n\n%s", time_buf, date_buf);
 
     if (s_mp3_saved_font_scale < 0) {
         int cur = 2;
@@ -7344,6 +7358,7 @@ static void pf_event_handler(const char *event_name,
     s_folder_list_display_active = false;
     s_file_list_display_active = false;
     s_menu_result_active = false;
+    s_save_result_saved_font_scale = -1;
     /* Any command other than "clock" itself takes the screen back. */
     if (strcmp(s_trigger, "clock") != 0) {
         pf_clock_stop();
@@ -9433,27 +9448,34 @@ void picture_frame_run(void)
                     screen_get_color(&bg_r, &bg_g, &bg_b);
                     screen_get_text_color(&fg_r, &fg_g, &fg_b);
                     bool music_active = s_mp3.active && s_mp3_ui_override_allowed;
-                    char msg[256];
+                    char msg[640];
                     int mlen = 0;
                     mlen += snprintf(msg + mlen, sizeof(msg) - mlen,
-                                     "Saved settings\n%s Font%d\nBG %u,%u,%u\nFG %u,%u,%u\n",
-                                     landscape ? "Land" : "Port", font_scale,
-                                     bg_r, bg_g, bg_b, fg_r, fg_g, fg_b);
-                    if (music_active) {
-                        mlen += snprintf(msg + mlen, sizeof(msg) - mlen, "Music: On\n");
-                    } else if (s_jpeg_cache && s_jpeg_cache_len > 0 && s_current_jpeg_url[0]) {
+                                     "Saved settings\n"
+                                     "BG: %u,%u,%u\n"
+                                     "FG: %u,%u,%u\n"
+                                     "%s  Font %d\n"
+                                     "Music: %s\n",
+                                     bg_r, bg_g, bg_b,
+                                     fg_r, fg_g, fg_b,
+                                     landscape ? "Landscape" : "Portrait", font_scale,
+                                     music_active ? "On" : "Off");
+                    if (!music_active && s_jpeg_cache && s_jpeg_cache_len > 0 && s_current_jpeg_url[0]) {
                         mlen += snprintf(msg + mlen, sizeof(msg) - mlen,
-                                         "%.18s\n", s_current_jpeg_url);
-                    } else if (s_last_text[0]) {
-                        char tline[17];
+                                         "JPEG: %s\n", s_current_jpeg_url);
+                    }
+                    if (s_last_text[0]) {
+                        char tline[65];
                         strncpy(tline, s_last_text, sizeof(tline) - 1);
                         tline[sizeof(tline) - 1] = '\0';
                         char *nl = strchr(tline, '\n');
                         if (nl) *nl = '\0';
-                        mlen += snprintf(msg + mlen, sizeof(msg) - mlen, "Txt:%.13s\n", tline);
+                        mlen += snprintf(msg + mlen, sizeof(msg) - mlen, "Text: %s\n", tline);
                     }
                     snprintf(msg + mlen, sizeof(msg) - mlen, "%s",
-                             s_sd_mounted ? "SD card + NVS" : "NVS only");
+                             s_sd_mounted ? "SD + NVS" : "NVS only");
+                    s_save_result_saved_font_scale = font_scale;
+                    screen_set_font_scale_silent(1);
                     screen_draw_text(msg);
                 }
             }
