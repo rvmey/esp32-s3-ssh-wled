@@ -381,6 +381,7 @@ static const char *tcmd_display_host(void)
 #define NVS_KEY_OPENAI  "stt_key"   /* shared OpenAI key (also used by askpic) */
 #define NVS_KEY_AI_TTS  "ai_tts"
 #define NVS_KEY_MIC_SRC "mic_src"  /* 0 = built-in PDM (default), 1 = Grove ADC */
+#define NVS_KEY_CLOCK_MODE "clock_mode" /* 0=off, 1=digital, 2=analog */
 
 #define HW_TOKEN_MAX_LEN    513   /* 512 payload + NUL */
 #define COMPUTER_ID_MAX_LEN  33   /* 32 payload + NUL  */
@@ -4414,6 +4415,7 @@ static bool pf_touch_handler(int x, int y, screen_gesture_t gesture)
          * tick redraws via pf_clock_render(). */
         s_clock_mode = (s_clock_mode == PF_CLOCK_ANALOG) ? PF_CLOCK_DIGITAL : PF_CLOCK_ANALOG;
         s_clock_last_sec = -1;
+        nvs_write_u8(NVS_KEY_CLOCK_MODE, (uint8_t)s_clock_mode);
         return true;
     }
     if (s_battery_display_active && gesture == SCREEN_GESTURE_TAP) {
@@ -7361,6 +7363,8 @@ static void pf_event_handler(const char *event_name,
     s_save_result_saved_font_scale = -1;
     /* Any command other than "clock" itself takes the screen back. */
     if (strcmp(s_trigger, "clock") != 0) {
+        if (s_clock_mode != PF_CLOCK_OFF)
+            nvs_write_u8(NVS_KEY_CLOCK_MODE, 0);
         pf_clock_stop();
     }
 #endif
@@ -8069,6 +8073,7 @@ static void pf_event_handler(const char *event_name,
 #if CONFIG_CORE2_HW
     } else if (strcmp(s_trigger, "clock") == 0) {
         pf_clock_start(s_params);
+        nvs_write_u8(NVS_KEY_CLOCK_MODE, (uint8_t)s_clock_mode);
 #endif
 
     } else {
@@ -8967,6 +8972,9 @@ void picture_frame_run(void)
     http_pf_config_start(NULL);
 #endif
 
+#if CONFIG_CORE2_HW
+    uint8_t clock_mode_saved = 0;
+#endif
     {
         uint8_t shuffle = 0;
         if (nvs_read_u8(NVS_KEY_SHUFFLE, &shuffle)) {
@@ -9012,6 +9020,7 @@ void picture_frame_run(void)
         uint8_t mic_src = 0;
         nvs_read_u8(NVS_KEY_MIC_SRC, &mic_src);
         s_mic_src_grove = (mic_src != 0);
+        nvs_read_u8(NVS_KEY_CLOCK_MODE, &clock_mode_saved);
 #endif
     }
     /* Defer SD mount/index work until the main loop so boot UI is responsive. */
@@ -9251,6 +9260,10 @@ void picture_frame_run(void)
                 mp3_request_ui_refresh();
             }
             restore_display_state_from_nvs();
+#if CONFIG_CORE2_HW
+            if (clock_mode_saved != 0)
+                pf_clock_start(clock_mode_saved == (uint8_t)PF_CLOCK_ANALOG ? "analog" : "digital");
+#endif
         }
 
         while (true) {
