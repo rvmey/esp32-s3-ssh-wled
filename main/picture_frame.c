@@ -6259,7 +6259,8 @@ static void pf_report_ai_result(const char *answer, const char *run_id)
 /* ── SD-card backup: upload every file to a user-configured HTTP(S) server ── */
 
 #define PF_BACKUP_BOUNDARY "----TCMDCore2BackupBoundary7f3a"
-#define PF_BACKUP_CHUNK    4096
+#define PF_BACKUP_CHUNK    4096              /* socket-write sub-chunk (internal RAM) */
+#define PF_BACKUP_PART     (1024 * 1024)     /* bytes read into PSRAM per POST */
 
 /* Read the "backup_url" value from /sdcard/secrets_config.txt into out.
  * Uses the same line-parsing style as sd_apply_config_if_present().
@@ -6294,92 +6295,42 @@ static bool pf_read_backup_url(char *out, size_t out_sz)
     return out[0] != '\0';
 }
 
-/* Upload a single file via multipart/form-data POST.  The relative path is
- * sent as a "path" form field (so the server can recreate the directory tree).
- * Files that fit are pre-loaded into PSRAM and POSTed while the SD card is idle
- * (preferred — SD and WiFi never contend for internal DMA RAM); files too large
- * for PSRAM (multi-MB MP3s, tens-of-MB MJPEGs) stream from SD through a small
- * INTERNAL DMA-capable buffer instead.  Returns true on HTTP 2xx. */
-static bool pf_upload_file(const char *fullpath, const char *relpath, const char *url)
+/* POST one chunk of a file as multipart/form-data.  Fields: "path" (relative
+ * path, so the server recreates the tree), "offset" (this chunk's byte offset),
+ * "total" (the whole file size) and "file" (the chunk bytes).  The server writes
+ * the chunk at the given offset; a large file arrives as several in-order chunks.
+ * data lives in PSRAM and the SD card is idle while this runs, so the SD-SPI
+ * driver and the WiFi/HTTP stack never compete for internal DMA RAM.  Returns
+ * true on HTTP 2xx. */
+static bool pf_post_chunk(const char *url, const char *relpath,
+                          long offset, long total,
+                          const uint8_t *data, size_t len)
 {
-    struct stat st;
-    if (stat(fullpath, &st) != 0 || !S_ISREG(st.st_mode)) return false;
-    long fsize = (long)st.st_size;
-
-    /* Allocate the multipart header from PSRAM (with internal fallback) so it
-     * does not consume the internal stack, which is already deep by the time
-     * we reach this function (pf_backup_task → pf_backup_sd → pf_backup_dir
-     * → pf_upload_file) and esp_http_client_open adds several more KB. */
     char *part_hdr = heap_caps_malloc(1024, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!part_hdr) part_hdr = heap_caps_malloc(1024, MALLOC_CAP_8BIT);
     if (!part_hdr) return false;
+    const char *base = strrchr(relpath, '/');
+    base = base ? base + 1 : relpath;
     int hdr_len = snprintf(part_hdr, 1024,
         "--" PF_BACKUP_BOUNDARY "\r\n"
-        "Content-Disposition: form-data; name=\"path\"\r\n\r\n"
-        "%s\r\n"
+        "Content-Disposition: form-data; name=\"path\"\r\n\r\n%s\r\n"
+        "--" PF_BACKUP_BOUNDARY "\r\n"
+        "Content-Disposition: form-data; name=\"offset\"\r\n\r\n%ld\r\n"
+        "--" PF_BACKUP_BOUNDARY "\r\n"
+        "Content-Disposition: form-data; name=\"total\"\r\n\r\n%ld\r\n"
         "--" PF_BACKUP_BOUNDARY "\r\n"
         "Content-Disposition: form-data; name=\"file\"; filename=\"%s\"\r\n"
         "Content-Type: application/octet-stream\r\n\r\n",
-        relpath, relpath);
+        relpath, offset, total, base);
     static const char FOOTER[] = "\r\n--" PF_BACKUP_BOUNDARY "--\r\n";
     int footer_len = (int)strlen(FOOTER);
     if (hdr_len < 0 || hdr_len >= 1024) { free(part_hdr); return false; }
 
-    int total_len = hdr_len + (int)fsize + footer_len;
+    int total_len = hdr_len + (int)len + footer_len;
     char content_type[] = "multipart/form-data; boundary=" PF_BACKUP_BOUNDARY;
-
-    /* Choose a path.  On the Core2 the SD card shares the SPI bus and needs
-     * internal DMA RAM for every read; the WiFi/HTTP stack competes for that
-     * same scarce internal RAM.  Preferred: pre-load the whole file into PSRAM
-     * (SD active, no socket) then POST from PSRAM (socket active, SD idle) so
-     * the two heavy consumers never overlap.  Large media won't fit in PSRAM,
-     * so those stream from SD through a small INTERNAL DMA-capable buffer:
-     * reading into internal RAM lets the SD-SPI driver DMA directly without a
-     * priv bounce buffer (reading into PSRAM forced that bounce and, with the
-     * socket also open, exhausted internal RAM → setup_dma_priv_buffer failed
-     * → null-deref crash). */
-    uint8_t *body = NULL;
-    if (fsize > 0)
-        body = heap_caps_malloc((size_t)fsize, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    bool streaming = (fsize > 0 && !body);
-
-    /* Streaming fallback needs one internal, DMA-capable read buffer. */
-    uint8_t *sbuf = NULL;
-    if (streaming) {
-        sbuf = heap_caps_malloc(PF_BACKUP_CHUNK, MALLOC_CAP_DMA);
-        if (!sbuf) sbuf = malloc(PF_BACKUP_CHUNK);   /* internal → DMA-capable on ESP32 */
-        if (!sbuf) {
-            ESP_LOGW(TAG, "backup: %s skipped — no RAM for stream buffer", relpath);
-            free(part_hdr);
-            return false;
-        }
-        ESP_LOGI(TAG, "backup: %s streaming %ld bytes (too large for PSRAM)",
-                 relpath, fsize);
-    }
-
-    /* Preferred path: read the whole file into PSRAM now (SD active, no socket). */
-    if (body) {
-        FILE *fp = fopen(fullpath, "rb");
-        if (!fp) { free(body); free(part_hdr); return false; }
-        size_t got = fread(body, 1, (size_t)fsize, fp);
-        fclose(fp);
-        if (got != (size_t)fsize) {
-            ESP_LOGW(TAG, "backup: %s short read %u/%ld — skipped",
-                     relpath, (unsigned)got, fsize);
-            free(body);
-            free(part_hdr);
-            return false;
-        }
-    }
 
     bool ok = false;
     for (int attempt = 1; attempt <= 2 && !ok; attempt++) {
-        FILE *fp = NULL;
-        if (streaming) {
-            fp = fopen(fullpath, "rb");
-            if (!fp) break;
-        }
-
         esp_http_client_config_t cfg = {
             .url               = url,
             .method            = HTTP_METHOD_POST,
@@ -6393,37 +6344,23 @@ static bool pf_upload_file(const char *fullpath, const char *relpath, const char
             cfg.crt_bundle_attach = esp_crt_bundle_attach;
 
         esp_http_client_handle_t client = esp_http_client_init(&cfg);
-        if (!client) { if (fp) fclose(fp); break; }
+        if (!client) break;
         esp_http_client_set_header(client, "Content-Type", content_type);
 
         if (esp_http_client_open(client, total_len) != ESP_OK) {
             esp_http_client_cleanup(client);
-            if (fp) fclose(fp);
             if (attempt < 2) vTaskDelay(pdMS_TO_TICKS(300));
             continue;
         }
 
         bool write_ok = (esp_http_client_write(client, part_hdr, hdr_len) == hdr_len);
-        if (body) {
-            /* POST from the PSRAM buffer in chunks. */
-            size_t off = 0;
-            while (write_ok && off < (size_t)fsize) {
-                int n = (int)(((size_t)fsize - off > PF_BACKUP_CHUNK)
-                              ? PF_BACKUP_CHUNK : ((size_t)fsize - off));
-                if (esp_http_client_write(client, (const char *)body + off, n) != n)
-                    write_ok = false;
-                off += n;
-            }
-        } else if (streaming) {
-            /* Stream straight from SD through the internal DMA buffer. */
-            size_t sent = 0, m;
-            while (write_ok && (m = fread(sbuf, 1, PF_BACKUP_CHUNK, fp)) > 0) {
-                if (esp_http_client_write(client, (const char *)sbuf, (int)m) != (int)m)
-                    write_ok = false;
-                sent += m;
-            }
-            /* Body must match the declared Content-Length, else the server hangs. */
-            if (write_ok && sent != (size_t)fsize) write_ok = false;
+        /* Write the chunk body from PSRAM in small sub-chunks (tx buffer is 1 KB). */
+        size_t off = 0;
+        while (write_ok && off < len) {
+            int n = (int)((len - off > PF_BACKUP_CHUNK) ? PF_BACKUP_CHUNK : (len - off));
+            if (esp_http_client_write(client, (const char *)data + off, n) != n)
+                write_ok = false;
+            off += n;
         }
         if (write_ok)
             write_ok = (esp_http_client_write(client, FOOTER, footer_len) == footer_len);
@@ -6432,16 +6369,73 @@ static bool pf_upload_file(const char *fullpath, const char *relpath, const char
             esp_http_client_fetch_headers(client);
             int status = esp_http_client_get_status_code(client);
             ok = (status >= 200 && status < 300);
-            if (!ok) ESP_LOGW(TAG, "backup: %s HTTP %d", relpath, status);
+            if (!ok) ESP_LOGW(TAG, "backup: %s@%ld HTTP %d", relpath, offset, status);
         }
         esp_http_client_close(client);
         esp_http_client_cleanup(client);
-        if (fp) fclose(fp);
         if (!ok && attempt < 2) vTaskDelay(pdMS_TO_TICKS(300));
     }
-    free(sbuf);
-    free(body);
     free(part_hdr);
+    return ok;
+}
+
+/* Upload one file as one or more chunk POSTs.  Each chunk is read from SD into
+ * the caller's reusable PSRAM buffer (chunk/chunk_cap) while NO socket is open,
+ * then POSTed while the SD card is idle.  Splitting the work this way is what
+ * makes arbitrarily large files (tens of MB) safe on the BT+WiFi Core2: the
+ * SD-over-SPI driver and the WiFi/HTTP stack never demand internal DMA RAM at
+ * the same instant (overlapping them crashed the SPI master with
+ * setup_dma_priv_buffer: Failed to allocate priv RX buffer).  A file smaller
+ * than chunk_cap is a single POST.  Returns true only if every chunk uploaded. */
+static bool pf_upload_file(const char *fullpath, const char *relpath, const char *url,
+                           uint8_t *chunk, size_t chunk_cap)
+{
+    struct stat st;
+    if (stat(fullpath, &st) != 0 || !S_ISREG(st.st_mode)) return false;
+    long fsize = (long)st.st_size;
+
+    FILE *fp = fopen(fullpath, "rb");
+    if (!fp) return false;
+
+    bool ok = true;
+    long offset = 0;
+    do {
+        /* Phase 1: read up to chunk_cap from SD into PSRAM (no socket open). */
+        size_t want = 0;
+        if (fsize - offset > 0)
+            want = ((size_t)(fsize - offset) > chunk_cap)
+                   ? chunk_cap : (size_t)(fsize - offset);
+        size_t got = 0;
+        if (want > 0) {
+            got = fread(chunk, 1, want, fp);
+            if (got != want) {
+                ESP_LOGW(TAG, "backup: %s short read at %ld (%u/%u)",
+                         relpath, offset, (unsigned)got, (unsigned)want);
+                ok = false;
+                break;
+            }
+        }
+
+        /* Phase 2: POST this chunk (SD idle). */
+        if (!pf_post_chunk(url, relpath, offset, fsize, chunk, got)) {
+            ok = false;
+            break;
+        }
+        offset += (long)got;
+
+        /* For multi-chunk (large) files, show progress and yield between parts. */
+        if (fsize > (long)chunk_cap) {
+            const char *base = strrchr(relpath, '/');
+            base = base ? base + 1 : relpath;
+            char scr[80];
+            snprintf(scr, sizeof(scr), "Backing up...\n%.40s\n%ld%%",
+                     base, fsize ? (offset * 100 / fsize) : 100);
+            screen_draw_text(scr);
+            vTaskDelay(pdMS_TO_TICKS(10));
+        }
+    } while (offset < fsize);
+
+    fclose(fp);
     return ok;
 }
 
@@ -6452,7 +6446,8 @@ static bool pf_upload_file(const char *fullpath, const char *relpath, const char
  * walk crosses into a subfolder.  The screen is updated only every few files to
  * limit SPI/DMA contention with the main loop. */
 static void pf_backup_dir(const char *dirpath, const char *relbase,
-                          const char *url, int *uploaded, int *fail)
+                          const char *url, int *uploaded, int *fail,
+                          uint8_t *chunk, size_t chunk_cap)
 {
     DIR *d = opendir(dirpath);
     if (!d) return;
@@ -6483,10 +6478,10 @@ static void pf_backup_dir(const char *dirpath, const char *relbase,
         struct stat st;
         if (stat(child, &st) != 0) continue;
         if (S_ISDIR(st.st_mode)) {
-            pf_backup_dir(child, rel, url, uploaded, fail);
+            pf_backup_dir(child, rel, url, uploaded, fail, chunk, chunk_cap);
         } else if (S_ISREG(st.st_mode)) {
-            if (pf_upload_file(child, rel, url)) (*uploaded)++;
-            else                                 (*fail)++;
+            if (pf_upload_file(child, rel, url, chunk, chunk_cap)) (*uploaded)++;
+            else                                                   (*fail)++;
             if ((*uploaded + *fail) % 5 == 0) {
                 char scr[48];
                 snprintf(scr, sizeof(scr), "Backing up...\n%d files", *uploaded);
@@ -6518,6 +6513,26 @@ static void pf_backup_sd(const char *run_id)
         return;
     }
 
+    /* One reusable PSRAM buffer holds each upload chunk; files larger than this
+     * are sent as several in-order chunk POSTs.  Allocated once for the whole
+     * run (not per file) to avoid repeated large allocs/fragmentation.  Try
+     * 1 MB, then progressively smaller so a low-PSRAM moment still works. */
+    size_t chunk_cap = PF_BACKUP_PART;
+    uint8_t *chunk = heap_caps_malloc(chunk_cap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!chunk) {
+        chunk_cap = 256 * 1024;
+        chunk = heap_caps_malloc(chunk_cap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    }
+    if (!chunk) {
+        chunk_cap = 64 * 1024;
+        chunk = heap_caps_malloc(chunk_cap, MALLOC_CAP_8BIT);   /* internal last resort */
+    }
+    if (!chunk) {
+        screen_draw_text("Backup failed\n(no memory)");
+        pf_report_ai_result("Backup failed: no memory for buffer", run_id);
+        return;
+    }
+
     /* Ack the run immediately so TRIGGERcmd marks the command as run and does
      * not re-dispatch it (which would otherwise start the backup over) while
      * the upload — potentially several minutes — is still in progress. */
@@ -6525,12 +6540,13 @@ static void pf_backup_sd(const char *run_id)
     s_pending_run_id[sizeof(s_pending_run_id) - 1] = '\0';
     s_pending_run = true;
 
-    ESP_LOGI(TAG, "backup: starting → %s", url);
+    ESP_LOGI(TAG, "backup: starting → %s (chunk %u KB)", url, (unsigned)(chunk_cap / 1024));
     screen_draw_text("Backing up...");
 
     int fail = 0;
     int uploaded = 0;
-    pf_backup_dir(MP3_ROOT_PATH, "", url, &uploaded, &fail);
+    pf_backup_dir(MP3_ROOT_PATH, "", url, &uploaded, &fail, chunk, chunk_cap);
+    free(chunk);
 
     char msg[64];
     if (fail)
@@ -6966,7 +6982,7 @@ static const pf_cmd_t s_pf_cmds[] = {
 #endif
     { "folders",   "folders",   "false", "List the folders on the SD card.", "\xF0\x9F\x93\x82" /* 📂 */, "{{result}}" },
     { "files",     "files",     "true",  "List files in a folder on the SD card. Example: 'music'", "\xF0\x9F\x93\x84" /* 📄 */, "{{result}}" },
-    { "backup",    "backup",    "false", "Back up the entire SD card to the server set by 'backup_url' in secrets_config.txt (one upload per file).", "\xF0\x9F\x92\xBE" /* 💾 */, "{{result}}" },
+    { "backup",    "backup",    "false", "Back up the entire SD card to the server set by 'backup_url' in secrets_config.txt (chunked multipart uploads).", "\xF0\x9F\x92\xBE" /* 💾 */, "{{result}}" },
     { "reboot",    "reboot",    "false", "Reboot the device.", "\xF0\x9F\x94\x81" /* 🔁 */, NULL },
     { "sleeptimer","sleeptimer","true",  "Set minutes of inactivity before the device sleeps (0 = never). Example: '10'", "\xF0\x9F\x98\xB4" /* 😴 */, NULL },
     { "sleep",     "sleep",     "false", "Put the device into deep sleep immediately. Wake by touching the screen.", "\xF0\x9F\x92\xA4" /* 💤 */, NULL },

@@ -98,7 +98,7 @@
   "command": "backup",
   "allowParams": "false",
   "voiceReply": "{{result}}",
-  "mcpToolDescription": "Back up the entire SD card on the user's Core2 device to the server configured by 'backup_url' in secrets_config.txt (uploads one file per request).",
+  "mcpToolDescription": "Back up the entire SD card on the user's Core2 device to the server configured by 'backup_url' in secrets_config.txt (chunked multipart uploads, preserving folder structure).",
   "icon": "💾"
  },
  {

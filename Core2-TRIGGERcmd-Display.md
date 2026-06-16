@@ -39,7 +39,7 @@ real time.
 | `jpeg` | Download and display a JPEG from a URL |
 | `savepic` | Save the currently displayed JPEG to `/saved-jpegs` on the SD card |
 | `folders` / `files` | List SD card folders / files in a folder |
-| `backup` | Upload the entire SD card to a server — one file per request, preserving the folder structure (set `backup_url` in [`secrets_config.txt`](#sd-card-configuration)) |
+| `backup` | Upload the entire SD card to a server — chunked `multipart/form-data` POSTs, preserving the folder structure (set `backup_url` in [`secrets_config.txt`](#sd-card-configuration)) |
 | Per-folder picture commands | Auto-generated for each folder of JPEGs on the SD card — display the Nth (or first/random) image in that folder |
 | Per-folder music commands | Auto-generated for each folder of MP3s on the SD card — play the Nth (or first/random, if shuffle is on) track in that folder (see [Bluetooth MP3 playback](#bluetooth-mp3-playback)) |
 | `save` | Persist display state (colors, font, orientation, text, JPEG URL) to NVS and, if an SD card is present, to `/sdcard/core2_config.txt`; restored on reboot (SD takes priority over NVS) |
@@ -271,18 +271,32 @@ the device.
    count while it works and a summary (`Backup done / N files`) when finished;
    the TRIGGERcmd run result reports the same count.
 
-Each file is sent as its own `multipart/form-data` POST with two fields:
+Each file is uploaded as one or more **chunk** `multipart/form-data` POSTs. The
+Core2's classic ESP32 cannot hold a large file in RAM, and it cannot read the SD
+card while a network socket is open (both need the same scarce internal DMA
+RAM), so each chunk is read from the card while no socket is open, then POSTed
+while the card is idle. Files up to ~1 MB are a single POST; larger files
+(multi-MB music, tens-of-MB MJPEGs) arrive as a sequence of in-order chunks.
+
+Every POST has four fields:
 
 | Field | Contents |
 |-------|----------|
 | `path` | The file's path relative to the SD root, e.g. `music/song.mp3` (use this to recreate the folder structure) |
-| `file` | The raw file bytes (streamed in chunks, so large files work without exhausting RAM) |
+| `offset` | Byte offset of this chunk within the file (`0` for the first/only chunk) |
+| `total` | Total size of the whole file in bytes |
+| `file` | The raw bytes of **this chunk** (up to ~1 MB) |
+
+The server must write `file` at byte `offset` within `path`. Chunks for a given
+file always arrive in order starting at `offset 0`, so a server may simply
+truncate the file when `offset == 0` and append for subsequent chunks. The file
+is complete once a chunk with `offset + len(file) == total` has been received.
 
 A POST is considered successful on any HTTP `2xx` response; failures are retried
-once and then counted in the summary. Dotfiles and the transient `tmp_tts.mp3`
-are skipped.
+once and then the whole file is counted as failed in the summary. Dotfiles and
+the transient `tmp_tts.mp3` are skipped.
 
-A minimal Python/Flask receiver:
+A minimal Python/Flask receiver that handles chunked uploads:
 
 ```python
 import os
@@ -293,10 +307,16 @@ DEST = "backups"
 
 @app.post("/upload")
 def upload():
-    rel = request.form["path"]
-    dst = os.path.join(DEST, rel)
+    rel    = request.form["path"]
+    offset = int(request.form.get("offset", 0))
+    dst    = os.path.join(DEST, rel)
     os.makedirs(os.path.dirname(dst), exist_ok=True)
-    request.files["file"].save(dst)
+    data = request.files["file"].read()
+    # offset 0 truncates/creates; later chunks are written at their offset.
+    mode = "r+b" if offset and os.path.exists(dst) else "wb"
+    with open(dst, mode) as f:
+        f.seek(offset)
+        f.write(data)
     return "ok"
 
 app.run(host="0.0.0.0", port=8080)
