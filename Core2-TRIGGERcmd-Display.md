@@ -47,6 +47,32 @@ real time.
 
 ---
 
+## Clock
+
+| Command | Effect |
+|---|---|
+| `clock` | Show a live clock on the display. Pass `digital` (default) or `analog` to choose the style. The clock stays on screen until any other display command runs. |
+| `timezone` | Set the clock's timezone. Accepts friendly names or a raw POSIX TZ string (see table below). Default: `eastern`. |
+
+**Timezone aliases**
+
+| Alias(es) | Timezone | POSIX string |
+|---|---|---|
+| `eastern`, `est`, `edt` | Eastern Time (US) | `EST5EDT,M3.2.0,M11.1.0` |
+| `central`, `cst`, `cdt` | Central Time (US) | `CST6CDT,M3.2.0,M11.1.0` |
+| `mountain`, `mst`, `mdt` | Mountain Time (US) | `MST7MDT,M3.2.0,M11.1.0` |
+| `pacific`, `pst`, `pdt` | Pacific Time (US) | `PST8PDT,M3.2.0,M11.1.0` |
+| `alaska`, `akst`, `akdt` | Alaska Time | `AKST9AKDT,M3.2.0,M11.1.0` |
+| `hawaii`, `hst` | Hawaii Time | `HST10` |
+| `utc`, `gmt` | UTC | `UTC0` |
+| `london`, `uk`, `bst` | UK / London | `GMT0BST,M3.5.0/1,M10.5.0` |
+| `central_europe`, `cet`, `europe` | Central European Time | `CET-1CEST,M3.5.0,M10.5.0/3` |
+| *(any other string)* | Raw POSIX TZ string | e.g. `MST7` for Arizona (no DST) |
+
+The clock reads UTC time from SNTP and converts it to local time using the configured timezone. Both `clock` and `timezone` are persisted by the `save` command and survive reboots.
+
+---
+
 ## Bluetooth MP3 playback
 
 The Core2 streams MP3 files from the SD card to a paired Bluetooth A2DP
@@ -205,6 +231,9 @@ font=2
 mp3=0
 jpeg=https://loremflickr.com/320/240/cat
 text=Hello\nWorld
+clock=2
+boot_show=2
+timezone=EST5EDT,M3.2.0,M11.1.0
 ```
 
 | Key | Values | Meaning |
@@ -216,6 +245,9 @@ text=Hello\nWorld
 | `mp3` | `0` / `1` | Whether music mode was active at save time |
 | `jpeg` | URL or `/sdcard/…` path | Last displayed image (empty if none) |
 | `text` | string (newlines as `\n`) | Last displayed text (empty if none) |
+| `clock` | `0` off, `1` digital, `2` analog | Clock style at save time |
+| `boot_show` | `1` digital clock, `2` analog clock, `3` music, `4` JPEG, `5` text | What to restore on next boot |
+| `timezone` | POSIX TZ string | Timezone for the clock (e.g. `EST5EDT,M3.2.0,M11.1.0`) |
 
 On boot the firmware tries this file before NVS, so settings here survive a
 firmware reflash. You can also hand-edit the file between reboots — for
