@@ -5715,6 +5715,9 @@ static bool save_display_state_to_sd(void)
     fprintf(f, "mp3=%u\n",       (unsigned)(music_active ? 1 : 0));
     fprintf(f, "jpeg=%s\n",      jpeg_url);
     fprintf(f, "text=%s\n",      text_enc);
+#if CONFIG_CORE2_HW
+    fprintf(f, "clock=%u\n",     (unsigned)s_clock_mode);
+#endif
     fclose(f);
     ESP_LOGI(TAG, "save_sd: settings written to %s", SD_SETTINGS_PATH);
     return true;
@@ -5732,6 +5735,9 @@ static bool restore_display_state_from_sd(void)
     uint8_t bg_r = 0, bg_g = 0, bg_b = 0;
     uint8_t fg_r = 255, fg_g = 255, fg_b = 255;
     uint8_t orient = 0, font_scale = 2, mp3_mode = 0;
+#if CONFIG_CORE2_HW
+    uint8_t clock_mode_sd = 0;
+#endif
     /* Encode buffer: worst case every char in s_last_text is a newline (2× size) */
     char text_enc[sizeof(s_last_text) * 2 + 1] = {0};
     char jpeg_url[sizeof(s_current_jpeg_url)] = {0};
@@ -5754,6 +5760,10 @@ static bool restore_display_state_from_sd(void)
             font_scale = (uint8_t)a;
         } else if (sscanf(line, "mp3=%u",    &a) == 1) {
             mp3_mode = (uint8_t)a;
+#if CONFIG_CORE2_HW
+        } else if (sscanf(line, "clock=%u",  &a) == 1) {
+            clock_mode_sd = (uint8_t)a;
+#endif
         } else if (strncmp(line, "jpeg=", 5) == 0) {
             strncpy(jpeg_url, line + 5, sizeof(jpeg_url) - 1);
             jpeg_url[sizeof(jpeg_url) - 1] = '\0';
@@ -5769,6 +5779,10 @@ static bool restore_display_state_from_sd(void)
 
     apply_restored_display_state(bg_r, bg_g, bg_b, fg_r, fg_g, fg_b,
                                   orient, font_scale, text, mp3_mode, jpeg_url);
+#if CONFIG_CORE2_HW
+    /* Also persist to NVS so the boot clock-start path picks it up uniformly. */
+    nvs_write_u8(NVS_KEY_CLOCK_MODE, clock_mode_sd);
+#endif
     ESP_LOGI(TAG, "restore: display state loaded from SD card (%s)", SD_SETTINGS_PATH);
     return true;
 }
@@ -5806,6 +5820,10 @@ static esp_err_t save_display_state_to_nvs(void)
     } else {
         if ((err = nvs_erase_key_local(NVS_KEY_JPEGURL)) != ESP_OK) return err;
     }
+
+#if CONFIG_CORE2_HW
+    if ((err = nvs_write_u8(NVS_KEY_CLOCK_MODE, (uint8_t)s_clock_mode)) != ESP_OK) return err;
+#endif
 
     esp_err_t result = nvs_write_u8(NVS_KEY_SAVED, 1);
     if (result == ESP_OK) {
@@ -7557,8 +7575,10 @@ static void pf_event_handler(const char *event_name,
     s_file_list_display_active = false;
     s_menu_result_active = false;
     s_save_result_saved_font_scale = -1;
-    /* Any command other than "clock" itself takes the screen back. */
-    if (strcmp(s_trigger, "clock") != 0) {
+    /* Any command other than "clock" or "save" takes the screen back.
+     * "save" is excluded so it captures the live clock state rather than
+     * stopping it before save_display_state_to_nvs() runs. */
+    if (strcmp(s_trigger, "clock") != 0 && strcmp(s_trigger, "save") != 0) {
         if (s_clock_mode != PF_CLOCK_OFF)
             nvs_write_u8(NVS_KEY_CLOCK_MODE, 0);
         pf_clock_stop();
