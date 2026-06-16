@@ -6295,6 +6295,53 @@ static bool pf_read_backup_url(char *out, size_t out_sz)
     return out[0] != '\0';
 }
 
+/* Derive the /probe URL from backup_url by replacing the path component.
+ * e.g. "http://host:8080/upload" → "http://host:8080/probe" */
+static void pf_make_probe_url(const char *backup_url, char *out, size_t out_sz)
+{
+    const char *after_scheme = strstr(backup_url, "://");
+    if (!after_scheme) { snprintf(out, out_sz, "%s/probe", backup_url); return; }
+    const char *path_start = strchr(after_scheme + 3, '/');
+    if (!path_start) { snprintf(out, out_sz, "%s/probe", backup_url); return; }
+    snprintf(out, out_sz, "%.*s/probe", (int)(path_start - backup_url), backup_url);
+}
+
+/* Check whether the server already has a complete copy of the file.
+ * GET <probe_url>?path=<relpath>&total=<total> → 200 "exists" means skip.
+ * Any other response (404, timeout, error) means proceed with upload. */
+static bool pf_probe_file(const char *probe_url, const char *relpath, long total)
+{
+    char url[512];
+    snprintf(url, sizeof(url), "%s?path=%s&total=%ld", probe_url, relpath, total);
+
+    esp_http_client_config_t cfg = {
+        .url               = url,
+        .method            = HTTP_METHOD_GET,
+        .timeout_ms        = 10000,
+        .buffer_size       = 512,
+        .buffer_size_tx    = 512,
+        .keep_alive_enable = false,
+    };
+    if (strncmp(url, "https://", 8) == 0)
+        cfg.crt_bundle_attach = esp_crt_bundle_attach;
+
+    esp_http_client_handle_t client = esp_http_client_init(&cfg);
+    if (!client) return false;
+
+    bool exists = false;
+    if (esp_http_client_open(client, 0) == ESP_OK) {
+        esp_http_client_fetch_headers(client);
+        if (esp_http_client_get_status_code(client) == 200) {
+            char body[16] = {0};
+            esp_http_client_read(client, body, sizeof(body) - 1);
+            exists = (strncmp(body, "exists", 6) == 0);
+        }
+        esp_http_client_close(client);
+    }
+    esp_http_client_cleanup(client);
+    return exists;
+}
+
 /* POST one chunk of a file as multipart/form-data.  Fields: "path" (relative
  * path, so the server recreates the tree), "offset" (this chunk's byte offset),
  * "total" (the whole file size) and "file" (the chunk bytes).  The server writes
@@ -6391,12 +6438,21 @@ static bool pf_post_chunk(const char *url, const char *relpath,
  * the same instant (overlapping them crashed the SPI master with
  * setup_dma_priv_buffer: Failed to allocate priv RX buffer).  A file smaller
  * than chunk_cap is a single POST.  Returns true only if every chunk uploaded. */
-static bool pf_upload_file(const char *fullpath, const char *relpath, const char *url,
-                           uint8_t *chunk, size_t chunk_cap)
+static bool pf_upload_file(const char *fullpath, const char *relpath,
+                           const char *url, const char *probe_url,
+                           uint8_t *chunk, size_t chunk_cap,
+                           bool *out_skipped)
 {
+    *out_skipped = false;
     struct stat st;
     if (stat(fullpath, &st) != 0 || !S_ISREG(st.st_mode)) return false;
     long fsize = (long)st.st_size;
+
+    if (pf_probe_file(probe_url, relpath, fsize)) {
+        ESP_LOGI(TAG, "backup: skip %s (already on server)", relpath);
+        *out_skipped = true;
+        return true;
+    }
 
     FILE *fp = fopen(fullpath, "rb");
     if (!fp) return false;
@@ -6451,7 +6507,8 @@ static bool pf_upload_file(const char *fullpath, const char *relpath, const char
  * walk crosses into a subfolder.  The screen is updated only every few files to
  * limit SPI/DMA contention with the main loop. */
 static void pf_backup_dir(const char *dirpath, const char *relbase,
-                          const char *url, int *uploaded, int *fail,
+                          const char *url, const char *probe_url,
+                          int *uploaded, int *skipped, int *fail,
                           uint8_t *chunk, size_t chunk_cap)
 {
     DIR *d = opendir(dirpath);
@@ -6483,13 +6540,17 @@ static void pf_backup_dir(const char *dirpath, const char *relbase,
         struct stat st;
         if (stat(child, &st) != 0) continue;
         if (S_ISDIR(st.st_mode)) {
-            pf_backup_dir(child, rel, url, uploaded, fail, chunk, chunk_cap);
+            pf_backup_dir(child, rel, url, probe_url, uploaded, skipped, fail, chunk, chunk_cap);
         } else if (S_ISREG(st.st_mode)) {
-            if (pf_upload_file(child, rel, url, chunk, chunk_cap)) (*uploaded)++;
-            else                                                   (*fail)++;
-            if ((*uploaded + *fail) % 5 == 0) {
-                char scr[48];
-                snprintf(scr, sizeof(scr), "Backing up...\n%d files", *uploaded);
+            bool was_skipped = false;
+            bool ok = pf_upload_file(child, rel, url, probe_url, chunk, chunk_cap, &was_skipped);
+            if (was_skipped)  (*skipped)++;
+            else if (ok)      (*uploaded)++;
+            else              (*fail)++;
+            if ((*uploaded + *skipped + *fail) % 5 == 0) {
+                char scr[64];
+                snprintf(scr, sizeof(scr), "Backing up...\n%d uploaded, %d skipped",
+                         *uploaded, *skipped);
                 screen_draw_text(scr);
             }
             vTaskDelay(pdMS_TO_TICKS(10));   /* yield SPI/CPU between files */
@@ -6545,22 +6606,32 @@ static void pf_backup_sd(const char *run_id)
     s_pending_run_id[sizeof(s_pending_run_id) - 1] = '\0';
     s_pending_run = true;
 
-    ESP_LOGI(TAG, "backup: starting → %s (chunk %u KB)", url, (unsigned)(chunk_cap / 1024));
+    char probe_url[256];
+    pf_make_probe_url(url, probe_url, sizeof(probe_url));
+
+    ESP_LOGI(TAG, "backup: starting → %s (probe %s, chunk %u KB)",
+             url, probe_url, (unsigned)(chunk_cap / 1024));
     screen_draw_text("Backing up...");
 
-    int fail = 0;
-    int uploaded = 0;
-    pf_backup_dir(MP3_ROOT_PATH, "", url, &uploaded, &fail, chunk, chunk_cap);
+    int fail = 0, uploaded = 0, skipped = 0;
+    pf_backup_dir(MP3_ROOT_PATH, "", url, probe_url,
+                  &uploaded, &skipped, &fail, chunk, chunk_cap);
     free(chunk);
 
-    char msg[64];
+    char msg[80];
     if (fail)
-        snprintf(msg, sizeof(msg), "Backup done\n%d ok, %d failed", uploaded, fail);
+        snprintf(msg, sizeof(msg), "Backup done\n%d ok, %d skipped, %d failed",
+                 uploaded, skipped, fail);
     else
-        snprintf(msg, sizeof(msg), "Backup done\n%d files", uploaded);
+        snprintf(msg, sizeof(msg), "Backup done\n%d uploaded, %d skipped",
+                 uploaded, skipped);
     screen_draw_text(msg);
-    pf_report_ai_result(msg, run_id);
-    ESP_LOGI(TAG, "backup: %d uploaded, %d failed", uploaded, fail);
+
+    char result[80];
+    snprintf(result, sizeof(result),
+             "{\"uploaded\":%d,\"skipped\":%d,\"failed\":%d}", uploaded, skipped, fail);
+    pf_report_ai_result(result, run_id);
+    ESP_LOGI(TAG, "backup: %d uploaded, %d skipped, %d failed", uploaded, skipped, fail);
 }
 
 /* Dedicated task that runs one backup then exits.  s_backup_running guards
