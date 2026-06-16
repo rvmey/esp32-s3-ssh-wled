@@ -6310,22 +6310,50 @@ static bool pf_upload_file(const char *fullpath, const char *relpath, const char
     int footer_len = (int)strlen(FOOTER);
     if (hdr_len < 0 || hdr_len >= 1024) { free(part_hdr); return false; }
 
+    /* ── Phase 1: read the WHOLE file into PSRAM before any HTTP connection
+     * exists.  On the Core2 the SD card shares the SPI bus and needs internal
+     * DMA RAM for every read; the WiFi/HTTP stack competes for that same scarce
+     * internal RAM.  The old design interleaved SD reads with writes on an open
+     * socket, so both heavy consumers were active at once — on large files that
+     * starved the SD driver (sdmmc_read_sectors: not enough mem) which sent a
+     * truncated body (server then hung) and ultimately crashed the SPI master
+     * (setup_dma_priv_buffer: Failed to allocate priv RX buffer → null deref).
+     * Loading the body into PSRAM first, then POSTing it while the SD card is
+     * idle, keeps the two consumers from overlapping.  A file too large for
+     * PSRAM is skipped (counted as a failure) rather than crashing the run. */
+    uint8_t *body = NULL;
+    if (fsize > 0) {
+        body = heap_caps_malloc((size_t)fsize, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (!body) {
+            ESP_LOGW(TAG, "backup: %s skipped — no PSRAM for %ld bytes", relpath, fsize);
+            free(part_hdr);
+            return false;
+        }
+        FILE *fp = fopen(fullpath, "rb");
+        if (!fp) { free(body); free(part_hdr); return false; }
+        size_t got = fread(body, 1, (size_t)fsize, fp);
+        fclose(fp);
+        if (got != (size_t)fsize) {
+            ESP_LOGW(TAG, "backup: %s short read %u/%ld — skipped",
+                     relpath, (unsigned)got, fsize);
+            free(body);
+            free(part_hdr);
+            return false;
+        }
+    }
+
+    /* ── Phase 2: POST the buffered body.  The SD card is now idle, so the
+     * HTTP/WiFi stack has the internal RAM to itself. */
     int total_len = hdr_len + (int)fsize + footer_len;
     char content_type[] = "multipart/form-data; boundary=" PF_BACKUP_BOUNDARY;
 
     bool ok = false;
     for (int attempt = 1; attempt <= 2 && !ok; attempt++) {
-        FILE *fp = fopen(fullpath, "rb");
-        if (!fp) { free(part_hdr); return false; }
-
         esp_http_client_config_t cfg = {
             .url               = url,
             .method            = HTTP_METHOD_POST,
             .timeout_ms        = 20000,
-            /* Keep the HTTP buffers small: they come from internal RAM, which is
-             * scarce on the BT-enabled Core2 and shared with the SD/display SPI
-             * DMA pool — large buffers here starved that pool and crashed the
-             * SD driver (setup_dma_priv_buffer: Failed to allocate priv RX buffer). */
+            /* Keep the HTTP buffers small: they come from internal RAM. */
             .buffer_size       = 1024,
             .buffer_size_tx    = 1024,
             .keep_alive_enable = false,
@@ -6334,32 +6362,24 @@ static bool pf_upload_file(const char *fullpath, const char *relpath, const char
             cfg.crt_bundle_attach = esp_crt_bundle_attach;
 
         esp_http_client_handle_t client = esp_http_client_init(&cfg);
-        if (!client) { fclose(fp); free(part_hdr); return false; }
+        if (!client) break;
         esp_http_client_set_header(client, "Content-Type", content_type);
 
         if (esp_http_client_open(client, total_len) != ESP_OK) {
             esp_http_client_cleanup(client);
-            fclose(fp);
             if (attempt < 2) vTaskDelay(pdMS_TO_TICKS(300));
             continue;
         }
 
         bool write_ok = (esp_http_client_write(client, part_hdr, hdr_len) == hdr_len);
-        /* Read buffer from PSRAM (with internal fallback) so it does not consume
-         * the internal DMA pool the SD driver needs. */
-        char *buf = NULL;
-        if (write_ok) {
-            buf = heap_caps_malloc(PF_BACKUP_CHUNK, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-            if (!buf) buf = heap_caps_malloc(PF_BACKUP_CHUNK, MALLOC_CAP_8BIT);
-        }
-        if (buf) {
-            size_t n;
-            while (write_ok && (n = fread(buf, 1, PF_BACKUP_CHUNK, fp)) > 0) {
-                if (esp_http_client_write(client, buf, (int)n) != (int)n) write_ok = false;
-            }
-            free(buf);
-        } else {
-            write_ok = false;
+        /* Stream the PSRAM body to the socket in chunks. */
+        size_t off = 0;
+        while (write_ok && off < (size_t)fsize) {
+            int n = (int)(((size_t)fsize - off > PF_BACKUP_CHUNK)
+                          ? PF_BACKUP_CHUNK : ((size_t)fsize - off));
+            if (esp_http_client_write(client, (const char *)body + off, n) != n)
+                write_ok = false;
+            off += n;
         }
         if (write_ok)
             write_ok = (esp_http_client_write(client, FOOTER, footer_len) == footer_len);
@@ -6372,9 +6392,9 @@ static bool pf_upload_file(const char *fullpath, const char *relpath, const char
         }
         esp_http_client_close(client);
         esp_http_client_cleanup(client);
-        fclose(fp);
         if (!ok && attempt < 2) vTaskDelay(pdMS_TO_TICKS(300));
     }
+    free(body);
     free(part_hdr);
     return ok;
 }
@@ -9891,7 +9911,7 @@ void picture_frame_run(void)
                     ESP_LOGW(TAG, "backup: already running, ignoring re-dispatch");
                 } else {
                     s_backup_running = true;
-                    if (xTaskCreate(pf_backup_task, "pf_backup", 16384, NULL,
+                    if (xTaskCreate(pf_backup_task, "pf_backup", 8192, NULL,
                                     4, NULL) != pdPASS) {
                         s_backup_running = false;
                         ESP_LOGE(TAG, "backup: failed to create task");
