@@ -7289,7 +7289,7 @@ static void pf_clock_render_digital(const struct tm *tm_now)
         screen_get_font_scale(&cur);
         s_mp3_saved_font_scale = cur;
     }
-    screen_set_font_scale_silent(4);
+    screen_set_font_scale_silent(2);
     screen_draw_text(msg);
 }
 
