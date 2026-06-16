@@ -382,6 +382,7 @@ static const char *tcmd_display_host(void)
 #define NVS_KEY_AI_TTS  "ai_tts"
 #define NVS_KEY_MIC_SRC "mic_src"  /* 0 = built-in PDM (default), 1 = Grove ADC */
 #define NVS_KEY_CLOCK_MODE "clock_mode" /* 0=off, 1=digital, 2=analog */
+#define NVS_KEY_BOOT_SHOW  "boot_show"  /* 1=clock, 2=music, 3=jpeg, 4=text */
 
 #define HW_TOKEN_MAX_LEN    513   /* 512 payload + NUL */
 #define COMPUTER_ID_MAX_LEN  33   /* 32 payload + NUL  */
@@ -5717,6 +5718,12 @@ static bool save_display_state_to_sd(void)
     fprintf(f, "text=%s\n",      text_enc);
 #if CONFIG_CORE2_HW
     fprintf(f, "clock=%u\n",     (unsigned)s_clock_mode);
+    {
+        uint8_t bs = (s_clock_mode != PF_CLOCK_OFF) ? 1 :
+                     music_active                    ? 2 :
+                     (jpeg_url[0])                   ? 3 : 4;
+        fprintf(f, "boot_show=%u\n", (unsigned)bs);
+    }
 #endif
     fclose(f);
     ESP_LOGI(TAG, "save_sd: settings written to %s", SD_SETTINGS_PATH);
@@ -5737,6 +5744,7 @@ static bool restore_display_state_from_sd(void)
     uint8_t orient = 0, font_scale = 2, mp3_mode = 0;
 #if CONFIG_CORE2_HW
     uint8_t clock_mode_sd = 0;
+    uint8_t boot_show_sd = 0;
 #endif
     /* Encode buffer: worst case every char in s_last_text is a newline (2× size) */
     char text_enc[sizeof(s_last_text) * 2 + 1] = {0};
@@ -5761,8 +5769,10 @@ static bool restore_display_state_from_sd(void)
         } else if (sscanf(line, "mp3=%u",    &a) == 1) {
             mp3_mode = (uint8_t)a;
 #if CONFIG_CORE2_HW
-        } else if (sscanf(line, "clock=%u",  &a) == 1) {
+        } else if (sscanf(line, "clock=%u",     &a) == 1) {
             clock_mode_sd = (uint8_t)a;
+        } else if (sscanf(line, "boot_show=%u", &a) == 1) {
+            boot_show_sd = (uint8_t)a;
 #endif
         } else if (strncmp(line, "jpeg=", 5) == 0) {
             strncpy(jpeg_url, line + 5, sizeof(jpeg_url) - 1);
@@ -5782,6 +5792,7 @@ static bool restore_display_state_from_sd(void)
 #if CONFIG_CORE2_HW
     /* Also persist to NVS so the boot clock-start path picks it up uniformly. */
     nvs_write_u8(NVS_KEY_CLOCK_MODE, clock_mode_sd);
+    nvs_write_u8(NVS_KEY_BOOT_SHOW, boot_show_sd);
 #endif
     ESP_LOGI(TAG, "restore: display state loaded from SD card (%s)", SD_SETTINGS_PATH);
     return true;
@@ -5823,6 +5834,12 @@ static esp_err_t save_display_state_to_nvs(void)
 
 #if CONFIG_CORE2_HW
     if ((err = nvs_write_u8(NVS_KEY_CLOCK_MODE, (uint8_t)s_clock_mode)) != ESP_OK) return err;
+    {
+        uint8_t boot_show = (s_clock_mode != PF_CLOCK_OFF) ? 1 :
+                            music_active                    ? 2 :
+                            (s_jpeg_cache && s_jpeg_cache_len > 0 && s_current_jpeg_url[0]) ? 3 : 4;
+        if ((err = nvs_write_u8(NVS_KEY_BOOT_SHOW, boot_show)) != ESP_OK) return err;
+    }
 #endif
 
     esp_err_t result = nvs_write_u8(NVS_KEY_SAVED, 1);
@@ -9197,6 +9214,7 @@ void picture_frame_run(void)
 
 #if CONFIG_CORE2_HW
     uint8_t clock_mode_saved = 0;
+    uint8_t boot_show_saved = 0;
 #endif
     {
         uint8_t shuffle = 0;
@@ -9244,6 +9262,7 @@ void picture_frame_run(void)
         nvs_read_u8(NVS_KEY_MIC_SRC, &mic_src);
         s_mic_src_grove = (mic_src != 0);
         nvs_read_u8(NVS_KEY_CLOCK_MODE, &clock_mode_saved);
+        nvs_read_u8(NVS_KEY_BOOT_SHOW, &boot_show_saved);
 #endif
     }
     /* Defer SD mount/index work until the main loop so boot UI is responsive. */
@@ -9484,8 +9503,17 @@ void picture_frame_run(void)
             }
             restore_display_state_from_nvs();
 #if CONFIG_CORE2_HW
-            if (clock_mode_saved != 0)
-                pf_clock_start(clock_mode_saved == (uint8_t)PF_CLOCK_ANALOG ? "analog" : "digital");
+            {
+                bool show_clock = (boot_show_saved == 1) ||
+                                  (boot_show_saved == 0 && clock_mode_saved != 0);
+                if (show_clock) {
+                    s_pending_jpeg = false;
+                    s_pending_jpeg_file = false;
+                    s_pending_jpeg_url[0] = '\0';
+                    s_pending_jpeg_file_path[0] = '\0';
+                    pf_clock_start(clock_mode_saved == (uint8_t)PF_CLOCK_ANALOG ? "analog" : "digital");
+                }
+            }
 #endif
         }
 
@@ -9701,6 +9729,13 @@ void picture_frame_run(void)
                                      "Clock: %s\n",
                                      s_clock_mode == PF_CLOCK_ANALOG  ? "Analog" :
                                      s_clock_mode == PF_CLOCK_DIGITAL ? "Digital" : "Off");
+                    {
+                        const char *bs =
+                            (s_clock_mode != PF_CLOCK_OFF) ? "Clock" :
+                            music_active                    ? "Music" :
+                            (s_jpeg_cache && s_jpeg_cache_len > 0 && s_current_jpeg_url[0]) ? "JPEG" : "Text";
+                        mlen += snprintf(msg + mlen, sizeof(msg) - mlen, "Boot: %s\n", bs);
+                    }
 #endif
                     if (!music_active && s_jpeg_cache && s_jpeg_cache_len > 0 && s_current_jpeg_url[0]) {
                         mlen += snprintf(msg + mlen, sizeof(msg) - mlen,
