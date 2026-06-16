@@ -9473,6 +9473,12 @@ void picture_frame_run(void)
                                      fg_r, fg_g, fg_b,
                                      landscape ? "Landscape" : "Portrait", font_scale,
                                      music_active ? "On" : "Off");
+#if CONFIG_CORE2_HW
+                    mlen += snprintf(msg + mlen, sizeof(msg) - mlen,
+                                     "Clock: %s\n",
+                                     s_clock_mode == PF_CLOCK_ANALOG  ? "Analog" :
+                                     s_clock_mode == PF_CLOCK_DIGITAL ? "Digital" : "Off");
+#endif
                     if (!music_active && s_jpeg_cache && s_jpeg_cache_len > 0 && s_current_jpeg_url[0]) {
                         mlen += snprintf(msg + mlen, sizeof(msg) - mlen,
                                          "JPEG: %s\n", s_current_jpeg_url);

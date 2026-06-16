@@ -29,7 +29,7 @@ self.addEventListener('fetch', event => {
   }
 
   if (reqUrl.pathname.endsWith('/manifest-core2.json')) {
-    const target = 'https://raw.githubusercontent.com/rvmey/esp32-s3-ssh-wled/master/docs/manifest-core2-2.0.492.json';
+    const target = 'https://raw.githubusercontent.com/rvmey/esp32-s3-ssh-wled/master/docs/manifest-core2-2.0.493.json';
     event.respondWith(fetch(target, { cache: 'no-store' }));
     return;
   }
@@ -145,9 +145,10 @@ self.addEventListener('fetch', event => {
     reqUrl.pathname.endsWith('/firmware/esp32_core2_picture_frame-2.0.488.bin') ||
     reqUrl.pathname.endsWith('/firmware/esp32_core2_picture_frame-2.0.489.bin') ||
     reqUrl.pathname.endsWith('/firmware/esp32_core2_picture_frame-2.0.490.bin') ||
-    reqUrl.pathname.endsWith('/firmware/esp32_core2_picture_frame-2.0.491.bin')
+    reqUrl.pathname.endsWith('/firmware/esp32_core2_picture_frame-2.0.491.bin') ||
+    reqUrl.pathname.endsWith('/firmware/esp32_core2_picture_frame-2.0.492.bin')
   ) {
-    const target = new URL('/esp32-s3-ssh-wled/firmware/esp32_core2_picture_frame-2.0.492.bin', self.location.origin);
+    const target = new URL('/esp32-s3-ssh-wled/firmware/esp32_core2_picture_frame-2.0.493.bin', self.location.origin);
     event.respondWith(fetch(target.toString(), { cache: 'no-store' }));
     return;
   }
