@@ -103,11 +103,12 @@ device's web configuration page.
 
 | Command | Effect |
 |---|---|
-| `listen` | Record 4 seconds of audio from the onboard microphone, transcribe it with Whisper, and send the result as an AI prompt, for example, "show me a picture of a cat" will look one up and display it. |
+| `listen` | Record 4 seconds of audio from the active microphone, transcribe it with Whisper, and send the result as an AI prompt — for example, "show me a picture of a cat" will look one up and display it |
 | `askgpt` | Ask a general question (no picture context); the reply is returned (and optionally spoken) |
 | `askpic` | Ask a question about the currently displayed picture using AI vision |
 | `speak` | Speak arbitrary text aloud via TTS |
 | `aitts` | Toggle whether `askpic`/`askgpt`/`listen` replies are spoken aloud (default on) |
+| `micsrc` | Switch the microphone source between the built-in PDM mic (`pdm`, default) and an external Grove analog mic (`grove`) — see [Core2 Grove Microphone Adapter](Core2-Grove-Mic-Adapter.md) |
 
 ---
 
@@ -251,3 +252,4 @@ Output firmware path: `docs/firmware/esp32_core2_picture_frame.bin`
 - `sdkconfig.core2` - variant configuration
 - `docs/manifest-core2.json` - browser installer manifest
 - [docs/CORE2_VISUALIZER.md](docs/CORE2_VISUALIZER.md) - full visualizer style reference
+- [Core2-Grove-Mic-Adapter.md](Core2-Grove-Mic-Adapter.md) - wiring and setup for an external TRRS headset mic via Grove Port B
