@@ -488,7 +488,7 @@ static void draw_pair_qr_screen(const char *pair_code)
 {
     char url[96];
     snprintf(url, sizeof(url),
-             "https://www.triggercmd.com/pair?code=%s", pair_code);
+             "https://www.triggercmd.com/pair/code?code=%s", pair_code);
 
     /* Generate QR code (version 1-6 covers ~90 bytes at medium ECC) */
     uint8_t qr_tmp[qrcodegen_BUFFER_LEN_FOR_VERSION(6)];
