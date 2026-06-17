@@ -322,6 +322,8 @@ def upload():
 app.run(host="0.0.0.0", port=8080)
 ```
 
+If you prefer Go, use sd-backup-server/main.go
+
 ---
 
 ## Hardware notes
