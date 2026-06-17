@@ -305,7 +305,14 @@ esp_err_t socketio_connect(const char          *uri,
          * still failed with ESP_ERR_NO_MEM. SIO command-trigger payloads are
          * short JSON (well under 1KB), and ws_event_handler treats each frame
          * standalone, so 1024 per direction is sufficient here. */
+#if CONFIG_SPIRAM
+        /* PSRAM boards (e.g. Core2) can afford larger WS buffers, which lets a
+         * big single payload — such as a full SD directory listing for the
+         * "files" command — go out in one frame instead of many fragments. */
+        .buffer_size         = 4096,
+#else
         .buffer_size         = 1024,
+#endif
         .cert_pem            = NULL,
         .cert_common_name    = NULL,
         .skip_cert_common_name_check = true,
@@ -398,19 +405,38 @@ esp_err_t socketio_send_vpost(const char *path,
     if (!s_client || !s_connected) return ESP_ERR_INVALID_STATE;
     if (!path || !auth_token || !data_json_object) return ESP_ERR_INVALID_ARG;
 
-    char msg[1536];
-    int n = snprintf(msg, sizeof(msg),
+    /* The common case (command triggers, run/save, short results) fits the
+     * stack buffer.  Larger payloads — e.g. a full SD directory listing for the
+     * "files" command — are assembled in a heap buffer so we neither overflow
+     * the caller's stack nor reject the send with "message too large". */
+    char stackbuf[1536];
+    size_t need = strlen(path) + strlen(auth_token) + strlen(data_json_object) + 96;
+    char *msg = stackbuf;
+    char *heapbuf = NULL;
+    if (need > sizeof(stackbuf)) {
+        heapbuf = malloc(need);
+        if (!heapbuf) {
+            ESP_LOGE(TAG, "vpost: no memory for %u-byte message", (unsigned)need);
+            return ESP_ERR_NO_MEM;
+        }
+        msg = heapbuf;
+    }
+    size_t cap = heapbuf ? need : sizeof(stackbuf);
+
+    int n = snprintf(msg, cap,
                      "421[\"post\",{\"url\":\"%s\","
                      "\"headers\":{\"Authorization\":\"Bearer %s\"},"
                      "\"data\":%s}]",
                      path, auth_token, data_json_object);
-    if (n <= 0 || n >= (int)sizeof(msg)) {
+    if (n <= 0 || n >= (int)cap) {
         ESP_LOGE(TAG, "vpost message too large");
+        free(heapbuf);
         return ESP_ERR_INVALID_SIZE;
     }
 
     ESP_LOGI(TAG, "Sending vpost: %s", path);
     int sent = esp_websocket_client_send_text(s_client, msg, n, pdMS_TO_TICKS(SIO_WS_WRITE_TIMEOUT_MS));
+    free(heapbuf);
     return (sent >= 0) ? ESP_OK : ESP_FAIL;
 }
 

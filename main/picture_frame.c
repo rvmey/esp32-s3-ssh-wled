@@ -481,6 +481,15 @@ static char          s_pending_speak_text[256] __attribute__((unused)) = {0};
 static int           s_pending_run_tries  __attribute__((unused)) = 0;
 static TickType_t    s_pending_run_retry_after __attribute__((unused)) = 0;
 
+/* Pending "folders"/"files" SD scan — set by the WS event task, consumed by the
+ * main loop (pf_run_dir_scan).  The scan is deferred off the websocket callback
+ * so reading a large directory cannot block ping/pong and drop the connection
+ * before the result is posted. */
+static volatile bool s_pending_dir_scan        __attribute__((unused)) = false;
+static bool          s_pending_dir_is_files     __attribute__((unused)) = false;
+static char          s_pending_dir_param[256]   __attribute__((unused)) = {0};
+static char          s_pending_dir_run_id[33]   __attribute__((unused)) = {0};
+
 /* Pending "askpic" question — set by the WS event task, consumed by the main loop */
 static char          s_pending_ask_text[256]   __attribute__((unused)) = {0};
 static char          s_pending_ask_run_id[33]  __attribute__((unused)) = {0};
@@ -8010,199 +8019,28 @@ static void pf_event_handler(const char *event_name,
         s_jpeg_folder_image_idx      = prev_image_idx;
 
     } else if (strcmp(s_trigger, "folders") == 0) {
-        if (!mount_sd_card_if_needed()) {
-            screen_draw_text("No SD card");
-        } else {
-            DIR *d = opendir(MP3_ROOT_PATH);
-            if (!d) {
-                screen_draw_text("No SD card");
-            } else {
-#if CONFIG_CORE2_HW
-                s_folder_list_count = 0;
-#endif
-                char msg[256] = "Folders:";
-                int msg_len = (int)strlen(msg);
-                /* JSON array with pre-escaped quotes for embedding in the run/save JSON string.
-                 * Each name is stored as \"name\" so snprintf %s produces valid JSON. */
-                char json_arr[512];
-                int  ja = 0;
-                bool jfirst = true;
-                json_arr[ja++] = '[';
-                int count = 0;
-                struct dirent *e;
-                while ((e = readdir(d)) != NULL) {
-                    if (e->d_name[0] == '.') continue;
-                    char fpath[MP3_MAX_PATH_LEN];
-                    int max_name = (int)sizeof(fpath) - (int)strlen(MP3_ROOT_PATH) - 2;
-                    if (max_name <= 0) continue;
-                    snprintf(fpath, sizeof(fpath), "%s/%.*s", MP3_ROOT_PATH, max_name, e->d_name);
-                    struct stat st;
-                    if (stat(fpath, &st) != 0 || !S_ISDIR(st.st_mode)) continue;
-                    int nlen = (int)strlen(e->d_name);
-                    int disp_len = nlen;
-#if CONFIG_CORE2_HW
-                    /* Truncate long names so this line never wraps, keeping
-                     * the list display's one-line-per-entry tap math valid. */
-                    int max_cols = pf_list_max_cols();
-                    if (disp_len > max_cols) disp_len = max_cols;
-#endif
-                    if (msg_len + 1 + disp_len < (int)sizeof(msg) - 1) {
-                        msg[msg_len++] = '\n';
-                        memcpy(msg + msg_len, e->d_name, (size_t)disp_len);
-                        msg_len += disp_len;
-                        msg[msg_len] = '\0';
-#if CONFIG_CORE2_HW
-                        if (s_folder_list_count < PF_FOLDER_LIST_MAX) {
-                            strncpy(s_folder_list_names[s_folder_list_count], e->d_name,
-                                    sizeof(s_folder_list_names[0]) - 1);
-                            s_folder_list_names[s_folder_list_count]
-                                [sizeof(s_folder_list_names[0]) - 1] = '\0';
-                            s_folder_list_count++;
-                        }
-#endif
-                    }
-                    int ja_need = (jfirst ? 0 : 1) + 4 + nlen; /* [,]\"name\" */
-                    if (ja + ja_need < (int)sizeof(json_arr) - 2) {
-                        if (!jfirst) json_arr[ja++] = ',';
-                        json_arr[ja++] = '\\'; json_arr[ja++] = '"';
-                        memcpy(json_arr + ja, e->d_name, (size_t)nlen);
-                        ja += nlen;
-                        json_arr[ja++] = '\\'; json_arr[ja++] = '"';
-                        jfirst = false;
-                    }
-                    count++;
-                }
-                closedir(d);
-                json_arr[ja++] = ']';
-                json_arr[ja]   = '\0';
-                strncpy(s_pending_result, json_arr, sizeof(s_pending_result) - 1);
-                s_pending_result[sizeof(s_pending_result) - 1] = '\0';
-                s_pending_has_result = true;
-                ESP_LOGI(TAG, "folders: %d folder(s) on SD, result: %s", count, s_pending_result);
-#if CONFIG_CORE2_HW
-                if (count > 0) pf_list_enter_scale2();
-#endif
-                screen_draw_text(count > 0 ? msg : "No folders\non SD card");
-#if CONFIG_CORE2_HW
-                s_folder_list_display_active = (count > 0);
-#endif
-            }
-        }
+        /* Defer the SD scan to the main task (pf_run_dir_scan).  Scanning here,
+         * in the websocket callback, would block ping/pong on a large directory
+         * and drop the connection before the result could be posted. */
+        s_pending_dir_is_files = false;
+        s_pending_dir_param[0] = '\0';
+        strncpy(s_pending_dir_run_id, s_id, sizeof(s_pending_dir_run_id) - 1);
+        s_pending_dir_run_id[sizeof(s_pending_dir_run_id) - 1] = '\0';
+        s_pending_dir_scan = true;
+        s_id[0] = '\0';   /* suppress the generic run/save below — pf_run_dir_scan()
+                           * posts command/result and queues run/save itself */
 
     } else if (strcmp(s_trigger, "files") == 0) {
         if (!s_params[0]) {
             screen_draw_text("Usage: files\n<folder>");
-        } else if (!mount_sd_card_if_needed()) {
-            screen_draw_text("No SD card");
         } else {
-            char dir_path[MP3_MAX_PATH_LEN];
-            int max_name = (int)sizeof(dir_path) - (int)strlen(MP3_ROOT_PATH) - 2;
-            snprintf(dir_path, sizeof(dir_path), "%s/%.*s",
-                     MP3_ROOT_PATH, max_name, s_params);
-            DIR *d = opendir(dir_path);
-            if (!d) {
-                screen_draw_text("Folder not\nfound");
-            } else {
-#if CONFIG_CORE2_HW
-                s_file_list_count = 0;
-                int mp3_idx = 0, jpeg_idx = 0;
-                strncpy(s_file_list_folder_trigger, s_params, sizeof(s_file_list_folder_trigger) - 1);
-                s_file_list_folder_trigger[sizeof(s_file_list_folder_trigger) - 1] = '\0';
-                strncpy(s_file_list_folder_path, dir_path, sizeof(s_file_list_folder_path) - 1);
-                s_file_list_folder_path[sizeof(s_file_list_folder_path) - 1] = '\0';
-#endif
-                char msg[256];
-                int msg_len;
-#if CONFIG_CORE2_HW
-                /* Truncate the header so it never wraps (reserve 1 char for
-                 * the trailing ':'), keeping the tap math valid. */
-                int max_cols = pf_list_max_cols();
-                {
-                    int hdr_len = (int)strlen(s_params);
-                    if (hdr_len > max_cols - 1) hdr_len = max_cols - 1;
-                    if (hdr_len < 0) hdr_len = 0;
-                    msg_len = snprintf(msg, sizeof(msg), "%.*s:", hdr_len, s_params);
-                }
-#else
-                msg_len = snprintf(msg, sizeof(msg), "%s:", s_params);
-#endif
-                char json_arr[512];
-                int  ja = 0;
-                bool jfirst = true;
-                json_arr[ja++] = '[';
-                int count = 0;
-                struct dirent *e;
-                while ((e = readdir(d)) != NULL) {
-                    if (e->d_name[0] == '.') continue;
-                    int nlen = (int)strlen(e->d_name);
-                    int disp_len = nlen;
-#if CONFIG_CORE2_HW
-                    /* Truncate long names so this line never wraps, keeping
-                     * the list display's one-line-per-entry tap math valid. */
-                    if (disp_len > max_cols) disp_len = max_cols;
-#endif
-                    int ja_need = (jfirst ? 0 : 1) + 4 + nlen;
-                    bool msg_fits  = (msg_len + 1 + disp_len < (int)sizeof(msg) - 1);
-                    bool json_fits = (ja + ja_need < (int)sizeof(json_arr) - 2);
-                    /* Stop early once both the display text and the JSON result
-                     * buffers are full.  The Core2 file-list array is also fed
-                     * only while msg_fits, so it has likewise stopped growing by
-                     * this point — there is nothing left to capture.  Continuing
-                     * to readdir() a huge folder here would block the websocket
-                     * callback task long enough to drop the connection before the
-                     * result can be posted (the bug that made "files" on a large
-                     * folder return "No result" while "folders" worked). */
-                    if (count > 0 && !msg_fits && !json_fits) break;
-                    if (msg_fits) {
-                        msg[msg_len++] = '\n';
-                        memcpy(msg + msg_len, e->d_name, (size_t)disp_len);
-                        msg_len += disp_len;
-                        msg[msg_len] = '\0';
-#if CONFIG_CORE2_HW
-                        if (s_file_list_count < PF_FILE_LIST_MAX) {
-                            strncpy(s_file_list_names[s_file_list_count], e->d_name,
-                                    sizeof(s_file_list_names[0]) - 1);
-                            s_file_list_names[s_file_list_count]
-                                [sizeof(s_file_list_names[0]) - 1] = '\0';
-                            if (is_mp3_file_name(e->d_name)) {
-                                s_file_list_types[s_file_list_count]  = PF_FILE_MP3;
-                                s_file_list_subidx[s_file_list_count] = mp3_idx++;
-                            } else if (is_jpeg_file_name(e->d_name)) {
-                                s_file_list_types[s_file_list_count]  = PF_FILE_JPEG;
-                                s_file_list_subidx[s_file_list_count] = jpeg_idx++;
-                            } else {
-                                s_file_list_types[s_file_list_count]  = PF_FILE_OTHER;
-                                s_file_list_subidx[s_file_list_count] = -1;
-                            }
-                            s_file_list_count++;
-                        }
-#endif
-                    }
-                    if (json_fits) {
-                        if (!jfirst) json_arr[ja++] = ',';
-                        json_arr[ja++] = '\\'; json_arr[ja++] = '"';
-                        memcpy(json_arr + ja, e->d_name, (size_t)nlen);
-                        ja += nlen;
-                        json_arr[ja++] = '\\'; json_arr[ja++] = '"';
-                        jfirst = false;
-                    }
-                    count++;
-                }
-                closedir(d);
-                json_arr[ja++] = ']';
-                json_arr[ja]   = '\0';
-                strncpy(s_pending_result, json_arr, sizeof(s_pending_result) - 1);
-                s_pending_result[sizeof(s_pending_result) - 1] = '\0';
-                s_pending_has_result = true;
-                ESP_LOGI(TAG, "files: %d file(s) in %s, result: %s", count, dir_path, s_pending_result);
-#if CONFIG_CORE2_HW
-                if (count > 0) pf_list_enter_scale2();
-#endif
-                screen_draw_text(count > 0 ? msg : "Empty folder");
-#if CONFIG_CORE2_HW
-                s_file_list_display_active = (count > 0);
-#endif
-            }
+            s_pending_dir_is_files = true;
+            strncpy(s_pending_dir_param, s_params, sizeof(s_pending_dir_param) - 1);
+            s_pending_dir_param[sizeof(s_pending_dir_param) - 1] = '\0';
+            strncpy(s_pending_dir_run_id, s_id, sizeof(s_pending_dir_run_id) - 1);
+            s_pending_dir_run_id[sizeof(s_pending_dir_run_id) - 1] = '\0';
+            s_pending_dir_scan = true;
+            s_id[0] = '\0';   /* suppress the generic run/save below */
         }
 
     } else if (strcmp(s_trigger, "reboot") == 0) {
@@ -8668,6 +8506,213 @@ static void pf_event_handler(const char *event_name,
         s_pending_run_retry_after = 0;
         s_pending_run = true;
     }
+}
+
+/* ── Deferred SD directory scan (folders / files commands) ──────────────── */
+/*
+ * pf_run_dir_scan() runs on the MAIN task (queued by the websocket callback via
+ * s_pending_dir_scan), so reading a large directory can no longer block
+ * ping/pong and drop the connection before the result is posted — the bug that
+ * made "files" on a big folder return "No result".
+ *
+ * The JSON result is built in a PSRAM buffer on boards that have it, so folders
+ * with up to ~150 names list completely; no-PSRAM boards fall back to a small
+ * internal buffer.  Because we are already on the main task, the command/result
+ * frame is posted directly here; run/save is queued through the normal
+ * s_pending_run retry path.
+ */
+
+/* Post a dir-scan command/result frame, then queue run/save.  result_text is
+ * embedded verbatim into "result":"..."; the scan stores names pre-escaped as
+ * \"name\", and plain ASCII error strings are also safe. */
+static void pf_dir_post_result(const char *run_id, const char *result_text)
+{
+    if (!run_id || !run_id[0] || !s_computer_id[0]) return;
+
+    size_t cap = strlen(result_text) + 160;
+    char *result_json = malloc(cap);
+    if (!result_json) {
+        ESP_LOGE(TAG, "dir scan: no memory for result json (%u bytes)", (unsigned)cap);
+        return;
+    }
+    snprintf(result_json, cap,
+             "{\"computer_id\":\"%s\",\"command_id\":\"%s\",\"result\":\"%s\"}",
+             s_computer_id, run_id, result_text);
+    esp_err_t r = socketio_send_vpost("/api/command/result", s_hw_token, result_json);
+    ESP_LOGI(TAG, "dir command/result vpost → %s (%u bytes)",
+             esp_err_to_name(r), (unsigned)strlen(result_json));
+    free(result_json);
+
+    /* Queue run/save through the normal retry mechanism. */
+    strncpy(s_pending_run_id, run_id, sizeof(s_pending_run_id) - 1);
+    s_pending_run_id[sizeof(s_pending_run_id) - 1] = '\0';
+    s_pending_run_tries = 0;
+    s_pending_run_retry_after = 0;
+    s_pending_run = true;
+}
+
+static void pf_run_dir_scan(bool is_files, const char *folder, const char *run_id)
+{
+    /* Result buffer — large on PSRAM boards so big folders list completely;
+     * small internal fallback elsewhere (e.g. the no-PSRAM CYD). */
+    size_t json_cap = 4096;
+    char *json_arr = heap_caps_malloc(json_cap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!json_arr) {
+        json_cap = 600;
+        json_arr = malloc(json_cap);
+    }
+    if (!json_arr) {
+        ESP_LOGE(TAG, "dir scan: no memory for result buffer");
+        screen_draw_text("Out of memory");
+        return;
+    }
+
+    char dir_path[MP3_MAX_PATH_LEN];
+    if (is_files) {
+        int max_name = (int)sizeof(dir_path) - (int)strlen(MP3_ROOT_PATH) - 2;
+        snprintf(dir_path, sizeof(dir_path), "%s/%.*s", MP3_ROOT_PATH, max_name, folder);
+    } else {
+        snprintf(dir_path, sizeof(dir_path), "%s", MP3_ROOT_PATH);
+    }
+
+    DIR *d = NULL;
+    const char *errmsg = NULL;
+    if (!mount_sd_card_if_needed()) {
+        errmsg = "No SD card";
+    } else if ((d = opendir(dir_path)) == NULL) {
+        errmsg = is_files ? "Folder not\nfound" : "No SD card";
+    }
+    if (errmsg) {
+        screen_draw_text(errmsg);
+        char res[40];
+        snprintf(res, sizeof(res), "%s", errmsg);
+        for (char *p = res; *p; p++) if (*p == '\n') *p = ' ';
+        pf_dir_post_result(run_id, res);
+        free(json_arr);
+        return;
+    }
+
+#if CONFIG_CORE2_HW
+    int max_cols = pf_list_max_cols();
+    int mp3_idx = 0, jpeg_idx = 0;
+    if (is_files) {
+        s_file_list_count = 0;
+        strncpy(s_file_list_folder_trigger, folder, sizeof(s_file_list_folder_trigger) - 1);
+        s_file_list_folder_trigger[sizeof(s_file_list_folder_trigger) - 1] = '\0';
+        strncpy(s_file_list_folder_path, dir_path, sizeof(s_file_list_folder_path) - 1);
+        s_file_list_folder_path[sizeof(s_file_list_folder_path) - 1] = '\0';
+    } else {
+        s_folder_list_count = 0;
+    }
+#endif
+
+    char msg[256];
+    int  msg_len;
+    if (is_files) {
+#if CONFIG_CORE2_HW
+        int hdr_len = (int)strlen(folder);
+        if (hdr_len > max_cols - 1) hdr_len = max_cols - 1;
+        if (hdr_len < 0) hdr_len = 0;
+        msg_len = snprintf(msg, sizeof(msg), "%.*s:", hdr_len, folder);
+#else
+        msg_len = snprintf(msg, sizeof(msg), "%s:", folder);
+#endif
+    } else {
+        msg_len = snprintf(msg, sizeof(msg), "Folders:");
+    }
+
+    int  ja = 0;
+    bool jfirst = true;
+    json_arr[ja++] = '[';
+    int count = 0;
+    struct dirent *e;
+    while ((e = readdir(d)) != NULL) {
+        if (e->d_name[0] == '.') continue;
+        if (!is_files) {
+            /* folders: keep only sub-directories */
+            char fpath[MP3_MAX_PATH_LEN];
+            int max_name = (int)sizeof(fpath) - (int)strlen(MP3_ROOT_PATH) - 2;
+            if (max_name <= 0) continue;
+            snprintf(fpath, sizeof(fpath), "%s/%.*s", MP3_ROOT_PATH, max_name, e->d_name);
+            struct stat st;
+            if (stat(fpath, &st) != 0 || !S_ISDIR(st.st_mode)) continue;
+        }
+        int nlen = (int)strlen(e->d_name);
+        int disp_len = nlen;
+#if CONFIG_CORE2_HW
+        if (disp_len > max_cols) disp_len = max_cols;
+#endif
+        int  ja_need   = (jfirst ? 0 : 1) + 4 + nlen;  /* [,]\"name\" */
+        bool msg_fits  = (msg_len + 1 + disp_len < (int)sizeof(msg) - 1);
+        bool json_fits = (ja + ja_need < (int)json_cap - 2);
+        /* json_arr is the limiting buffer for the cloud result; stop once it is
+         * full.  msg and the Core2 list fill earlier and are gated separately,
+         * so nothing further is lost by breaking here. */
+        if (count > 0 && !json_fits) break;
+        if (msg_fits) {
+            msg[msg_len++] = '\n';
+            memcpy(msg + msg_len, e->d_name, (size_t)disp_len);
+            msg_len += disp_len;
+            msg[msg_len] = '\0';
+#if CONFIG_CORE2_HW
+            if (!is_files && s_folder_list_count < PF_FOLDER_LIST_MAX) {
+                strncpy(s_folder_list_names[s_folder_list_count], e->d_name,
+                        sizeof(s_folder_list_names[0]) - 1);
+                s_folder_list_names[s_folder_list_count]
+                    [sizeof(s_folder_list_names[0]) - 1] = '\0';
+                s_folder_list_count++;
+            } else if (is_files && s_file_list_count < PF_FILE_LIST_MAX) {
+                strncpy(s_file_list_names[s_file_list_count], e->d_name,
+                        sizeof(s_file_list_names[0]) - 1);
+                s_file_list_names[s_file_list_count]
+                    [sizeof(s_file_list_names[0]) - 1] = '\0';
+                if (is_mp3_file_name(e->d_name)) {
+                    s_file_list_types[s_file_list_count]  = PF_FILE_MP3;
+                    s_file_list_subidx[s_file_list_count] = mp3_idx++;
+                } else if (is_jpeg_file_name(e->d_name)) {
+                    s_file_list_types[s_file_list_count]  = PF_FILE_JPEG;
+                    s_file_list_subidx[s_file_list_count] = jpeg_idx++;
+                } else {
+                    s_file_list_types[s_file_list_count]  = PF_FILE_OTHER;
+                    s_file_list_subidx[s_file_list_count] = -1;
+                }
+                s_file_list_count++;
+            }
+#endif
+        }
+        if (json_fits) {
+            if (!jfirst) json_arr[ja++] = ',';
+            json_arr[ja++] = '\\'; json_arr[ja++] = '"';
+            memcpy(json_arr + ja, e->d_name, (size_t)nlen);
+            ja += nlen;
+            json_arr[ja++] = '\\'; json_arr[ja++] = '"';
+            jfirst = false;
+        }
+        count++;
+    }
+    closedir(d);
+    json_arr[ja++] = ']';
+    json_arr[ja]   = '\0';
+
+    ESP_LOGI(TAG, "%s: %d entr%s in %s (result %d bytes)",
+             is_files ? "files" : "folders", count, count == 1 ? "y" : "ies",
+             dir_path, ja);
+
+#if CONFIG_CORE2_HW
+    if (count > 0) pf_list_enter_scale2();
+#endif
+    if (count > 0) {
+        screen_draw_text(msg);
+    } else {
+        screen_draw_text(is_files ? "Empty folder" : "No folders\non SD card");
+    }
+#if CONFIG_CORE2_HW
+    if (is_files) s_file_list_display_active   = (count > 0);
+    else          s_folder_list_display_active = (count > 0);
+#endif
+
+    pf_dir_post_result(run_id, json_arr);
+    free(json_arr);
 }
 
 /* ── JPEG download + decode + display ───────────────────────────────────── */
@@ -9941,8 +9986,19 @@ void picture_frame_run(void)
                  * that screen is dismissed. */
             }
 
+            /* Deferred SD directory scan for "folders"/"files" — runs on this
+             * (main) task so a slow scan can't block the websocket keepalive.
+             * pf_run_dir_scan() posts command/result itself and queues run/save,
+             * so it must run before the run/save block below. */
+            if (s_pending_dir_scan) {
+                s_pending_dir_scan = false;
+                pf_run_dir_scan(s_pending_dir_is_files,
+                                s_pending_dir_param,
+                                s_pending_dir_run_id);
+            }
+
             /* Post command/result — dedicated result payload for commands that
-             * return data (e.g. "folders").  Sent before run/save so the server
+             * return data (e.g. "battery").  Sent before run/save so the server
              * has the result ready when the MCP tool reply is triggered. */
             if (s_pending_has_result) {
                 char result_json[640];
