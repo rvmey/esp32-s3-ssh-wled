@@ -9379,7 +9379,12 @@ static bool download_and_show_jpeg(const char *url)
         }
 #endif
         bool ok = decode_and_show_jpeg(jpeg_buf, total);
-        free(jpeg_buf);
+        if (s_jpeg_cache) { free(s_jpeg_cache); s_jpeg_cache = NULL; }
+#if CONFIG_CORE2_HW
+        pf_free_jpeg_rgb_cache();
+#endif
+        s_jpeg_cache     = jpeg_buf;
+        s_jpeg_cache_len = total;
         return ok;
     }
 
