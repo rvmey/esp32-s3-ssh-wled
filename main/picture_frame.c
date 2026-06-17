@@ -8036,6 +8036,10 @@ static void pf_event_handler(const char *event_name,
             /* No param: resume with the last IP/URL if one was previously set. */
             if (s_camera_url[0]) {
                 s_mp3_ui_override_allowed = false;
+                if (s_jpeg_cache) { free(s_jpeg_cache); s_jpeg_cache = NULL; s_jpeg_cache_len = 0; }
+#if CONFIG_CORE2_HW
+                pf_free_jpeg_rgb_cache();
+#endif
                 s_camera_next_tick = 0;
                 s_camera_live = true;
             } else {
@@ -8043,6 +8047,10 @@ static void pf_event_handler(const char *event_name,
             }
         } else {
             s_mp3_ui_override_allowed = false;
+            if (s_jpeg_cache) { free(s_jpeg_cache); s_jpeg_cache = NULL; s_jpeg_cache_len = 0; }
+#if CONFIG_CORE2_HW
+            pf_free_jpeg_rgb_cache();
+#endif
             if (strncmp(p, "http://", 7) == 0 || strncmp(p, "https://", 8) == 0) {
                 strncpy(s_camera_url, p, sizeof(s_camera_url) - 1);
                 s_camera_url[sizeof(s_camera_url) - 1] = '\0';
@@ -10051,9 +10059,13 @@ void picture_frame_run(void)
                 }
             }
 
-            /* Live camera view: refresh the frame on its interval, but yield to
-             * the on-screen menu / list / battery UI while those are active. */
+            /* Live camera view: only poll when camera frames are actually the
+             * foreground content.  Skip when any other UI is on screen so we
+             * don't waste bandwidth downloading frames that won't be shown. */
             if (s_camera_live
+                && !s_jpeg_cache
+                && !s_pending_text_draw
+                && !(s_mp3.active && s_mp3_ui_override_allowed)
 #if CONFIG_CORE2_HW
                 && !s_menu_active
                 && !s_battery_display_active
