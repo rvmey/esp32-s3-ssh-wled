@@ -383,6 +383,7 @@ static const char *tcmd_display_host(void)
 #define NVS_KEY_MIC_SRC "mic_src"  /* 0 = built-in PDM (default), 1 = Grove ADC */
 #define NVS_KEY_CLOCK_MODE "clock_mode" /* 0=off, 1=digital, 2=analog */
 #define NVS_KEY_BOOT_SHOW  "boot_show"  /* 1=clock-digital, 2=clock-analog, 3=music, 4=jpeg, 5=text */
+#define NVS_KEY_CAMURL     "cam_url"
 #define NVS_KEY_TIMEZONE   "tz"         /* POSIX TZ string, default "EST5EDT,M3.2.0,M11.1.0" */
 
 #define HW_TOKEN_MAX_LEN    513   /* 512 payload + NUL */
@@ -5946,6 +5947,7 @@ static void restore_display_state_from_nvs(void)
     nvs_read_u8(NVS_KEY_FONT,   &font_scale);
     nvs_read_str(NVS_KEY_TEXT,    text,     sizeof(text));
     nvs_read_str(NVS_KEY_JPEGURL, jpeg_url, sizeof(jpeg_url));
+    nvs_read_str(NVS_KEY_CAMURL,  s_camera_url, sizeof(s_camera_url));
 
     uint8_t mp3_mode = 0;
     nvs_read_u8(NVS_KEY_MP3_MODE, &mp3_mode);
@@ -8030,6 +8032,7 @@ static void pf_event_handler(const char *event_name,
             } else {
                 snprintf(s_camera_url, sizeof(s_camera_url), "http://%.230s/cam.jpg", p);
             }
+            nvs_write_str(NVS_KEY_CAMURL, s_camera_url);
             s_camera_next_tick = 0;
             s_camera_live = true;
         }
