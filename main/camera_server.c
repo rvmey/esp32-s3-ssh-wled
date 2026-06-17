@@ -1,5 +1,6 @@
 /*
- * ESP32-S3 camera variant — Seeed XIAO ESP32-S3 Sense (OV2640).
+ * ESP32-S3 camera variant — Seeed XIAO ESP32-S3 Sense (OV2640/OV3660,
+ * auto-detected by the esp32-camera driver).
  *
  * Joins WiFi (Improv-WiFi provisioning over USB on first boot, stored
  * credentials thereafter), initialises the OV2640, and serves the latest
@@ -124,6 +125,10 @@ static esp_err_t start_http_server(void)
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.server_port = 80;
     config.lru_purge_enable = true;
+    /* LWIP_MAX_SOCKETS is 8 (sdkconfig.defaults); the HTTP server reserves 3
+     * internally, so max_open_sockets must be <= 5.  We only serve a couple of
+     * concurrent clients, so cap it well under the limit (default 7 fails). */
+    config.max_open_sockets = 4;
 
     httpd_handle_t server = NULL;
     esp_err_t err = httpd_start(&server, &config);
