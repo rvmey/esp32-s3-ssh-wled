@@ -5,6 +5,7 @@ elseif(CONFIG_HARDWARE_PICTURE_FRAME)
     set(VARIANT_SRCS
         "screen_control.c"
         "picture_frame.c"
+        "qrcodegen.c"
         "socketio.c"
         "http_pf_config.c")
 elseif(CONFIG_HARDWARE_BIKE_TRACKER)
@@ -35,6 +36,7 @@ elseif(CONFIG_HARDWARE_CORE2 OR CONFIG_HARDWARE_CYD)
         "core2_leds.c"
         "mpu6886.c"
         "picture_frame.c"
+        "qrcodegen.c"
         "socketio.c"
         "http_pf_config.c")
     if(CONFIG_HARDWARE_CYD)
