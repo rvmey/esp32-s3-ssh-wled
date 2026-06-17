@@ -16,3 +16,9 @@ CONFIG_SPIRAM_USE_MALLOC=y
 
 # 8 MB flash on the XIAO ESP32-S3.
 CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y
+
+# TLS — needed to POST to https://www.triggercmd.com (triggers the Core2's
+# 'camera' command at boot). GoDaddy chain needs the full, cross-signed bundle.
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_FULL=y
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_CROSS_SIGNED_VERIFY=y

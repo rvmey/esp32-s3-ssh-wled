@@ -8942,7 +8942,11 @@ static bool download_and_show_jpeg(const char *url)
     screen_draw_text("Web images\nneed PSRAM");
     return false;
 #else
-    screen_draw_text("Loading image...");
+    /* During live camera view, skip the "Loading image..." placeholder — it
+     * would flash between every frame.  Show it only for one-shot fetches. */
+    if (!s_camera_live) {
+        screen_draw_text("Loading image...");
+    }
 
     char effective_url[1024];
     strncpy(effective_url, url, sizeof(effective_url) - 1);
