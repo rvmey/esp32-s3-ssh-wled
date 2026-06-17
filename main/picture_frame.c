@@ -8144,14 +8144,15 @@ static void pf_event_handler(const char *event_name,
                     int ja_need = (jfirst ? 0 : 1) + 4 + nlen;
                     bool msg_fits  = (msg_len + 1 + disp_len < (int)sizeof(msg) - 1);
                     bool json_fits = (ja + ja_need < (int)sizeof(json_arr) - 2);
-#if CONFIG_CORE2_HW
-                    /* Stop early once all three storage areas are full — avoids
-                     * exhausting a large directory and missing the result timeout. */
-                    if (count > 0 && !msg_fits && !json_fits &&
-                            s_file_list_count >= PF_FILE_LIST_MAX) break;
-#else
+                    /* Stop early once both the display text and the JSON result
+                     * buffers are full.  The Core2 file-list array is also fed
+                     * only while msg_fits, so it has likewise stopped growing by
+                     * this point — there is nothing left to capture.  Continuing
+                     * to readdir() a huge folder here would block the websocket
+                     * callback task long enough to drop the connection before the
+                     * result can be posted (the bug that made "files" on a large
+                     * folder return "No result" while "folders" worked). */
                     if (count > 0 && !msg_fits && !json_fits) break;
-#endif
                     if (msg_fits) {
                         msg[msg_len++] = '\n';
                         memcpy(msg + msg_len, e->d_name, (size_t)disp_len);
