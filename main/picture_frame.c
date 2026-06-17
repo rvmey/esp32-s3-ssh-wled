@@ -5916,7 +5916,14 @@ static esp_err_t save_display_state_to_nvs(void)
 static void restore_display_state_from_nvs(void)
 {
     /* SD card takes priority — settings there survive reflashing or device swap. */
-    if (restore_display_state_from_sd()) return;
+    if (restore_display_state_from_sd()) {
+        /* Camera URL is written to NVS immediately (not deferred to "save"),
+         * so the SD file may not have it yet.  Fall back to NVS. */
+        if (!s_camera_url[0]) {
+            nvs_read_str(NVS_KEY_CAMURL, s_camera_url, sizeof(s_camera_url));
+        }
+        return;
+    }
 
     uint8_t saved = 0;
     if (!nvs_read_u8(NVS_KEY_SAVED, &saved) || saved != 1) {
