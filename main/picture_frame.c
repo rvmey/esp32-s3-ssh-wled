@@ -4079,7 +4079,7 @@ typedef enum {
     PF_MENU_MUTE, PF_MENU_SHUFFLE, PF_MENU_REPEAT_TRACK, PF_MENU_REPEAT_PLAYLIST,
     PF_MENU_VISUALIZER, PF_MENU_VIZ_NEXT, PF_MENU_VIZ_PREV,
     PF_MENU_LEDCOLOR, PF_MENU_SLEEP_TIMER, PF_MENU_SLEEP_ON_POWER, PF_MENU_AI_SPEECH,
-    PF_MENU_CLOCK,
+    PF_MENU_CLOCK, PF_MENU_CAMERA,
     PF_MENU_ITEM_COUNT
 } pf_menu_item_id_t;
 
@@ -4180,6 +4180,15 @@ static void pf_menu_item_label(int idx, char *out, size_t out_sz)
                      s_clock_mode == PF_CLOCK_ANALOG ? "Analog" :
                      s_clock_mode == PF_CLOCK_DIGITAL ? "Digital" : "Off");
             break;
+        case PF_MENU_CAMERA:
+            if (s_camera_live) {
+                snprintf(out, out_sz, "Camera: Stop");
+            } else if (s_camera_url[0]) {
+                snprintf(out, out_sz, "Camera: Start");
+            } else {
+                snprintf(out, out_sz, "Camera: No IP");
+            }
+            break;
         default:
             snprintf(out, out_sz, "?");
             break;
@@ -4265,6 +4274,13 @@ static bool pf_menu_execute_item(int idx)
         case PF_MENU_SLEEP_ON_POWER:  pf_menu_dispatch("sleeponpower", "");  return false;
         case PF_MENU_AI_SPEECH:       pf_menu_dispatch("aitts", "");         return false;
         case PF_MENU_CLOCK:           pf_menu_dispatch("clock", "");         return true;
+        case PF_MENU_CAMERA:
+            if (s_camera_live) {
+                pf_menu_dispatch("camera", "off");
+            } else {
+                pf_menu_dispatch("camera", ""); /* resume with last IP */
+            }
+            return true;
         default: return true;
     }
 }
@@ -4365,7 +4381,9 @@ static void pf_menu_close(void)
     s_folder_list_display_active = false;
     s_file_list_display_active = false;
     pf_list_restore_scale();
-    if (s_jpeg_cache) {
+    if (s_camera_live) {
+        /* Camera will redraw on the next main-loop tick; don't overwrite. */
+    } else if (s_jpeg_cache) {
         s_pending_jpeg_redraw = true;
     } else if (s_mp3.active && s_mp3_ui_override_allowed) {
         mp3_request_ui_refresh();
@@ -7989,11 +8007,21 @@ static void pf_event_handler(const char *event_name,
 
     } else if (strcmp(s_trigger, "camera") == 0) {
         /* Live view of an ESP32-S3 camera. Param is the camera's IP/host (we
-         * build http://<host>/cam.jpg), a full URL, or 'off'/'stop' to end. */
+         * build http://<host>/cam.jpg), a full URL, 'off'/'stop' to end,
+         * or empty to resume with the last-used IP. */
         const char *p = s_params;
         while (*p == ' ') p++;
-        if (!*p || strcmp(p, "off") == 0 || strcmp(p, "stop") == 0) {
+        if (strcmp(p, "off") == 0 || strcmp(p, "stop") == 0) {
             s_camera_live = false;
+        } else if (!*p) {
+            /* No param: resume with the last IP/URL if one was previously set. */
+            if (s_camera_url[0]) {
+                s_mp3_ui_override_allowed = false;
+                s_camera_next_tick = 0;
+                s_camera_live = true;
+            } else {
+                s_camera_live = false;
+            }
         } else {
             s_mp3_ui_override_allowed = false;
             if (strncmp(p, "http://", 7) == 0 || strncmp(p, "https://", 8) == 0) {
@@ -8002,7 +8030,7 @@ static void pf_event_handler(const char *event_name,
             } else {
                 snprintf(s_camera_url, sizeof(s_camera_url), "http://%.230s/cam.jpg", p);
             }
-            s_camera_next_tick = 0;   /* fetch the first frame immediately */
+            s_camera_next_tick = 0;
             s_camera_live = true;
         }
 
@@ -9064,7 +9092,26 @@ static bool download_and_show_jpeg(const char *url)
     }
     ESP_LOGI(TAG, "jpeg: downloaded %d bytes", total);
 
-    /* Replace cache — keep compressed bytes for orientation-change redraws */
+    /* Camera live mode: decode without caching so camera frames don't persist
+     * as a "last JPEG" after the feed stops.  Also skip the draw if a UI
+     * overlay (menu, battery, file list) opened during the download — otherwise
+     * the finishing decode would overwrite the overlay that just appeared. */
+    if (s_camera_live) {
+#if CONFIG_CORE2_HW
+        if (s_menu_active || s_battery_display_active
+                          || s_folder_list_display_active
+                          || s_file_list_display_active
+                          || s_menu_result_active) {
+            free(jpeg_buf);
+            return false;
+        }
+#endif
+        bool ok = decode_and_show_jpeg(jpeg_buf, total);
+        free(jpeg_buf);
+        return ok;
+    }
+
+    /* One-shot JPEG: replace cache for orientation-change redraws. */
     if (s_jpeg_cache) { free(s_jpeg_cache); s_jpeg_cache = NULL; }
 #if CONFIG_CORE2_HW
     pf_free_jpeg_rgb_cache();
