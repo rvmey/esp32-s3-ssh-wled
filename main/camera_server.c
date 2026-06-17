@@ -245,20 +245,35 @@ static void form_field(const char *body, const char *key, char *out, size_t out_
 
 static void send_setup_form(httpd_req_t *req, const char *banner)
 {
-    char html[1024];
+    char ssid2[33] = {0};
+    char ssid3[33] = {0};
+    wifi_get_ssid2(ssid2, sizeof(ssid2));
+    wifi_get_ssid3(ssid3, sizeof(ssid3));
+
+    char html[2048];
     snprintf(html, sizeof(html),
         "<!doctype html><meta charset=utf-8><title>Camera setup</title>"
-        "<h1>TRIGGERcmd setup</h1>%s"
+        "<h1>Camera setup</h1>%s"
         "<form method=POST action=/setup>"
-        "<p>TRIGGERcmd API token:<br><input name=token size=50 value=\"%s\"></p>"
+        "<h2>TRIGGERcmd</h2>"
+        "<p>API token:<br><input name=token size=50 value=\"%s\"></p>"
         "<p>Core2 computer name:<br><input name=computer size=40 value=\"%s\"></p>"
+        "<h2>Extra WiFi networks</h2>"
+        "<p>Network 2 SSID:<br><input name=ssid2 size=32 value=\"%.32s\"></p>"
+        "<p>Network 2 password:<br><input name=pass2 type=password size=32></p>"
+        "<p>Network 3 SSID:<br><input name=ssid3 size=32 value=\"%.32s\"></p>"
+        "<p>Network 3 password:<br><input name=pass3 type=password size=32></p>"
+        "<p><small>Leave password blank to keep existing. "
+        "Clear SSID to remove that network.</small></p>"
         "<p><button>Save &amp; start Core2 view</button></p>"
         "</form>"
         "<p>On save, the Core2's <code>camera</code> command runs with this "
         "camera's IP (%s).</p>",
         banner ? banner : "",
         s_tcmd_token[0] ? "********" : "",
-        s_core2_name, s_cam_ip);
+        s_core2_name,
+        ssid2, ssid3,
+        s_cam_ip);
     httpd_resp_set_type(req, "text/html");
     httpd_resp_send(req, html, HTTPD_RESP_USE_STRLEN);
 }
@@ -285,8 +300,13 @@ static esp_err_t setup_post_handler(httpd_req_t *req)
     buf[total] = '\0';
 
     char token[TCMD_TOKEN_MAX], computer[TCMD_COMPUTER_MAX];
-    form_field(buf, "token", token, sizeof(token));
+    char ssid2[33], pass2[65], ssid3[33], pass3[65];
+    form_field(buf, "token",    token,    sizeof(token));
     form_field(buf, "computer", computer, sizeof(computer));
+    form_field(buf, "ssid2",    ssid2,    sizeof(ssid2));
+    form_field(buf, "pass2",    pass2,    sizeof(pass2));
+    form_field(buf, "ssid3",    ssid3,    sizeof(ssid3));
+    form_field(buf, "pass3",    pass3,    sizeof(pass3));
 
     /* Keep the existing token if the masked placeholder was left unchanged. */
     if (strcmp(token, "********") == 0) {
@@ -296,6 +316,46 @@ static esp_err_t setup_post_handler(httpd_req_t *req)
 
     cam_cfg_save(token, computer);
     ESP_LOGI(TAG, "Saved TRIGGERcmd config: computer='%s'", computer);
+
+    /* Save extra WiFi networks.  If the SSID field is non-empty, save it.
+     * If the SSID is empty, clear that slot.  If SSID is non-empty but
+     * password is blank, preserve the existing stored password. */
+    if (ssid2[0]) {
+        if (pass2[0]) {
+            wifi_save_credentials2(ssid2, pass2);
+        } else {
+            char existing_pass[65] = {0};
+            nvs_handle_t h;
+            if (nvs_open("wifi_cfg", NVS_READONLY, &h) == ESP_OK) {
+                size_t len = sizeof(existing_pass);
+                nvs_get_str(h, "password2", existing_pass, &len);
+                nvs_close(h);
+            }
+            wifi_save_credentials2(ssid2, existing_pass);
+        }
+        ESP_LOGI(TAG, "Saved WiFi network 2: '%s'", ssid2);
+    } else {
+        wifi_save_credentials2("", "");
+        ESP_LOGI(TAG, "Cleared WiFi network 2");
+    }
+    if (ssid3[0]) {
+        if (pass3[0]) {
+            wifi_save_credentials3(ssid3, pass3);
+        } else {
+            char existing_pass[65] = {0};
+            nvs_handle_t h;
+            if (nvs_open("wifi_cfg", NVS_READONLY, &h) == ESP_OK) {
+                size_t len = sizeof(existing_pass);
+                nvs_get_str(h, "password3", existing_pass, &len);
+                nvs_close(h);
+            }
+            wifi_save_credentials3(ssid3, existing_pass);
+        }
+        ESP_LOGI(TAG, "Saved WiFi network 3: '%s'", ssid3);
+    } else {
+        wifi_save_credentials3("", "");
+        ESP_LOGI(TAG, "Cleared WiFi network 3");
+    }
 
     cam_trigger_core2();
     send_setup_form(req, "<p style=color:green>Saved. Core2 view started.</p>");
