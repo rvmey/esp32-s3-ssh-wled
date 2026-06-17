@@ -10303,7 +10303,6 @@ void picture_frame_run(void)
              * foreground content.  Skip when any other UI is on screen so we
              * don't waste bandwidth downloading frames that won't be shown. */
             if (s_camera_live
-                && !s_jpeg_cache
                 && !s_pending_text_draw
                 && !(s_mp3.active && s_mp3_ui_override_allowed)
 #if CONFIG_CORE2_HW
