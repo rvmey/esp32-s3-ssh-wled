@@ -5769,6 +5769,9 @@ static bool save_display_state_to_sd(void)
     }
     fprintf(f, "timezone=%s\n", s_timezone);
 #endif
+    if (s_camera_url[0]) {
+        fprintf(f, "cam_url=%s\n", s_camera_url);
+    }
     fclose(f);
     ESP_LOGI(TAG, "save_sd: settings written to %s", SD_SETTINGS_PATH);
     return true;
@@ -5828,6 +5831,9 @@ static bool restore_display_state_from_sd(void)
         } else if (strncmp(line, "text=", 5) == 0) {
             strncpy(text_enc, line + 5, sizeof(text_enc) - 1);
             text_enc[sizeof(text_enc) - 1] = '\0';
+        } else if (strncmp(line, "cam_url=", 8) == 0) {
+            strncpy(s_camera_url, line + 8, sizeof(s_camera_url) - 1);
+            s_camera_url[sizeof(s_camera_url) - 1] = '\0';
         }
     }
     fclose(f);
@@ -5895,6 +5901,10 @@ static esp_err_t save_display_state_to_nvs(void)
     }
     if ((err = nvs_write_str(NVS_KEY_TIMEZONE, s_timezone)) != ESP_OK) return err;
 #endif
+
+    if (s_camera_url[0]) {
+        if ((err = nvs_write_str(NVS_KEY_CAMURL, s_camera_url)) != ESP_OK) return err;
+    }
 
     esp_err_t result = nvs_write_u8(NVS_KEY_SAVED, 1);
     if (result == ESP_OK) {
