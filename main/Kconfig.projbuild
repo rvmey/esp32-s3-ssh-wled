@@ -30,6 +30,9 @@ menu "ESP32 SSH LED Configuration"
 
         config HARDWARE_CYD
             bool "TRIGGERcmd CYD Display (ESP32-2432S028R, Core2-compatible profile)"
+
+        config HARDWARE_ESP32S3_CAM
+            bool "ESP32-S3 Camera (Seeed XIAO ESP32-S3 Sense, OV2640) — HTTP JPEG server"
     endchoice
 
 

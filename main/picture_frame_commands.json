@@ -63,6 +63,13 @@
   "mcpToolDescription": "Display a JPEG picture on the user's Core2 device when they say something like, 'Picture of a cat'. Use loremflickr.com by default. If multiple words (Example: cat,dog), use a comma. The command parameter should always be a URL like this: 'https://loremflickr.com/320/240/dog,cat/all' or this if single word: https://loremflickr.com/320/240/dog",
   "icon": "🖼️"
  },
+ {
+  "trigger": "camera",
+  "command": "camera",
+  "allowParams": "true",
+  "mcpToolDescription": "Show a live view from an ESP32-S3 camera on the user's Core2 device. The camera must be on the same WiFi network. The parameter is the camera's IP address or host (example: '192.168.1.50'), a full URL, or 'off' to stop the live view.",
+  "icon": "📹"
+ },
 {
   "trigger": "save",
   "command": "save",

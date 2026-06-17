@@ -109,6 +109,15 @@ $variants = @(
         PartitionBin  = 'partition-table-esp32.bin'
         OutputBin = 'esp32_cyd_picture_frame.bin'
         Target    = 'esp32'          # ESP32-2432S028R (classic ESP32)
+    },
+    [PSCustomObject]@{
+        Name      = 'esp32s3_cam'
+        Config    = 'sdkconfig.esp32s3_cam'
+        BuildDir  = 'build_esp32s3_cam'
+        Chip      = 'esp32s3'
+        BootloaderBin = 'bootloader-esp32s3.bin'
+        PartitionBin  = 'partition-table-esp32s3.bin'
+        OutputBin = 'esp32_esp32s3_cam.bin'
     }
 )
 
@@ -239,6 +248,11 @@ function Update-StableAliasPinning([PSCustomObject]$variant) {
             $aliasManifest = 'manifest-cyd.json'
             $pinnedManifest = "manifest-cyd-$($script:AppVersion).json"
             $appStem = 'esp32_cyd_picture_frame'
+        }
+        'esp32s3_cam' {
+            $aliasManifest = 'manifest-esp32s3_cam.json'
+            $pinnedManifest = "manifest-esp32s3_cam-$($script:AppVersion).json"
+            $appStem = 'esp32_esp32s3_cam'
         }
         default {
             return

@@ -15,6 +15,8 @@ dependencies:
     version: '>=1.0.0'
   espressif/esp_jpeg:
     version: '>=1.0.2'
+  espressif/esp32-camera:
+    version: '>=2.0.0'
   idf:
     version: '>=5.0.0'
   chmorgan/esp-libhelix-mp3: ^1.0.0

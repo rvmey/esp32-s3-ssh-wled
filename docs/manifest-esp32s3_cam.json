@@ -1,0 +1,17 @@
+{
+  "name": "ESP32-S3 Camera (Seeed XIAO ESP32-S3 Sense, OV2640)",
+  "version": "2.0.510",
+  "new_install_improv_wifi": true,
+  "new_install_improv_wait_time": 20,
+  "builds": [
+    {
+      "chipFamily": "ESP32-S3",
+      "parts": [
+        { "path": "firmware/bootloader-esp32s3.bin",      "offset": 0     },
+        { "path": "firmware/partition-table-esp32s3.bin", "offset": 32768 },
+        { "path": "firmware/nvs_blank.bin",               "offset": 36864 },
+        { "path": "firmware/esp32_esp32s3_cam-2.0.510.bin", "offset": 65536 }
+      ]
+    }
+  ]
+}

@@ -28,9 +28,11 @@
 #elif CONFIG_HARDWARE_CORE2 || CONFIG_HARDWARE_CYD
 #include "picture_frame.h"
 #include "screen_control.h"
+#elif CONFIG_HARDWARE_ESP32S3_CAM
+#include "camera_server.h"
 #endif
 
-#define APP_VERSION "2.0.509"
+#define APP_VERSION "2.0.510"
 const char g_firmware_version[] = APP_VERSION;
 
 static const char *TAG = "main";
@@ -122,6 +124,11 @@ void app_main(void)
     /* Core2 picture frame manages its own WiFi / Socket.IO loop.
      * This call never returns. */
     picture_frame_run();
+    return;
+#elif CONFIG_HARDWARE_ESP32S3_CAM
+    /* ESP32-S3 camera manages its own WiFi provisioning + HTTP server loop.
+     * This call never returns. */
+    camera_server_run();
     return;
 #endif
 

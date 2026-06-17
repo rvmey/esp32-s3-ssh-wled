@@ -1,0 +1,18 @@
+# Hardware variant: Seeed XIAO ESP32-S3 Sense (OV2640 camera)
+# Serves the latest JPEG frame over HTTP at GET /cam.jpg so a Core2 (or any
+# client) on the same LAN can fetch and display the live view.
+CONFIG_HARDWARE_ESP32S3_CAM=y
+
+# Console via USB Serial/JTAG (XIAO ESP32-S3 has native USB only, no UART bridge).
+# Also lets ESP Web Tools drive Improv-WiFi provisioning over the same USB port.
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
+CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
+
+# OPI PSRAM — the OV2640 JPEG framebuffers must live in PSRAM.
+# The XIAO ESP32-S3 Sense uses an ESP32-S3R8 (8 MB octal PSRAM).
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_OCT=y
+CONFIG_SPIRAM_USE_MALLOC=y
+
+# 8 MB flash on the XIAO ESP32-S3.
+CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y

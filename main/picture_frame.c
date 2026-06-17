@@ -549,6 +549,14 @@ static uint8_t      *s_jpeg_cache     __attribute__((unused)) = NULL;
 static int           s_jpeg_cache_len __attribute__((unused)) = 0;
 static volatile bool s_pending_jpeg_redraw = false;
 
+/* Live camera view: poll an ESP32-S3 camera's /cam.jpg over the LAN and redraw
+ * continuously until another command (or 'camera off') interrupts.  Reuses the
+ * existing JPEG download+decode path.  Frame rate is decode-bound on the ESP32. */
+static char          s_camera_url[256]  __attribute__((unused)) = {0};
+static volatile bool s_camera_live      __attribute__((unused)) = false;
+static TickType_t    s_camera_next_tick __attribute__((unused)) = 0;
+#define CAMERA_FRAME_INTERVAL_MS 150
+
 #if CONFIG_CORE2_HW
 /* Decoded RGB565 image kept alongside s_jpeg_cache so pinch-to-zoom can
  * crop/rescale on every touch sample without re-running the JPEG decoder.
@@ -7060,6 +7068,7 @@ static const pf_cmd_t s_pf_cmds[] = {
     /* Image commands need PSRAM (≈150KB RGB565 decode buffer) and, for web
      * URLs, a second TLS context — neither is available on the CYD. */
     { "jpeg",      "jpeg",      "true",  "Display a JPEG picture for the user when they say something like, 'Picture of a cat'. Use loremflickr.com by default. If multiple words (Example: cat,dog), use a comma. The command parameter should always be a URL like this: 'https://loremflickr.com/320/240/dog,cat/all' or this if single word: https://loremflickr.com/320/240/dog", "\xF0\x9F\x96\xBC\xEF\xB8\x8F" /* 🖼️ */, NULL },
+    { "camera",    "camera",    "true",  "Show a live view from an ESP32-S3 camera on the same WiFi network. The parameter is the camera's IP address or host (example: '192.168.1.50'), a full URL, or 'off' to stop the live view.", "\xF0\x9F\x93\xB9" /* 📹 */, NULL },
 #endif
     { "save",      "save",      "false", "Save the screen settings to non-volatile memory.", "\xF0\x9F\x92\xBE" /* 💾 */, NULL },
 #if !CONFIG_HARDWARE_CYD
@@ -7654,6 +7663,7 @@ static void apply_timezone(const char *tz_str)
 static bool pf_clock_blocked(void)
 {
     return s_pending_jpeg || s_pending_jpeg_redraw || s_pending_jpeg_file ||
+           s_camera_live ||
            s_pending_text_draw || s_menu_active || s_battery_display_active ||
            s_folder_list_display_active || s_file_list_display_active ||
            s_menu_result_active || (s_mp3.active && s_mp3_ui_override_allowed);
@@ -7881,6 +7891,11 @@ static void pf_event_handler(const char *event_name,
 #endif
     s_jpeg_folder_display_active = false;
 
+    /* Any command other than 'camera' cancels the live camera view. */
+    if (strcmp(s_trigger, "camera") != 0) {
+        s_camera_live = false;
+    }
+
     if (strcmp(s_trigger, "text") == 0) {
         /* Discard any cached JPEG so orientation changes redraw text, not image */
         if (s_jpeg_cache) { free(s_jpeg_cache); s_jpeg_cache = NULL; s_jpeg_cache_len = 0; }
@@ -7970,6 +7985,25 @@ static void pf_event_handler(const char *event_name,
         } else {
             ESP_LOGW(TAG, "jpeg: no URL in params");
             return;  /* don't report run/save for empty command */
+        }
+
+    } else if (strcmp(s_trigger, "camera") == 0) {
+        /* Live view of an ESP32-S3 camera. Param is the camera's IP/host (we
+         * build http://<host>/cam.jpg), a full URL, or 'off'/'stop' to end. */
+        const char *p = s_params;
+        while (*p == ' ') p++;
+        if (!*p || strcmp(p, "off") == 0 || strcmp(p, "stop") == 0) {
+            s_camera_live = false;
+        } else {
+            s_mp3_ui_override_allowed = false;
+            if (strncmp(p, "http://", 7) == 0 || strncmp(p, "https://", 8) == 0) {
+                strncpy(s_camera_url, p, sizeof(s_camera_url) - 1);
+                s_camera_url[sizeof(s_camera_url) - 1] = '\0';
+            } else {
+                snprintf(s_camera_url, sizeof(s_camera_url), "http://%.230s/cam.jpg", p);
+            }
+            s_camera_next_tick = 0;   /* fetch the first frame immediately */
+            s_camera_live = true;
         }
 
     } else if (strcmp(s_trigger, "save") == 0) {
@@ -9943,6 +9977,24 @@ void picture_frame_run(void)
                 if (download_and_show_jpeg(jpeg_url)) {
                     strncpy(s_current_jpeg_url, jpeg_url, sizeof(s_current_jpeg_url) - 1);
                     s_current_jpeg_url[sizeof(s_current_jpeg_url) - 1] = '\0';
+                }
+            }
+
+            /* Live camera view: refresh the frame on its interval, but yield to
+             * the on-screen menu / list / battery UI while those are active. */
+            if (s_camera_live
+#if CONFIG_CORE2_HW
+                && !s_menu_active
+                && !s_battery_display_active
+                && !s_folder_list_display_active
+                && !s_file_list_display_active
+                && !s_menu_result_active
+#endif
+               ) {
+                TickType_t now = xTaskGetTickCount();
+                if ((int32_t)(now - s_camera_next_tick) >= 0) {
+                    download_and_show_jpeg(s_camera_url);
+                    s_camera_next_tick = xTaskGetTickCount() + pdMS_TO_TICKS(CAMERA_FRAME_INTERVAL_MS);
                 }
             }
 

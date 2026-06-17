@@ -9,6 +9,20 @@ dependencies:
       registry_url: https://components.espressif.com/
       type: service
     version: 1.0.3
+  espressif/esp32-camera:
+    component_hash: bc9c8a6b51df777a014fa295825b3de5069bc0300c317acff20c97cf4a10ac7d
+    dependencies:
+    - name: espressif/esp_jpeg
+      registry_url: https://components.espressif.com
+      require: public
+      version: ^1.3.1
+    - name: idf
+      require: private
+      version: '>=5.1'
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    version: 2.1.7
   espressif/esp_jpeg:
     component_hash: defb83669293cbf86d0fa86b475ba5517aceed04ed70db435388c151ab37b5d7
     dependencies:
@@ -59,12 +73,13 @@ dependencies:
     version: 5.8.2~1
 direct_dependencies:
 - chmorgan/esp-libhelix-mp3
+- espressif/esp32-camera
 - espressif/esp_jpeg
 - espressif/esp_websocket_client
 - espressif/led_strip
 - idf
 - wolfssl/wolfssh
 - wolfssl/wolfssl
-manifest_hash: 8ba57d5971f21d5ca1207a143c12f34bb8babac4edc30a95a1f29cabac89ace0
+manifest_hash: e11bfc9420511d9efc4ca451f3b09e2f4396cca4cd70ca7d3271d123e70719b1
 target: esp32
 version: 3.0.0
