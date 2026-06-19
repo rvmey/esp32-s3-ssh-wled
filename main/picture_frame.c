@@ -10190,6 +10190,20 @@ void picture_frame_run(void)
                 pf_status_draw("Syncing commands...");
                 sync_all_commands_ws();
             }
+#if CONFIG_CORE2_HW
+            else {
+                /* Already-paired Core2: a firmware update may have added new
+                 * commands (e.g. 'wifi') that aren't registered yet. The WS
+                 * sync above can't be re-run here (cmd/save over WS creates a
+                 * duplicate every call), but Core2 has PSRAM and can open a
+                 * second HTTPS connection, so use the list-diff sync which only
+                 * adds the MISSING commands. Idempotent — safe on every boot.
+                 * The CYD is excluded: it can't hold a 2nd TLS context, so new
+                 * CYD commands still require re-pairing. */
+                pf_status_draw("Syncing commands...");
+                sync_all_commands(true);
+            }
+#endif
 #else
             pf_status_draw("Syncing commands...");
             sync_all_commands(true);
