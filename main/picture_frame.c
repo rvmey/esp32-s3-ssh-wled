@@ -7375,6 +7375,7 @@ static const pf_cmd_t s_pf_cmds[] = {
     { "timezone",  "timezone",  "true",  "Set the clock timezone. Examples: 'eastern', 'central', 'mountain', 'pacific', 'alaska', 'hawaii', 'utc', 'london', 'europe', or a raw POSIX TZ string. Default: eastern.", "\xF0\x9F\x8C\x90" /* 🌐 */, NULL },
 #endif
 #endif
+    { "wifi",      "wifi",      "true",  "Add an additional WiFi network. Parameter: 'ssid,password'. Example: 'MyNetwork,MyPassword123'", "\xF0\x9F\x93\xB6" /* 📶 */, NULL },
 };
 #define PF_CMD_COUNT  (sizeof(s_pf_cmds) / sizeof(s_pf_cmds[0]))
 
@@ -8773,6 +8774,35 @@ static void pf_event_handler(const char *event_name,
             ESP_LOGI(TAG, "Timezone set to: %s", s_timezone);
         }
 #endif
+
+    } else if (strcmp(s_trigger, "wifi") == 0) {
+        if (s_params[0]) {
+            char ssid[64] = {0};
+            char pass[128] = {0};
+            const char *comma = strchr(s_params, ',');
+            if (comma) {
+                size_t ssid_len = (size_t)(comma - s_params);
+                if (ssid_len >= sizeof(ssid)) ssid_len = sizeof(ssid) - 1;
+                memcpy(ssid, s_params, ssid_len);
+                strncpy(pass, comma + 1, sizeof(pass) - 1);
+            } else {
+                strncpy(ssid, s_params, sizeof(ssid) - 1);
+            }
+            char cur_ssid2[64] = {0};
+            wifi_get_ssid2(cur_ssid2, sizeof(cur_ssid2));
+            esp_err_t err;
+            if (cur_ssid2[0] == '\0') {
+                err = wifi_save_credentials2(ssid, pass);
+                if (err == ESP_OK)
+                    ESP_LOGI(TAG, "WiFi2 saved: SSID '%s'", ssid);
+            } else {
+                err = wifi_save_credentials3(ssid, pass);
+                if (err == ESP_OK)
+                    ESP_LOGI(TAG, "WiFi3 saved: SSID '%s'", ssid);
+            }
+            if (err != ESP_OK)
+                ESP_LOGE(TAG, "WiFi credential save failed: %s", esp_err_to_name(err));
+        }
 
     } else {
         int folder_idx = mp3_find_folder_trigger(s_trigger);

@@ -325,5 +325,12 @@
   "allowParams": "true",
   "mcpToolDescription": "Show a live clock on the user's Core2 device display. Pass 'digital' or 'analog' to choose the style; defaults to 'digital' if omitted. Stays on screen until another command runs. Example: 'analog'",
   "icon": "🕐"
+ },
+ {
+  "trigger": "wifi",
+  "command": "wifi",
+  "allowParams": "true",
+  "mcpToolDescription": "Add an additional WiFi network to the user's Core2 device. The parameter must be in the form 'ssid,password'. Example: 'MyNetwork,MyPassword123'",
+  "icon": "📶"
  }
 ]
