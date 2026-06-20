@@ -6259,7 +6259,12 @@ static int https_get_auth(const char *url, const char *token, char **body)
     }
 
     int64_t cl = esp_http_client_fetch_headers(client);
-    int max_body = 65536;   /* command list: each record embeds full user object (~1.2 KB × 33+ cmds ≈ 40 KB) */
+    /* command list: each record embeds full user object (~1.2 KB). With 50+
+     * static+folder commands the response runs ~60 KB+, so cap generously to
+     * avoid truncating tail records (folder commands) — truncation makes
+     * command_exists_online miss them and re-create duplicates. PSRAM-backed
+     * on the variants that take this HTTPS path. */
+    int max_body = 196608;  /* 192 KB */
     if (cl > 0 && cl < max_body) max_body = (int)cl;
 
     char *buf = malloc(max_body + 1);
@@ -7604,7 +7609,16 @@ static pf_cmd_t jpeg_folder_pf_cmd(const jpeg_folder_t *folder, char *desc, size
     };
 }
 
-static void sync_all_commands(bool remove_stale_mp3)
+/* When static_only is true, register only the fixed command arrays
+ * (s_pf_cmds / s_pf_media_cmds) and skip the dynamic SD-folder commands. The
+ * command-list response is capped (see https_get_auth), so on a device with a
+ * large command set the folder commands — created last, hence at the tail of
+ * the list — can fall past the truncation point. command_exists_online then
+ * fails to find them and re-creates a duplicate every boot. The boot reconcile
+ * (which exists to register new *static* commands after a firmware update) uses
+ * static_only=true to avoid that; folder commands are registered by the
+ * first-boot websocket sync and the SD-remount reconcile instead. */
+static void sync_all_commands(bool remove_stale_mp3, bool static_only)
 {
     if (!s_computer_id[0] || !s_hw_token[0]) return;
 
@@ -7633,19 +7647,21 @@ static void sync_all_commands(bool remove_stale_mp3)
         sync_command_if_missing(&s_pf_media_cmds[i], cmd_url, list_body, list_len);
     }
 
-    for (size_t i = 0; i < s_mp3_folder_count; i++) {
-        char desc[320];
-        pf_cmd_t dyn_cmd = mp3_folder_pf_cmd(&s_mp3_folders[i], desc, sizeof(desc));
-        sync_command_if_missing(&dyn_cmd, cmd_url, list_body, list_len);
+    if (!static_only) {
+        for (size_t i = 0; i < s_mp3_folder_count; i++) {
+            char desc[320];
+            pf_cmd_t dyn_cmd = mp3_folder_pf_cmd(&s_mp3_folders[i], desc, sizeof(desc));
+            sync_command_if_missing(&dyn_cmd, cmd_url, list_body, list_len);
+        }
+
+        for (size_t i = 0; i < s_jpeg_folder_count; i++) {
+            char desc[320];
+            pf_cmd_t dyn_cmd = jpeg_folder_pf_cmd(&s_jpeg_folders[i], desc, sizeof(desc));
+            sync_command_if_missing(&dyn_cmd, cmd_url, list_body, list_len);
+        }
     }
 
-    for (size_t i = 0; i < s_jpeg_folder_count; i++) {
-        char desc[320];
-        pf_cmd_t dyn_cmd = jpeg_folder_pf_cmd(&s_jpeg_folders[i], desc, sizeof(desc));
-        sync_command_if_missing(&dyn_cmd, cmd_url, list_body, list_len);
-    }
-
-    if (remove_stale_mp3 && list_body && list_len > 0) {
+    if (remove_stale_mp3 && !static_only && list_body && list_len > 0) {
         char del_url[192];
         snprintf(del_url, sizeof(del_url), "%s/api/command/delete2", TCMD_BASE_URL);
         sync_remove_stale_mp3_commands(del_url, list_body, list_len);
@@ -10208,20 +10224,23 @@ void picture_frame_run(void)
 #if CONFIG_CORE2_HW
             else {
                 /* Already-paired Core2: a firmware update may have added new
-                 * commands (e.g. 'wifi') that aren't registered yet. The WS
-                 * sync above can't be re-run here (cmd/save over WS creates a
+                 * static commands (e.g. 'wifi') that aren't registered yet. The
+                 * WS sync above can't be re-run here (cmd/save over WS creates a
                  * duplicate every call), but Core2 has PSRAM and can open a
                  * second HTTPS connection, so use the list-diff sync which only
-                 * adds the MISSING commands. Idempotent — safe on every boot.
-                 * The CYD is excluded: it can't hold a 2nd TLS context, so new
-                 * CYD commands still require re-pairing. */
+                 * adds the MISSING commands. static_only=true: dynamic SD-folder
+                 * commands are NOT reconciled here — they can fall past the
+                 * truncated command-list window and get re-created every boot
+                 * (folders are handled by first-boot WS sync + SD-remount
+                 * reconcile). The CYD is excluded: it can't hold a 2nd TLS
+                 * context, so new CYD commands still require re-pairing. */
                 pf_status_draw("Syncing commands...");
-                sync_all_commands(true);
+                sync_all_commands(false, true);
             }
 #endif
 #else
             pf_status_draw("Syncing commands...");
-            sync_all_commands(true);
+            sync_all_commands(true, false);
 #endif
 
 #if CONFIG_HARDWARE_CYD
@@ -10674,7 +10693,7 @@ void picture_frame_run(void)
                 rebuild_jpeg_folder_index();
                 if (!was_mounted && s_sd_mounted) {
                     ESP_LOGI(TAG, "sd: mount restored; reconciling MP3 folder commands");
-                    sync_all_commands(true);
+                    sync_all_commands(true, false);
                     if (s_mp3_autostart && s_mp3_folder_count > 0) {
                         s_mp3_autostart = false;
                         mp3_start_track(0, -1, false);
