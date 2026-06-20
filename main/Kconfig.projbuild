@@ -349,18 +349,6 @@ menu "ESP32 SSH LED Configuration"
             depends on CYD_TOUCH_CST816
     endmenu
 
-    config WIFI_SSID
-        string "WiFi SSID"
-        default "MyWifi"
-        help
-            SSID of the Wi-Fi network to connect to.
-
-    config WIFI_PASSWORD
-        string "WiFi Password"
-        default ""
-        help
-            Password for the Wi-Fi network.
-
     config SSH_PORT
         int "SSH Server Port"
         default 22

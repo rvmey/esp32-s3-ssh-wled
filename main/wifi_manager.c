@@ -180,18 +180,15 @@ esp_err_t wifi_connect(void)
         nvs_close(nvs);
     }
 
-    /* Only fall back to the compiled-in Kconfig placeholder ("MyWifi") when no
-     * NVS network is configured in ANY slot. On a secrets_in_sd device, slot 1
-     * is empty but the 'wifi' command may have populated slot 2/3 — don't waste
-     * a ~7s connect attempt on the placeholder when a real network is in 2/3. */
-    if (ssid[0] == '\0' && ssid2[0] == '\0' && ssid3[0] == '\0') {
-        strncpy(ssid,     CONFIG_WIFI_SSID,     sizeof(ssid)     - 1);
-        strncpy(password, CONFIG_WIFI_PASSWORD, sizeof(password) - 1);
-    }
+    /* No hardcoded fallback SSID. A compiled-in default network name would be a
+     * security risk: a factory-fresh or unprovisioned device could silently
+     * auto-join an attacker's open AP advertising that name. If no network is
+     * stored in any NVS slot, connect nothing and let the caller provision. */
 
-    /* Build a list of the configured SSIDs so the round loop is uniform. */
-    const char *ssids[3]     = { ssid,  ssid2[0]  ? ssid2  : NULL, ssid3[0]  ? ssid3  : NULL };
-    const char *passwords[3] = { password, ssid2[0] ? password2 : NULL, ssid3[0] ? password3 : NULL };
+    /* Build a list of the configured SSIDs so the round loop is uniform. Empty
+     * slots become NULL and are skipped. */
+    const char *ssids[3]     = { ssid[0]  ? ssid  : NULL, ssid2[0] ? ssid2 : NULL, ssid3[0] ? ssid3 : NULL };
+    const char *passwords[3] = { ssid[0]  ? password : NULL, ssid2[0] ? password2 : NULL, ssid3[0] ? password3 : NULL };
 
     /* Try each configured SSID in turn, cycling through up to 3 rounds. */
     for (int round = 0; round < 3 && !s_abort_requested; round++) {
