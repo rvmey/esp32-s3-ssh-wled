@@ -38,6 +38,8 @@ elseif(CONFIG_HARDWARE_CORE2 OR CONFIG_HARDWARE_CYD)
         "picture_frame.c"
         "qrcodegen.c"
         "socketio.c"
+        "sip_client.c"
+        "sip_rtp.c"
         "http_pf_config.c")
     if(CONFIG_HARDWARE_CYD)
         list(REMOVE_ITEM VARIANT_SRCS "screen_control_core2.c")

@@ -332,5 +332,37 @@
   "allowParams": "true",
   "mcpToolDescription": "Add an additional WiFi network to the user's Core2 device. The parameter must be in the form 'ssid,password'. Example: 'MyNetwork,MyPassword123'",
   "icon": "📶"
+ },
+ {
+  "trigger": "call",
+  "command": "call",
+  "voice": "call",
+  "allowParams": "true",
+  "mcpToolDescription": "Place a SIP phone call from the user's Core2 device. The parameter is an extension or full SIP URI. Example: '1001' or 'sip:1001@pbx.example.com'",
+  "icon": "📞"
+ },
+ {
+  "trigger": "answer",
+  "command": "answer",
+  "voice": "answer",
+  "allowParams": "false",
+  "mcpToolDescription": "Answer the incoming SIP call on the user's Core2 device.",
+  "icon": "📞"
+ },
+ {
+  "trigger": "hangup",
+  "command": "hangup",
+  "voice": "hangup",
+  "allowParams": "false",
+  "mcpToolDescription": "Hang up the current SIP call on the user's Core2 device, or reject an incoming call.",
+  "icon": "📴"
+ },
+ {
+  "trigger": "sipstatus",
+  "command": "sipstatus",
+  "allowParams": "false",
+  "voiceReply": "{{result}}",
+  "mcpToolDescription": "Report the SIP registration status and current call state of the user's Core2 device.",
+  "icon": "📶"
  }
 ]

@@ -129,7 +129,60 @@ static const char s_stt_form[] =
 static const char s_ok_stt[] =
     "<p style='color:#86efac;margin-top:.75rem;text-align:center'>&#10003; API key saved.</p>";
 
+/* ── SIP speakerphone config form ────────────────────────────────────────── */
+#define SIP_INPUT_STYLE \
+    "style='width:100%;box-sizing:border-box;padding:.5rem;background:#0f1117;" \
+    "border:1px solid #4f46e5;border-radius:.4rem;color:#e2e8f0;font-size:.95rem;" \
+    "margin-bottom:.5rem'"
+#define SIP_LABEL_STYLE \
+    "style='display:block;color:#94a3b8;font-size:.85rem;margin:.25rem 0 .2rem'"
+
+static const char s_sip_form_head[] =
+    "<hr>"
+    "<h2 style='font-size:1.1rem;color:#a5b4fc;margin:0 0 .5rem'>SIP Speakerphone "
+    "<span style='font-weight:400;color:#64748b;font-size:.9rem'>(Core2)</span></h2>"
+    "<p style='color:#94a3b8;font-size:.85rem;margin:0 0 .75rem'>"
+    "Register to an Asterisk/FreePBX server to make and receive calls. "
+    "Half-duplex: tap the screen to switch between talk and listen during a call.</p>"
+    "<form method='POST' action='/sip'>"
+    "<label " SIP_LABEL_STYLE ">Server (host)</label>"
+    "<input " SIP_INPUT_STYLE " type='text' name='sip_srv' placeholder='pbx.example.com' value='";
+static const char s_sip_form_1[] =
+    "'>"
+    "<label " SIP_LABEL_STYLE ">Port (default 5061, TLS)</label>"
+    "<input " SIP_INPUT_STYLE " type='text' name='sip_port' placeholder='5061' value='";
+static const char s_sip_form_2[] =
+    "'>"
+    "<label " SIP_LABEL_STYLE ">Username / Extension</label>"
+    "<input " SIP_INPUT_STYLE " type='text' name='sip_user' placeholder='1001' value='";
+static const char s_sip_form_3[] =
+    "'>"
+    "<label " SIP_LABEL_STYLE ">Domain (optional, defaults to server)</label>"
+    "<input " SIP_INPUT_STYLE " type='text' name='sip_dom' value='";
+static const char s_sip_form_4[] =
+    "'>"
+    "<label " SIP_LABEL_STYLE ">Password</label>"
+    "<input " SIP_INPUT_STYLE " type='password' name='sip_pass' placeholder='(unchanged)'>"
+    "<p style='color:#64748b;font-size:.8rem;margin:0 0 .75rem'>"
+    "Leave the password blank to keep the current one. Clear the server to disable SIP. "
+    "Reboots after saving.</p>"
+    "<button style='width:100%;padding:.65rem;background:#4f46e5;color:#fff;border:none;"
+            "border-radius:.6rem;font-size:.95rem;font-weight:600;cursor:pointer'>"
+    "Save SIP Settings</button>"
+    "</form>";
+
 static const char s_tail[] = "</div></body></html>";
+
+static void sip_nvs_get(const char *key, char *out, size_t max)
+{
+    out[0] = '\0';
+    nvs_handle_t h;
+    if (nvs_open(NVS_NS, NVS_READONLY, &h) == ESP_OK) {
+        size_t l = max;
+        nvs_get_str(h, key, out, &l);
+        nvs_close(h);
+    }
+}
 
 /* ── Helpers ─────────────────────────────────────────────────────────────── */
 
@@ -205,6 +258,25 @@ static void send_wifi_section_pf(httpd_req_t *req, const char *wifi_msg)
     httpd_resp_sendstr_chunk(req, s_wifi_form_mid2);
 }
 
+static void send_sip_section_pf(httpd_req_t *req, const char *sip_msg)
+{
+    char srv[64] = {0}, port[8] = {0}, user[48] = {0}, dom[64] = {0};
+    sip_nvs_get("sip_srv", srv, sizeof(srv));
+    sip_nvs_get("sip_port", port, sizeof(port));
+    sip_nvs_get("sip_user", user, sizeof(user));
+    sip_nvs_get("sip_dom", dom, sizeof(dom));
+    if (sip_msg) httpd_resp_sendstr_chunk(req, sip_msg);
+    httpd_resp_sendstr_chunk(req, s_sip_form_head);
+    send_escaped_pf(req, srv);
+    httpd_resp_sendstr_chunk(req, s_sip_form_1);
+    send_escaped_pf(req, port);
+    httpd_resp_sendstr_chunk(req, s_sip_form_2);
+    send_escaped_pf(req, user);
+    httpd_resp_sendstr_chunk(req, s_sip_form_3);
+    send_escaped_pf(req, dom);
+    httpd_resp_sendstr_chunk(req, s_sip_form_4);
+}
+
 /* ── Handlers ────────────────────────────────────────────────────────────── */
 
 static esp_err_t get_handler(httpd_req_t *req)
@@ -228,10 +300,60 @@ static esp_err_t get_handler(httpd_req_t *req)
         "</button>"
         "</form>");
     httpd_resp_sendstr_chunk(req, s_stt_form);
+    send_sip_section_pf(req, NULL);
     send_wifi_section_pf(req, NULL);
     httpd_resp_sendstr_chunk(req, s_tail);
     httpd_resp_sendstr_chunk(req, NULL);
     return ESP_OK;
+}
+
+static esp_err_t post_sip_handler(httpd_req_t *req)
+{
+    int len = req->content_len;
+    if (len <= 0 || len >= 1024) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, NULL);
+        return ESP_OK;
+    }
+    char *body = calloc(len + 1, 1);
+    if (!body) { httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, NULL); return ESP_OK; }
+    int got = 0, rem = len;
+    while (rem > 0) {
+        int n = httpd_req_recv(req, body + got, rem);
+        if (n <= 0) { free(body); httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, NULL); return ESP_OK; }
+        got += n; rem -= n;
+    }
+
+    char srv[64] = {0}, port[8] = {0}, user[48] = {0}, dom[64] = {0}, pass[64] = {0};
+    form_get_pf(body, "sip_srv", srv, sizeof(srv));
+    form_get_pf(body, "sip_port", port, sizeof(port));
+    form_get_pf(body, "sip_user", user, sizeof(user));
+    form_get_pf(body, "sip_dom", dom, sizeof(dom));
+    form_get_pf(body, "sip_pass", pass, sizeof(pass));
+    free(body);
+
+    nvs_handle_t h;
+    if (nvs_open(NVS_NS, NVS_READWRITE, &h) == ESP_OK) {
+        nvs_set_str(h, "sip_srv", srv);
+        nvs_set_str(h, "sip_port", port);
+        nvs_set_str(h, "sip_user", user);
+        nvs_set_str(h, "sip_dom", dom);
+        if (pass[0]) nvs_set_str(h, "sip_pass", pass);   /* blank = keep existing */
+        nvs_commit(h);
+        nvs_close(h);
+        ESP_LOGI(TAG, "SIP settings saved (srv='%s' user='%s')", srv, user);
+    }
+
+    httpd_resp_set_type(req, "text/html");
+    httpd_resp_sendstr_chunk(req, s_html_head);
+    httpd_resp_sendstr_chunk(req,
+        "<p class='ok'>&#10003; SIP settings saved. Rebooting&hellip;</p>");
+    httpd_resp_sendstr_chunk(req, s_tail);
+    httpd_resp_sendstr_chunk(req, NULL);
+
+    ESP_LOGI(TAG, "SIP settings changed; rebooting to apply");
+    vTaskDelay(pdMS_TO_TICKS(1500));
+    esp_restart();
+    return ESP_OK;   /* unreachable */
 }
 
 static esp_err_t post_reprovision_handler(httpd_req_t *req)
@@ -385,11 +507,13 @@ esp_err_t http_pf_config_start(const char *pair_code)
     static const httpd_uri_t u_repr = { .uri = "/reprovision", .method = HTTP_POST, .handler = post_reprovision_handler, .user_ctx = NULL };
     static const httpd_uri_t u_wifi = { .uri = "/wifi",        .method = HTTP_POST, .handler = post_wifi_handler,        .user_ctx = NULL };
     static const httpd_uri_t u_stt  = { .uri = "/stt_key",     .method = HTTP_POST, .handler = post_stt_key_handler,     .user_ctx = NULL };
+    static const httpd_uri_t u_sip  = { .uri = "/sip",         .method = HTTP_POST, .handler = post_sip_handler,         .user_ctx = NULL };
 
     httpd_register_uri_handler(s_server, &u_get);
     httpd_register_uri_handler(s_server, &u_repr);
     httpd_register_uri_handler(s_server, &u_wifi);
     httpd_register_uri_handler(s_server, &u_stt);
+    httpd_register_uri_handler(s_server, &u_sip);
 
     ESP_LOGI(TAG, "Pairing info server started on port 80 (code=%s)", s_pair_code);
     return ESP_OK;

@@ -71,6 +71,9 @@
 #include "core2_mic.h"
 #include "core2_adc_mic.h"
 #include "mpu6886.h"
+#include "freertos/queue.h"
+#include "sip_client.h"
+#include "sip_rtp.h"
 #include "esp_sleep.h"
 #include "driver/rtc_io.h"
 #include "esp_wifi.h"
@@ -4681,6 +4684,11 @@ static bool pf_menu_handle_swipe(screen_gesture_t gesture)
 
 #endif /* CONFIG_CORE2_HW */
 
+#if CONFIG_CORE2_HW
+static bool pf_sip_ui_active(void);
+static bool pf_sip_touch(int x, int y, screen_gesture_t gesture);
+#endif
+
 static bool pf_touch_handler(int x, int y, screen_gesture_t gesture)
 {
 #if !CONFIG_CORE2_HW
@@ -4690,6 +4698,10 @@ static bool pf_touch_handler(int x, int y, screen_gesture_t gesture)
     s_last_activity_tick = xTaskGetTickCount();
 #endif
 #if CONFIG_CORE2_HW
+    /* An active SIP call screen takes priority over all other touch handling. */
+    if (pf_sip_ui_active()) {
+        return pf_sip_touch(x, y, gesture);
+    }
     if (gesture == SCREEN_GESTURE_LONG_PRESS) {
         if (s_menu_active) {
             pf_menu_close();
@@ -7381,6 +7393,14 @@ static const pf_cmd_t s_pf_cmds[] = {
 #endif
 #endif
     { "wifi",      "wifi",      "true",  "Add an additional WiFi network. Parameter: 'ssid,password'. Example: 'MyNetwork,MyPassword123'", "\xF0\x9F\x93\xB6" /* 📶 */, NULL },
+#if CONFIG_CORE2_HW
+    /* SIP speakerphone (Core2 only). Configure the SIP account on the device's
+     * web config page before use. Half-duplex: tap the screen to talk/listen. */
+    { "call",      "call",      "true",  "Place a SIP phone call. Parameter: an extension or full SIP URI. Example: '1001' or 'sip:1001@pbx.example.com'", "\xF0\x9F\x93\x9E" /* 📞 */, NULL },
+    { "answer",    "answer",    "false", "Answer the incoming SIP call.", "\xF0\x9F\x93\x9E" /* 📞 */, NULL },
+    { "hangup",    "hangup",    "false", "Hang up the current SIP call, or reject an incoming one.", "\xF0\x9F\x93\xB4" /* 📴 */, NULL },
+    { "sipstatus", "sipstatus", "false", "Report SIP registration and call state.", "\xF0\x9F\x93\xB6" /* 📶 */, "{{result}}" },
+#endif
 };
 #define PF_CMD_COUNT  (sizeof(s_pf_cmds) / sizeof(s_pf_cmds[0]))
 
@@ -8134,6 +8154,255 @@ static void pf_clock_render(void)
 
 /* ── Socket.IO event handler ────────────────────────────────────────────── */
 
+/* ── SIP speakerphone (Core2 only) ───────────────────────────────────────────
+ *
+ * Half-duplex: GPIO 0 is shared between the PDM mic clock and the speaker WS, so
+ * only one direction is live at a time. Default is LISTEN (speaker active);
+ * tapping the mid of the in-call screen toggles TALK (mic active, speaker
+ * paused). The media task owns the GPIO 0 handoff. RTP/SIP run on their own
+ * tasks; this layer just drives the UI and the audio bridge from the main loop.
+ */
+#if CONFIG_CORE2_HW
+typedef enum { SIPUI_NONE, SIPUI_INCOMING, SIPUI_OUTGOING, SIPUI_INCALL } pf_sipui_t;
+static volatile pf_sipui_t s_sipui = SIPUI_NONE;
+static QueueHandle_t       s_sip_evt_q = NULL;
+static sip_event_info_t    s_sip_active;
+static TaskHandle_t        s_sip_media_task = NULL;
+static volatile bool       s_sip_media_run = false;
+static volatile bool       s_sip_talk = false;     /* false = listen, true = talk */
+static char                s_sip_caller[96];
+
+static bool pf_sip_ui_active(void) { return s_sipui != SIPUI_NONE; }
+
+/* RTP RX (runs in the rtp_rx task): play to the speaker only while listening. */
+static void pf_sip_rx(const int16_t *pcm, size_t n, void *ctx)
+{
+    (void)ctx;
+    if (s_sipui == SIPUI_INCALL && !s_sip_talk) {
+        core2_audio_write_pcm(pcm, n, 1, 100);
+    }
+}
+
+/* 20 ms media pump. Sends mic audio while talking; comfort silence while
+ * listening (keeps the symmetric-RTP / comedia pinhole open). Performs the
+ * GPIO 0 mic/speaker handoff when the talk/listen mode changes. */
+static void pf_sip_media_task(void *arg)
+{
+    (void)arg;
+    bool hw_talking = false;          /* current hardware mode */
+    int16_t mic16[SIP_RTP_FRAME_SAMPLES * 2];   /* ~20 ms @ 16 kHz */
+    int16_t pcm8[SIP_RTP_FRAME_SAMPLES];
+    while (s_sip_media_run) {
+        if (s_sip_talk != hw_talking) {
+            if (s_sip_talk) {
+                core2_audio_pause();
+                if (core2_mic_init() == ESP_OK) core2_mic_stream_start();
+            } else {
+                core2_mic_stream_stop();
+                core2_mic_deinit();
+                core2_audio_resume();
+            }
+            hw_talking = s_sip_talk;
+        }
+        if (hw_talking) {
+            size_t got = core2_mic_read_frame(mic16, SIP_RTP_FRAME_SAMPLES * 2);
+            if (got >= 2) {
+                /* Downsample 16 kHz → 8 kHz by averaging sample pairs. */
+                size_t out = 0;
+                for (size_t i = 0; i + 1 < got && out < SIP_RTP_FRAME_SAMPLES; i += 2) {
+                    pcm8[out++] = (int16_t)(((int)mic16[i] + (int)mic16[i + 1]) / 2);
+                }
+                sip_rtp_send_frame(pcm8, out);
+            } else {
+                vTaskDelay(pdMS_TO_TICKS(20));
+            }
+        } else {
+            memset(pcm8, 0, sizeof(pcm8));
+            sip_rtp_send_frame(pcm8, SIP_RTP_FRAME_SAMPLES);
+            vTaskDelay(pdMS_TO_TICKS(20));
+        }
+    }
+    /* Restore listen-side hardware before exit. */
+    if (hw_talking) {
+        core2_mic_stream_stop();
+        core2_mic_deinit();
+        core2_audio_resume();
+    }
+    s_sip_media_task = NULL;
+    vTaskDelete(NULL);
+}
+
+static void pf_sip_media_start(const sip_event_info_t *ev)
+{
+    s_sip_active = *ev;
+    /* Suspend the MP3 player so it doesn't fight for the speaker / CPU. */
+    if (s_mp3.active && !s_mp3.paused) s_mp3.paused = true;
+    if (s_mp3_task) vTaskSuspend(s_mp3_task);
+
+    core2_audio_init();
+    core2_audio_set_sample_rate(8000);
+    s_sip_talk = false;   /* start in listen mode */
+
+    sip_rtp_start(ev->local_rtp_port, ev->remote_ip, ev->remote_rtp_port,
+                  ev->codec, pf_sip_rx, NULL);
+    s_sip_media_run = true;
+    xTaskCreate(pf_sip_media_task, "sip_media", 4096, NULL, 6, &s_sip_media_task);
+    ESP_LOGI(TAG, "SIP media up: %s:%u codec=%d local_rtp=%u",
+             ev->remote_ip, ev->remote_rtp_port, ev->codec, ev->local_rtp_port);
+}
+
+static void pf_sip_media_stop(void)
+{
+    s_sip_media_run = false;
+    for (int i = 0; i < 40 && s_sip_media_task; i++) vTaskDelay(pdMS_TO_TICKS(20));
+    sip_rtp_stop();
+    core2_audio_set_sample_rate(44100);   /* restore default rate for MP3/TTS */
+    if (s_mp3_task) vTaskResume(s_mp3_task);
+}
+
+static void pf_sip_draw(void)
+{
+    char m[160];
+    screen_set_font_scale(2);
+    screen_set_text_color(255, 255, 255);
+    switch (s_sipui) {
+        case SIPUI_INCOMING:
+            screen_set_color(0, 0, 60);
+            snprintf(m, sizeof(m),
+                     "Incoming call\n%.40s\n\nTap TOP: Answer\nTap BOTTOM: Reject",
+                     s_sip_caller);
+            break;
+        case SIPUI_OUTGOING:
+            screen_set_color(60, 50, 0);
+            snprintf(m, sizeof(m), "Calling\n%.40s\n\nTap: Cancel", s_sip_caller);
+            break;
+        case SIPUI_INCALL:
+            screen_set_color(0, 55, 0);
+            snprintf(m, sizeof(m),
+                     "In call\n%.30s\n%s\nTap MID: %s\nTap BOTTOM: Hang up",
+                     s_sip_caller,
+                     s_sip_talk ? "** TALKING **" : "(listening)",
+                     s_sip_talk ? "Listen" : "Talk");
+            break;
+        default:
+            return;
+    }
+    screen_draw_text(m);
+}
+
+/* Restore the normal display after a call ends. */
+static void pf_sip_restore_screen(void)
+{
+    if (s_mp3.active && s_mp3_ui_override_allowed) {
+        mp3_request_ui_refresh();
+    } else {
+        screen_draw_text(s_last_text[0] ? s_last_text : " ");
+    }
+}
+
+/* Touch handling while a SIP screen is up. Returns true (always handled). */
+static bool pf_sip_touch(int x, int y, screen_gesture_t gesture)
+{
+    (void)x;
+    if (gesture != SCREEN_GESTURE_TAP) return true;   /* swallow swipes/long-press */
+    bool landscape = true;
+    screen_get_landscape(&landscape);
+    int h = landscape ? 240 : 320;
+    switch (s_sipui) {
+        case SIPUI_INCOMING:
+            if (y < h / 2) sip_answer(); else sip_hangup();
+            break;
+        case SIPUI_OUTGOING:
+            sip_hangup();
+            break;
+        case SIPUI_INCALL:
+            if (y > (2 * h) / 3) {
+                sip_hangup();
+            } else {
+                s_sip_talk = !s_sip_talk;
+                pf_sip_draw();   /* reflect new talk/listen state */
+            }
+            break;
+        default:
+            break;
+    }
+    return true;
+}
+
+/* Drain SIP events on the main task (drawing + media lifecycle). */
+static void pf_sip_process_events(void)
+{
+    if (!s_sip_evt_q) return;
+    sip_event_info_t ev;
+    while (xQueueReceive(s_sip_evt_q, &ev, 0) == pdTRUE) {
+        switch (ev.type) {
+            case SIP_EVT_REGISTERED:
+                ESP_LOGI(TAG, "SIP registered");
+                break;
+            case SIP_EVT_REGISTER_FAILED:
+                ESP_LOGW(TAG, "SIP registration failed");
+                break;
+            case SIP_EVT_INCOMING:
+                if (s_sipui == SIPUI_NONE) {
+                    strlcpy(s_sip_caller, ev.caller, sizeof(s_sip_caller));
+                    s_sipui = SIPUI_INCOMING;
+                    pf_sip_draw();
+                }
+                break;
+            case SIP_EVT_RINGING:
+                strlcpy(s_sip_caller, ev.caller, sizeof(s_sip_caller));
+                s_sipui = SIPUI_OUTGOING;
+                pf_sip_draw();
+                break;
+            case SIP_EVT_ANSWERED:
+                strlcpy(s_sip_caller, ev.caller, sizeof(s_sip_caller));
+                pf_sip_media_start(&ev);
+                s_sipui = SIPUI_INCALL;
+                pf_sip_draw();
+                break;
+            case SIP_EVT_ENDED:
+                if (s_sipui == SIPUI_INCALL) pf_sip_media_stop();
+                s_sipui = SIPUI_NONE;
+                pf_sip_restore_screen();
+                break;
+        }
+    }
+}
+
+static void pf_sip_event_cb(const sip_event_info_t *ev, void *ctx)
+{
+    (void)ctx;
+    if (s_sip_evt_q) xQueueSend(s_sip_evt_q, ev, 0);
+}
+
+/* Start the SIP client if credentials are configured (pf_cfg NVS namespace,
+ * settable from the device's config web page). */
+static void pf_sip_start_from_nvs(void)
+{
+    sip_config_t cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    if (!nvs_read_str("sip_srv", cfg.server, sizeof(cfg.server))) {
+        ESP_LOGI(TAG, "SIP: not configured (no sip_srv)");
+        return;
+    }
+    if (!nvs_read_str("sip_user", cfg.user, sizeof(cfg.user))) {
+        ESP_LOGW(TAG, "SIP: sip_srv set but sip_user missing");
+        return;
+    }
+    nvs_read_str("sip_pass", cfg.password, sizeof(cfg.password));
+    nvs_read_str("sip_dom", cfg.domain, sizeof(cfg.domain));
+    char portbuf[8] = {0};
+    if (nvs_read_str("sip_port", portbuf, sizeof(portbuf))) cfg.port = (uint16_t)atoi(portbuf);
+
+    if (!s_sip_evt_q) s_sip_evt_q = xQueueCreate(6, sizeof(sip_event_info_t));
+    if (!s_sip_evt_q) { ESP_LOGE(TAG, "SIP: event queue alloc failed"); return; }
+
+    if (sip_client_start(&cfg, pf_sip_event_cb, NULL) == ESP_OK) {
+        ESP_LOGI(TAG, "SIP client started for %s@%s", cfg.user, cfg.server);
+    }
+}
+#endif /* CONFIG_CORE2_HW */
+
 static void pf_event_handler(const char *event_name,
                               const char *payload_json,
                               void       *ctx)
@@ -8789,6 +9058,25 @@ static void pf_event_handler(const char *event_name,
             nvs_write_str(NVS_KEY_TIMEZONE, s_timezone);
             ESP_LOGI(TAG, "Timezone set to: %s", s_timezone);
         }
+#endif
+
+#if CONFIG_CORE2_HW
+    } else if (strcmp(s_trigger, "call") == 0) {
+        if (s_params[0]) {
+            sip_call(s_params);
+        } else {
+            ESP_LOGW(TAG, "call: missing extension/URI");
+        }
+    } else if (strcmp(s_trigger, "hangup") == 0) {
+        sip_hangup();
+    } else if (strcmp(s_trigger, "answer") == 0) {
+        sip_answer();
+    } else if (strcmp(s_trigger, "sipstatus") == 0) {
+        snprintf(s_pending_result, sizeof(s_pending_result),
+                 "{\\\"registered\\\":%s,\\\"in_call\\\":%s}",
+                 sip_is_registered() ? "true" : "false",
+                 sip_in_call() ? "true" : "false");
+        s_pending_has_result = true;
 #endif
 
     } else if (strcmp(s_trigger, "wifi") == 0) {
@@ -10285,11 +10573,14 @@ void picture_frame_run(void)
                     pf_clock_start(analog ? "analog" : "digital");
                 }
             }
+            /* Start the SIP speakerphone client if an account is configured. */
+            pf_sip_start_from_nvs();
 #endif
         }
 
         while (true) {
 #if CONFIG_CORE2_HW
+            pf_sip_process_events();
             if (s_menu_pending_item >= 0) {
                 int item = s_menu_pending_item;
                 s_menu_pending_item = -1;

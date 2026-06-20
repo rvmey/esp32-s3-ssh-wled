@@ -245,6 +245,76 @@ size_t core2_mic_record(uint8_t **wav_out, uint32_t max_ms)
     return 44 + (size_t)pcm_written;
 }
 
+/* ── Streaming capture (live audio for SIP) ──────────────────────────────── */
+
+static int32_t s_stream_hp_state;
+static int32_t s_stream_prev_in;
+static bool    s_stream_dsp_init;
+
+esp_err_t core2_mic_stream_start(void)
+{
+    if (!s_rx_chan) {
+        ESP_LOGE(TAG, "core2_mic_init() not called");
+        return ESP_ERR_INVALID_STATE;
+    }
+    esp_err_t err = i2s_channel_enable(s_rx_chan);
+    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
+        ESP_LOGE(TAG, "stream enable: %s", esp_err_to_name(err));
+        return err;
+    }
+    vTaskDelay(pdMS_TO_TICKS(30));
+    /* Flush stale DMA frames so the stream starts fresh. */
+    uint8_t flush[DMA_BUF_BYTES];
+    size_t  flushed = 0;
+    for (int i = 0; i < 4; i++) {
+        i2s_channel_read(s_rx_chan, flush, DMA_BUF_BYTES, &flushed, pdMS_TO_TICKS(20));
+    }
+    s_stream_dsp_init = false;
+    return ESP_OK;
+}
+
+size_t core2_mic_read_frame(int16_t *out, size_t max_samples)
+{
+    if (!s_rx_chan || !out || max_samples == 0) return 0;
+
+    size_t want = max_samples * sizeof(int16_t);
+    size_t got = 0;
+    esp_err_t err = i2s_channel_read(s_rx_chan, out, want, &got, pdMS_TO_TICKS(60));
+    if (err != ESP_OK && err != ESP_ERR_TIMEOUT) {
+        ESP_LOGW(TAG, "stream read: %s", esp_err_to_name(err));
+        return 0;
+    }
+    uint32_t n = got / sizeof(int16_t);
+    if (n == 0) return 0;
+
+    if (!s_stream_dsp_init) {
+        s_stream_prev_in = (int32_t)out[0];
+        s_stream_hp_state = 0;
+        s_stream_dsp_init = true;
+    }
+    /* Same DSP as core2_mic_record: IIR high-pass (α≈0.9922) then 8× gain. */
+    for (uint32_t i = 0; i < n; i++) {
+        int32_t x = (int32_t)out[i];
+        int32_t y = (127 * (s_stream_hp_state + x - s_stream_prev_in)) / 128;
+        s_stream_prev_in  = x;
+        s_stream_hp_state = y;
+        int32_t s = y * 8;
+        if (s >  32767) s =  32767;
+        if (s < -32768) s = -32768;
+        out[i] = (int16_t)s;
+    }
+    return n;
+}
+
+void core2_mic_stream_stop(void)
+{
+    if (!s_rx_chan) return;
+    esp_err_t err = i2s_channel_disable(s_rx_chan);
+    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
+        ESP_LOGW(TAG, "stream disable: %s", esp_err_to_name(err));
+    }
+}
+
 void core2_mic_deinit(void)
 {
     if (!s_rx_chan) return;
