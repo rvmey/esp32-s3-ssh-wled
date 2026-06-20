@@ -180,7 +180,11 @@ esp_err_t wifi_connect(void)
         nvs_close(nvs);
     }
 
-    if (ssid[0] == '\0') {
+    /* Only fall back to the compiled-in Kconfig placeholder ("MyWifi") when no
+     * NVS network is configured in ANY slot. On a secrets_in_sd device, slot 1
+     * is empty but the 'wifi' command may have populated slot 2/3 — don't waste
+     * a ~7s connect attempt on the placeholder when a real network is in 2/3. */
+    if (ssid[0] == '\0' && ssid2[0] == '\0' && ssid3[0] == '\0') {
         strncpy(ssid,     CONFIG_WIFI_SSID,     sizeof(ssid)     - 1);
         strncpy(password, CONFIG_WIFI_PASSWORD, sizeof(password) - 1);
     }
