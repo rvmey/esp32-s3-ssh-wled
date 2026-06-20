@@ -9879,6 +9879,21 @@ void picture_frame_run(void)
             wifi_ret = wifi_connect_with_credentials(s_sd_wifi_ssid[i],
                                                      s_sd_wifi_pass[i]);
         }
+        /* The SD secrets file is read-only at runtime and holds at most 3
+         * networks, so the 'wifi' command stores additional networks in NVS.
+         * If every SD network failed, fall back to those NVS-stored networks.
+         * wifi_has_stored_credentials() only checks slot 1 (empty on an
+         * SD-secrets device, which never writes NVS), so also check slots 2/3
+         * where the 'wifi' command saves. */
+        if (wifi_ret != ESP_OK) {
+            char nv_ssid2[33] = {0}, nv_ssid3[33] = {0};
+            wifi_get_ssid2(nv_ssid2, sizeof(nv_ssid2));
+            wifi_get_ssid3(nv_ssid3, sizeof(nv_ssid3));
+            if (wifi_has_stored_credentials() || nv_ssid2[0] || nv_ssid3[0]) {
+                ESP_LOGI(TAG, "WiFi: SD networks failed; trying NVS networks added via 'wifi' command");
+                wifi_ret = wifi_connect();
+            }
+        }
         screen_set_touch_handler(pf_touch_handler);
     } else {
         if (!wifi_has_stored_credentials()) {
