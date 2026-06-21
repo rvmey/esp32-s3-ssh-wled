@@ -445,6 +445,12 @@ static void send_invite(bool with_auth)
     char sdp[400];
     int sdplen = build_sdp(sdp, sizeof(sdp), s_call.local_port, -1);
 
+    /* Each INVITE (including the auth-retry after 401/407) is a NEW client
+     * transaction → fresh Via branch. Reusing the branch makes the server
+     * treat the retry as a duplicate (482 Loop Detected). The ACK for the
+     * preceding failure was already sent with the old branch before this. */
+    rand_hex(s_call.invite_branch, 10);
+
     s_call.cseq++;
     char *msg = s_msgbuf;
     snprintf(msg, SIP_MSG_BUF,
@@ -653,6 +659,11 @@ static void handle_invite(const char *msg)
     s_call.local_port = sip_rtp_pick_local_port();
     s_call.state = CALL_IN_RINGING;
 
+    if (strstr(msg_body(msg), "a=candidate")) {
+        ESP_LOGW(TAG, "INVITE offer uses ICE — media may not flow without ICE; "
+                      "relying on symmetric RTP latching");
+    }
+
     send_response(msg, 100, "Trying", false, NULL);
     send_response(msg, 180, "Ringing", false, NULL);
     ESP_LOGI(TAG, "incoming call from %s (%s:%u codec=%d)",
@@ -791,7 +802,7 @@ static void process_message(const char *msg)
     }
     char method[16];
     request_method(msg, method, sizeof(method));
-    ESP_LOGD(TAG, "<<< request %s", method);
+    ESP_LOGI(TAG, "<<< request %s", method);
 
     if (strcmp(method, "INVITE") == 0)      handle_invite(msg);
     else if (strcmp(method, "BYE") == 0)    handle_bye(msg);

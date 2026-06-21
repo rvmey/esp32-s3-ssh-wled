@@ -105,6 +105,10 @@ static uint16_t s_seq;
 static uint32_t s_timestamp;
 static uint32_t s_ssrc;
 
+/* Diagnostics: packet counts for this session. */
+static uint32_t s_rx_pkts;
+static uint32_t s_tx_pkts;
+
 uint16_t sip_rtp_pick_local_port(void)
 {
     /* Even port in 16384..32766 (RTP convention: even = media). */
@@ -155,6 +159,14 @@ static void rtp_rx_task(void *arg)
         } else {
             for (int i = 0; i < plen; i++) pcm[i] = ulaw2linear(payload[i]);
         }
+        s_rx_pkts++;
+        if (s_rx_pkts == 1) {
+            ESP_LOGI(TAG, "first RTP RX from %s:%u (%d samples)",
+                     inet_ntoa(src.sin_addr), ntohs(src.sin_port), plen);
+        } else if (s_rx_pkts % 100 == 0) {
+            ESP_LOGI(TAG, "RTP rx=%lu tx=%lu",
+                     (unsigned long)s_rx_pkts, (unsigned long)s_tx_pkts);
+        }
         if (s_rx_cb) s_rx_cb(pcm, (size_t)plen, s_rx_ctx);
     }
     ESP_LOGI(TAG, "RX task exit");
@@ -202,6 +214,8 @@ esp_err_t sip_rtp_start(uint16_t local_port,
     s_seq       = (uint16_t)esp_random();
     s_timestamp = esp_random();
     s_ssrc      = esp_random();
+    s_rx_pkts   = 0;
+    s_tx_pkts   = 0;
     sip_rtp_set_remote(remote_ip, remote_port);
 
     s_running = true;
@@ -254,8 +268,13 @@ void sip_rtp_send_frame(const int16_t *pcm, size_t samples)
     xSemaphoreGive(s_remote_lock);
 
     if (dst.sin_addr.s_addr == 0 || dst.sin_addr.s_addr == INADDR_NONE) return;
-    sendto(s_sock, pkt, 12 + samples, 0,
-           (struct sockaddr *)&dst, sizeof(dst));
+    int sent = sendto(s_sock, pkt, 12 + samples, 0,
+                      (struct sockaddr *)&dst, sizeof(dst));
+    s_tx_pkts++;
+    if (s_tx_pkts == 1) {
+        ESP_LOGI(TAG, "first RTP TX to %s:%u (sent=%d errno=%d)",
+                 inet_ntoa(dst.sin_addr), ntohs(dst.sin_port), sent, errno);
+    }
 }
 
 void sip_rtp_stop(void)
