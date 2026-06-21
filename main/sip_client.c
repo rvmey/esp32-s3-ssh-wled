@@ -750,11 +750,13 @@ static void handle_response(const char *msg)
     }
 
     if (is_invite) {
-        /* Capture the peer To (with tag) + Contact for in-dialog use. */
         char to[200]; hdr_get(msg, "To", to, sizeof(to));
-        if (strstr(to, "tag=")) strlcpy(s_call.hdr_peer, to, sizeof(s_call.hdr_peer));
 
         if (code == 401 || code == 407) {
+            /* ACK the challenge with the response's To (incl. server tag), but
+             * the auth-retry INVITE must keep the ORIGINAL tag-less To — reusing
+             * the challenge's To-tag makes the proxy see an in-dialog request
+             * and reject it (482 Loop Detected). So do NOT capture it here. */
             send_ack_failure(to);
             parse_challenge(msg);
             send_invite(true);
@@ -766,6 +768,8 @@ static void handle_response(const char *msg)
                 emit(SIP_EVT_RINGING);
             }
         } else if (code == 200) {
+            /* Dialog established — capture the peer To (with tag) for ACK/BYE. */
+            if (strstr(to, "tag=")) strlcpy(s_call.hdr_peer, to, sizeof(s_call.hdr_peer));
             char contact[200];
             if (hdr_get(msg, "Contact", contact, sizeof(contact))) {
                 const char *lt = strchr(contact, '<');
