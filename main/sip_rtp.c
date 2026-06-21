@@ -138,6 +138,15 @@ size_t sip_rtp_recv(int16_t *pcm, size_t max_samples)
                      (struct sockaddr *)&src, &slen);
     if (n < 12) return 0;   /* timeout / error / shorter than RTP header */
 
+    /* Drop non-audio packets that share this UDP port: ICE/STUN connectivity
+     * probes and RTCP reports. linphone uses ICE, so these arrive constantly;
+     * decoding them as G.711 produces loud static. Require RTP version 2 and a
+     * G.711 payload type (PCMU 0 / PCMA 8) — STUN first byte is 0x00/0x01, RTCP
+     * payload types are 200-204. */
+    if ((s_rxpkt[0] & 0xC0) != 0x80) return 0;
+    uint8_t pt = s_rxpkt[1] & 0x7F;
+    if (pt != SIP_CODEC_PCMU && pt != SIP_CODEC_PCMA) return 0;
+
     /* RTP header: skip 12 bytes + 4*CSRC count. Ignore extensions. */
     int csrc = s_rxpkt[0] & 0x0F;
     int hdr = 12 + csrc * 4;

@@ -129,54 +129,54 @@ static void core2_audio_start_writer_task(void)
 }
 
 /* Create + configure + enable the I2S TX channel (DMA) at the current sample
- * rate. Does not touch the ring buffer or writer task. */
+ * rate. On ESP_ERR_NO_MEM (fragmented DMA RAM mid-call) the DMA is shrunk and
+ * retried so the speaker still comes up — never left dead. The size that
+ * actually worked is stored back into s_dma_desc_num/s_dma_frame_num. Does not
+ * touch the ring buffer or writer task. */
 static esp_err_t core2_audio_create_channel(void)
 {
-    i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(CORE2_I2S_PORT, I2S_ROLE_MASTER);
-    chan_cfg.auto_clear = true;
-    chan_cfg.dma_desc_num = s_dma_desc_num;
-    chan_cfg.dma_frame_num = s_dma_frame_num;
+    int desc  = s_dma_desc_num;
+    int frame = s_dma_frame_num;
 
-    esp_err_t err = i2s_new_channel(&chan_cfg, &s_tx_chan, NULL);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "i2s_new_channel failed: %s", esp_err_to_name(err));
+    for (;;) {
+        i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(CORE2_I2S_PORT, I2S_ROLE_MASTER);
+        chan_cfg.auto_clear = true;
+        chan_cfg.dma_desc_num = desc;
+        chan_cfg.dma_frame_num = frame;
+
+        esp_err_t err = i2s_new_channel(&chan_cfg, &s_tx_chan, NULL);
+        if (err == ESP_OK) {
+            i2s_std_config_t std_cfg = {
+                .clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(s_sample_rate_hz),
+                .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_16BIT,
+                                                                I2S_SLOT_MODE_STEREO),
+                .gpio_cfg = {
+                    .mclk = I2S_GPIO_UNUSED,
+                    .bclk = CORE2_I2S_BCLK_GPIO,
+                    .ws = CORE2_I2S_WS_GPIO,
+                    .dout = CORE2_I2S_DOUT_GPIO,
+                    .din = I2S_GPIO_UNUSED,
+                    .invert_flags = { .mclk_inv = false, .bclk_inv = false, .ws_inv = false },
+                },
+            };
+            err = i2s_channel_init_std_mode(s_tx_chan, &std_cfg);
+            if (err == ESP_OK) err = i2s_channel_enable(s_tx_chan);
+            if (err == ESP_OK) {
+                s_dma_desc_num = desc;
+                s_dma_frame_num = frame;
+                return ESP_OK;
+            }
+            i2s_del_channel(s_tx_chan);
+        }
         s_tx_chan = NULL;
+
+        /* Out of DMA RAM — shrink and retry so the speaker still works. */
+        if (err == ESP_ERR_NO_MEM && frame > 128) { frame /= 2; continue; }
+        if (err == ESP_ERR_NO_MEM && desc > 2)     { desc--;    continue; }
+        ESP_LOGE(TAG, "create_channel failed: %s (desc=%d frame=%d)",
+                 esp_err_to_name(err), desc, frame);
         return err;
     }
-
-    i2s_std_config_t std_cfg = {
-        .clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(s_sample_rate_hz),
-        .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_16BIT,
-                                                        I2S_SLOT_MODE_STEREO),
-        .gpio_cfg = {
-            .mclk = I2S_GPIO_UNUSED,
-            .bclk = CORE2_I2S_BCLK_GPIO,
-            .ws = CORE2_I2S_WS_GPIO,
-            .dout = CORE2_I2S_DOUT_GPIO,
-            .din = I2S_GPIO_UNUSED,
-            .invert_flags = {
-                .mclk_inv = false,
-                .bclk_inv = false,
-                .ws_inv = false,
-            },
-        },
-    };
-
-    err = i2s_channel_init_std_mode(s_tx_chan, &std_cfg);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "i2s_channel_init_std_mode failed: %s", esp_err_to_name(err));
-        i2s_del_channel(s_tx_chan);
-        s_tx_chan = NULL;
-        return err;
-    }
-    err = i2s_channel_enable(s_tx_chan);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "i2s_channel_enable failed: %s", esp_err_to_name(err));
-        i2s_del_channel(s_tx_chan);
-        s_tx_chan = NULL;
-        return err;
-    }
-    return ESP_OK;
 }
 
 esp_err_t core2_audio_init(void)
@@ -253,7 +253,7 @@ esp_err_t core2_audio_acquire_dma(void)
 void core2_audio_set_small_dma(bool small)
 {
     int nd = small ? 2   : CORE2_I2S_DMA_DESC_NUM;
-    int nf = small ? 128 : CORE2_I2S_CHUNK_FRAMES;
+    int nf = small ? 256 : CORE2_I2S_CHUNK_FRAMES;
     if (nd == s_dma_desc_num && nf == s_dma_frame_num) return;
     s_dma_desc_num  = nd;
     s_dma_frame_num = nf;
