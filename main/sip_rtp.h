@@ -21,23 +21,23 @@ typedef enum {
     SIP_CODEC_PCMA = 8,   /* G.711 a-law, RTP payload type 8 */
 } sip_codec_t;
 
-/* Invoked from the RX task with one decoded frame of 8 kHz mono PCM. */
-typedef void (*sip_rtp_rx_cb_t)(const int16_t *pcm, size_t samples, void *ctx);
-
 /* Pick an even local RTP port in the dynamic range. */
 uint16_t sip_rtp_pick_local_port(void);
 
-/* Bind a UDP socket to local_port, target remote_ip:remote_port, spawn RX task. */
+/* Bind a UDP socket to local_port, target remote_ip:remote_port. No task is
+ * created — the caller pumps audio via sip_rtp_recv()/sip_rtp_send_frame(). */
 esp_err_t sip_rtp_start(uint16_t local_port,
                         const char *remote_ip, uint16_t remote_port,
-                        sip_codec_t codec,
-                        sip_rtp_rx_cb_t rx_cb, void *ctx);
+                        sip_codec_t codec);
 
 /* Update the remote address — used when comedia learns a different source port. */
 void sip_rtp_set_remote(const char *remote_ip, uint16_t remote_port);
 
-/* Encode and send one frame (160 samples, 8 kHz mono). Safe to call from a
- * different task than the RX task. */
+/* Receive one RTP packet (blocks up to ~20 ms). Decodes to 8 kHz mono PCM into
+ * pcm[], returns the number of samples (0 if none/timeout). */
+size_t sip_rtp_recv(int16_t *pcm, size_t max_samples);
+
+/* Encode and send one frame (160 samples, 8 kHz mono). */
 void sip_rtp_send_frame(const int16_t *pcm, size_t samples);
 
 void sip_rtp_stop(void);

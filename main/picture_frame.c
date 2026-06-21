@@ -8174,24 +8174,18 @@ static char                s_sip_caller[96];
 
 static bool pf_sip_ui_active(void) { return s_sipui != SIPUI_NONE; }
 
-/* RTP RX (runs in the rtp_rx task): play to the speaker only while listening. */
-static void pf_sip_rx(const int16_t *pcm, size_t n, void *ctx)
-{
-    (void)ctx;
-    if (s_sipui == SIPUI_INCALL && !s_sip_talk) {
-        core2_audio_write_pcm(pcm, n, 1, 100);
-    }
-}
-
-/* 20 ms media pump. Sends mic audio while talking; comfort silence while
- * listening (keeps the symmetric-RTP / comedia pinhole open). Performs the
- * GPIO 0 mic/speaker handoff when the talk/listen mode changes. */
+/* 20 ms media pump (single task handles both RX and TX — no separate RTP task,
+ * which keeps internal RAM use down). Talking: mic → RTP TX, speaker paused.
+ * Listening: RTP RX → speaker, comfort silence TX (keeps the symmetric-RTP /
+ * comedia pinhole open). Performs the GPIO 0 mic/speaker handoff on mode change.
+ * Pacing comes from the mic read (talk) or the RTP recv timeout (listen). */
 static void pf_sip_media_task(void *arg)
 {
     (void)arg;
     bool hw_talking = false;          /* current hardware mode */
     int16_t mic16[SIP_RTP_FRAME_SAMPLES * 2];   /* ~20 ms @ 16 kHz */
     int16_t pcm8[SIP_RTP_FRAME_SAMPLES];
+    int16_t rxpcm[SIP_RTP_FRAME_SAMPLES * 2];
     while (s_sip_media_run) {
         if (s_sip_talk != hw_talking) {
             if (s_sip_talk) {
@@ -8217,9 +8211,11 @@ static void pf_sip_media_task(void *arg)
                 vTaskDelay(pdMS_TO_TICKS(20));
             }
         } else {
+            /* Listen: drain one RTP packet (blocks up to ~20 ms) → speaker. */
+            size_t got = sip_rtp_recv(rxpcm, SIP_RTP_FRAME_SAMPLES * 2);
+            if (got > 0) core2_audio_write_pcm(rxpcm, got, 1, 100);
             memset(pcm8, 0, sizeof(pcm8));
             sip_rtp_send_frame(pcm8, SIP_RTP_FRAME_SAMPLES);
-            vTaskDelay(pdMS_TO_TICKS(20));
         }
     }
     /* Restore listen-side hardware before exit. */
@@ -8244,7 +8240,7 @@ static void pf_sip_media_start(const sip_event_info_t *ev)
     s_sip_talk = false;   /* start in listen mode */
 
     sip_rtp_start(ev->local_rtp_port, ev->remote_ip, ev->remote_rtp_port,
-                  ev->codec, pf_sip_rx, NULL);
+                  ev->codec);
     s_sip_media_run = true;
     xTaskCreate(pf_sip_media_task, "sip_media", 4096, NULL, 6, &s_sip_media_task);
     ESP_LOGI(TAG, "SIP media up: %s:%u codec=%d local_rtp=%u",
