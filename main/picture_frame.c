@@ -8167,92 +8167,69 @@ typedef enum { SIPUI_NONE, SIPUI_INCOMING, SIPUI_OUTGOING, SIPUI_INCALL } pf_sip
 static volatile pf_sipui_t s_sipui = SIPUI_NONE;
 static QueueHandle_t       s_sip_evt_q = NULL;
 static sip_event_info_t    s_sip_active;
-static TaskHandle_t        s_sip_media_task = NULL;
-static volatile bool       s_sip_media_run = false;
 static volatile bool       s_sip_talk = false;     /* false = listen, true = talk */
 static char                s_sip_caller[96];
+/* Media pump runs in the main loop (no dedicated task — internal SRAM is too
+ * tight after BT+WiFi+TLS+SIP to allocate another stack). Scratch in PSRAM. */
+static int16_t            *s_media_mic16;
+static int16_t            *s_media_pcm8;
+static int16_t            *s_media_rxpcm;
+static bool                s_media_hw_talking;
 
 static bool pf_sip_ui_active(void) { return s_sipui != SIPUI_NONE; }
 
-/* Persistent 20 ms media pump. Created ONCE at boot (when internal RAM is free
- * — creating a task mid-call fails after BT+WiFi+TLS+SIP have consumed SRAM) and
- * idles until a call sets s_sip_media_run. Talking: mic → RTP TX, speaker paused.
- * Listening: RTP RX → speaker, comfort silence TX (keeps the symmetric-RTP /
- * comedia pinhole open). Handles the GPIO 0 mic/speaker handoff on mode change.
- * Pacing comes from the mic read (talk) or the RTP recv timeout (listen).
- * Audio scratch buffers live in PSRAM so the task stack stays small. */
-static void pf_sip_media_task(void *arg)
+/* One 20 ms media iteration, called repeatedly from the main loop while a call
+ * is up (no dedicated task — see s_media_* note above). Talking: mic → RTP TX,
+ * speaker paused. Listening: RTP RX → speaker + comfort silence TX (keeps the
+ * symmetric-RTP / comedia pinhole open). Handles the GPIO 0 mic/speaker handoff.
+ * Pacing comes from the blocking mic read (talk) or RTP recv timeout (listen). */
+static void pf_sip_media_pump(void)
 {
-    (void)arg;
-    bool hw_talking = false;          /* current hardware mode */
-    int16_t *mic16 = heap_caps_malloc(SIP_RTP_FRAME_SAMPLES * 2 * sizeof(int16_t),
-                                      MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    int16_t *pcm8  = heap_caps_malloc(SIP_RTP_FRAME_SAMPLES * sizeof(int16_t),
-                                      MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    int16_t *rxpcm = heap_caps_malloc(SIP_RTP_FRAME_SAMPLES * 2 * sizeof(int16_t),
-                                      MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (!mic16 || !pcm8 || !rxpcm) {
-        ESP_LOGE(TAG, "SIP media task: buffer alloc failed");
-        s_sip_media_task = NULL;
-        vTaskDelete(NULL);
-        return;
+    if (!s_media_mic16) {
+        s_media_mic16 = heap_caps_malloc(SIP_RTP_FRAME_SAMPLES * 2 * sizeof(int16_t),
+                                         MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        s_media_pcm8  = heap_caps_malloc(SIP_RTP_FRAME_SAMPLES * sizeof(int16_t),
+                                         MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        s_media_rxpcm = heap_caps_malloc(SIP_RTP_FRAME_SAMPLES * 2 * sizeof(int16_t),
+                                         MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (!s_media_mic16 || !s_media_pcm8 || !s_media_rxpcm) {
+            ESP_LOGE(TAG, "SIP media: buffer alloc failed");
+            vTaskDelay(pdMS_TO_TICKS(20));
+            return;
+        }
     }
 
-    for (;;) {
-        if (!s_sip_media_run) {
-            if (hw_talking) {   /* call ended mid-talk → restore listen hardware */
-                core2_mic_stream_stop();
-                core2_mic_deinit();
-                core2_audio_resume();
-                hw_talking = false;
-            }
-            vTaskDelay(pdMS_TO_TICKS(50));
-            continue;
-        }
-        if (s_sip_talk != hw_talking) {
-            if (s_sip_talk) {
-                core2_audio_pause();
-                if (core2_mic_init() == ESP_OK) core2_mic_stream_start();
-            } else {
-                core2_mic_stream_stop();
-                core2_mic_deinit();
-                core2_audio_resume();
-            }
-            hw_talking = s_sip_talk;
-        }
-        if (hw_talking) {
-            size_t got = core2_mic_read_frame(mic16, SIP_RTP_FRAME_SAMPLES * 2);
-            if (got >= 2) {
-                /* Downsample 16 kHz → 8 kHz by averaging sample pairs. */
-                size_t out = 0;
-                for (size_t i = 0; i + 1 < got && out < SIP_RTP_FRAME_SAMPLES; i += 2) {
-                    pcm8[out++] = (int16_t)(((int)mic16[i] + (int)mic16[i + 1]) / 2);
-                }
-                sip_rtp_send_frame(pcm8, out);
-            } else {
-                vTaskDelay(pdMS_TO_TICKS(20));
-            }
+    if (s_sip_talk != s_media_hw_talking) {
+        if (s_sip_talk) {
+            core2_audio_pause();
+            if (core2_mic_init() == ESP_OK) core2_mic_stream_start();
         } else {
-            /* Listen: drain one RTP packet (blocks up to ~20 ms) → speaker. */
-            size_t got = sip_rtp_recv(rxpcm, SIP_RTP_FRAME_SAMPLES * 2);
-            if (got > 0) core2_audio_write_pcm(rxpcm, got, 1, 100);
-            memset(pcm8, 0, SIP_RTP_FRAME_SAMPLES * sizeof(int16_t));
-            sip_rtp_send_frame(pcm8, SIP_RTP_FRAME_SAMPLES);
+            core2_mic_stream_stop();
+            core2_mic_deinit();
+            core2_audio_resume();
         }
+        s_media_hw_talking = s_sip_talk;
     }
-}
 
-/* Create the persistent media task at boot (called from pf_sip_start_from_nvs). */
-static void pf_sip_media_task_ensure(void)
-{
-    if (s_sip_media_task) return;
-    BaseType_t ok = xTaskCreate(pf_sip_media_task, "sip_media", 3584, NULL, 6,
-                                &s_sip_media_task);
-    if (ok != pdPASS) {
-        s_sip_media_task = NULL;
-        ESP_LOGE(TAG, "sip media task create failed — internal free=%u largest=%u",
-                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
-                 (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
+    if (s_media_hw_talking) {
+        size_t got = core2_mic_read_frame(s_media_mic16, SIP_RTP_FRAME_SAMPLES * 2);
+        if (got >= 2) {
+            /* Downsample 16 kHz → 8 kHz by averaging sample pairs. */
+            size_t out = 0;
+            for (size_t i = 0; i + 1 < got && out < SIP_RTP_FRAME_SAMPLES; i += 2) {
+                s_media_pcm8[out++] =
+                    (int16_t)(((int)s_media_mic16[i] + (int)s_media_mic16[i + 1]) / 2);
+            }
+            sip_rtp_send_frame(s_media_pcm8, out);
+        } else {
+            vTaskDelay(pdMS_TO_TICKS(20));
+        }
+    } else {
+        /* Listen: drain one RTP packet (blocks up to ~20 ms) → speaker. */
+        size_t got = sip_rtp_recv(s_media_rxpcm, SIP_RTP_FRAME_SAMPLES * 2);
+        if (got > 0) core2_audio_write_pcm(s_media_rxpcm, got, 1, 100);
+        memset(s_media_pcm8, 0, SIP_RTP_FRAME_SAMPLES * sizeof(int16_t));
+        sip_rtp_send_frame(s_media_pcm8, SIP_RTP_FRAME_SAMPLES);
     }
 }
 
@@ -8265,22 +8242,24 @@ static void pf_sip_media_start(const sip_event_info_t *ev)
 
     core2_audio_init();
     core2_audio_set_sample_rate(8000);
-    s_sip_talk = false;   /* start in listen mode */
+    s_sip_talk = false;          /* start in listen mode */
+    s_media_hw_talking = false;  /* speaker is active (not paused) */
 
     sip_rtp_start(ev->local_rtp_port, ev->remote_ip, ev->remote_rtp_port,
                   ev->codec);
-    s_sip_media_run = true;   /* wakes the persistent media task */
-    ESP_LOGI(TAG, "SIP media up: %s:%u codec=%d local_rtp=%u (media_task=%p)",
-             ev->remote_ip, ev->remote_rtp_port, ev->codec, ev->local_rtp_port,
-             s_sip_media_task);
+    ESP_LOGI(TAG, "SIP media up: %s:%u codec=%d local_rtp=%u",
+             ev->remote_ip, ev->remote_rtp_port, ev->codec, ev->local_rtp_port);
 }
 
 static void pf_sip_media_stop(void)
 {
-    s_sip_media_run = false;
-    /* Let the media task finish its current iteration and restore listen-side
-     * hardware (it self-restores when it sees s_sip_media_run go false). */
-    vTaskDelay(pdMS_TO_TICKS(80));
+    /* Runs in the main task — same context as pf_sip_media_pump(), so no race. */
+    if (s_media_hw_talking) {
+        core2_mic_stream_stop();
+        core2_mic_deinit();
+        core2_audio_resume();
+        s_media_hw_talking = false;
+    }
     sip_rtp_stop();
     core2_audio_set_sample_rate(44100);   /* restore default rate for MP3/TTS */
     if (s_mp3_task) vTaskResume(s_mp3_task);
@@ -8430,8 +8409,6 @@ static void pf_sip_start_from_nvs(void)
     esp_err_t serr = sip_client_start(&cfg, pf_sip_event_cb, NULL);
     if (serr == ESP_OK) {
         ESP_LOGI(TAG, "SIP client started for %s@%s", cfg.user, cfg.server);
-        /* Create the media pump now, while internal RAM is still free. */
-        pf_sip_media_task_ensure();
     } else {
         ESP_LOGE(TAG, "SIP client start failed: %s", esp_err_to_name(serr));
     }
@@ -10616,6 +10593,18 @@ void picture_frame_run(void)
         while (true) {
 #if CONFIG_CORE2_HW
             pf_sip_process_events();
+            /* During a SIP call, dedicate this loop to the 20 ms media pump
+             * (its blocking RTP recv / mic read provides the pacing). Skip the
+             * 200 ms-paced general loop body, but keep the Socket.IO keepalive
+             * alive so the WS connection survives the call. */
+            if (s_sipui == SIPUI_INCALL) {
+                pf_sip_media_pump();
+                if ((xTaskGetTickCount() - last_ping_tick) >= pdMS_TO_TICKS(20000)) {
+                    socketio_send_eio_ping();
+                    last_ping_tick = xTaskGetTickCount();
+                }
+                continue;
+            }
             if (s_menu_pending_item >= 0) {
                 int item = s_menu_pending_item;
                 s_menu_pending_item = -1;
