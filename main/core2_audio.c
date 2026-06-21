@@ -25,6 +25,11 @@ static const char *TAG = "core2_audio";
 
 static i2s_chan_handle_t s_tx_chan = NULL;
 static uint32_t s_sample_rate_hz = 44100;
+/* Active DMA sizing — shrunk during SIP calls so the channel can be freed for
+ * the PDM mic and re-allocated from fragmented DMA RAM (the full 8 KB stereo
+ * DMA below cannot round-trip mid-call). */
+static int s_dma_desc_num  = CORE2_I2S_DMA_DESC_NUM;
+static int s_dma_frame_num = CORE2_I2S_CHUNK_FRAMES;
 static TaskHandle_t s_writer_task = NULL;
 static StaticSemaphore_t s_ring_mutex_storage;
 static SemaphoreHandle_t s_ring_mutex = NULL;
@@ -129,8 +134,8 @@ static esp_err_t core2_audio_create_channel(void)
 {
     i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(CORE2_I2S_PORT, I2S_ROLE_MASTER);
     chan_cfg.auto_clear = true;
-    chan_cfg.dma_desc_num = CORE2_I2S_DMA_DESC_NUM;
-    chan_cfg.dma_frame_num = CORE2_I2S_CHUNK_FRAMES;
+    chan_cfg.dma_desc_num = s_dma_desc_num;
+    chan_cfg.dma_frame_num = s_dma_frame_num;
 
     esp_err_t err = i2s_new_channel(&chan_cfg, &s_tx_chan, NULL);
     if (err != ESP_OK) {
@@ -236,8 +241,28 @@ esp_err_t core2_audio_acquire_dma(void)
         return err;
     }
     core2_audio_start_writer_task();   /* no-op if the task is still alive */
-    ESP_LOGI(TAG, "audio DMA re-acquired @ %lu Hz", (unsigned long)s_sample_rate_hz);
+    ESP_LOGI(TAG, "audio DMA re-acquired @ %lu Hz (desc=%d frame=%d)",
+             (unsigned long)s_sample_rate_hz, s_dma_desc_num, s_dma_frame_num);
     return ESP_OK;
+}
+
+/* Select a small DMA footprint (for SIP calls, where the channel must be freed
+ * for the mic and re-allocated from fragmented DMA RAM) or the full footprint
+ * (for music). If a channel is currently open it is re-created at the new size,
+ * keeping the writer task + ring alive. */
+void core2_audio_set_small_dma(bool small)
+{
+    int nd = small ? 2   : CORE2_I2S_DMA_DESC_NUM;
+    int nf = small ? 128 : CORE2_I2S_CHUNK_FRAMES;
+    if (nd == s_dma_desc_num && nf == s_dma_frame_num) return;
+    s_dma_desc_num  = nd;
+    s_dma_frame_num = nf;
+    if (s_tx_chan) {
+        core2_audio_release_dma();
+        core2_audio_acquire_dma();
+    }
+    ESP_LOGI(TAG, "audio DMA profile: %s (desc=%d frame=%d)",
+             small ? "small" : "full", s_dma_desc_num, s_dma_frame_num);
 }
 
 void core2_audio_deinit(void)

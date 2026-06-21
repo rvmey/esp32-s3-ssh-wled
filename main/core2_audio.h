@@ -2,6 +2,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <stdbool.h>
 #include "esp_err.h"
 
 esp_err_t core2_audio_init(void);
@@ -14,6 +15,9 @@ void core2_audio_resume(void);
  * a SIP call where mid-call task creation fails on fragmented internal SRAM. */
 void core2_audio_release_dma(void);
 esp_err_t core2_audio_acquire_dma(void);
+/* Shrink the TX DMA footprint for SIP calls (true) or restore full size for
+ * music (false). Re-creates the channel in place if one is open. */
+void core2_audio_set_small_dma(bool small);
 void core2_audio_set_sample_rate(uint32_t sample_rate_hz);
 
 /* sample_count is the total number of samples in input buffer, not frames. */

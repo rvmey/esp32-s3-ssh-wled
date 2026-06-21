@@ -8261,6 +8261,10 @@ static void pf_sip_media_start(const sip_event_info_t *ev)
     if (s_mp3_task) vTaskSuspend(s_mp3_task);
 
     core2_audio_init();
+    /* Shrink the speaker DMA so it can be freed for the mic and re-allocated
+     * from fragmented DMA RAM during talk/listen toggles (the full 8 KB stereo
+     * DMA fails to re-acquire mid-call → dead speaker after the first talk). */
+    core2_audio_set_small_dma(true);
     core2_audio_set_sample_rate(8000);
     s_sip_talk = false;          /* start in listen mode */
     s_media_hw_talking = false;  /* speaker is active (not paused) */
@@ -8281,6 +8285,7 @@ static void pf_sip_media_stop(void)
         s_media_hw_talking = false;
     }
     sip_rtp_stop();
+    core2_audio_set_small_dma(false);     /* restore full DMA for music */
     core2_audio_set_sample_rate(44100);   /* restore default rate for MP3/TTS */
     if (s_mp3_task) vTaskResume(s_mp3_task);
 }
@@ -9953,6 +9958,70 @@ static esp_err_t connect_and_subscribe(bool initial_connect)
 /* ── SD card boot-time config ───────────────────────────────────────────── */
 
 /* Returns true for key names whose values are secrets (WiFi creds, API keys). */
+/* Persist SIP settings to /sdcard/secrets_config.txt: rewrite the file keeping
+ * every existing line except the sip_* keys, then append the new sip_* values.
+ * Called from the web config handler so "Save SIP Settings" stores the account
+ * on the SD card (read back on boot by sd_apply_config_if_present). */
+bool pf_sip_save_to_sd(const char *server, const char *port, const char *user,
+                       const char *pass, const char *domain)
+{
+    if (!mount_sd_card_if_needed()) {
+        ESP_LOGW(TAG, "sip save: SD card not available");
+        return false;
+    }
+    const char *path = "/sdcard/secrets_config.txt";
+
+    char *keep = (char *)malloc(4096);
+    if (!keep) return false;
+    size_t keep_len = 0;
+
+    FILE *rf = fopen(path, "r");
+    if (rf) {
+        char rline[384];
+        while (fgets(rline, sizeof(rline), rf)) {
+            char tmp[384];
+            strncpy(tmp, rline, sizeof(tmp) - 1);
+            tmp[sizeof(tmp) - 1] = '\0';
+            char *rp = tmp;
+            while (*rp == ' ' || *rp == '\t') rp++;
+            bool is_sip = false;
+            if (*rp != '\0' && *rp != '#') {
+                char *eq = strchr(rp, '=');
+                if (eq) {
+                    *eq = '\0';
+                    char *ke = rp + strlen(rp) - 1;
+                    while (ke >= rp && (*ke == ' ' || *ke == '\t')) *ke-- = '\0';
+                    is_sip = (strncmp(rp, "sip_", 4) == 0);
+                }
+            }
+            if (!is_sip) {
+                size_t rl = strlen(rline);
+                if (keep_len + rl < 4096) { memcpy(keep + keep_len, rline, rl); keep_len += rl; }
+            }
+        }
+        fclose(rf);
+    }
+    if (keep_len > 0 && keep[keep_len - 1] != '\n' && keep_len < 4095)
+        keep[keep_len++] = '\n';
+
+    FILE *wf = fopen(path, "w");
+    if (!wf) {
+        free(keep);
+        ESP_LOGW(TAG, "sip save: cannot write %s", path);
+        return false;
+    }
+    if (keep_len) fwrite(keep, 1, keep_len, wf);
+    if (server && server[0]) fprintf(wf, "sip_server=%s\n", server);
+    if (port   && port[0])   fprintf(wf, "sip_port=%s\n", port);
+    if (user   && user[0])   fprintf(wf, "sip_user=%s\n", user);
+    if (pass   && pass[0])   fprintf(wf, "sip_password=%s\n", pass);
+    if (domain && domain[0]) fprintf(wf, "sip_domain=%s\n", domain);
+    fclose(wf);
+    free(keep);
+    ESP_LOGI(TAG, "sip save: written to %s", path);
+    return true;
+}
+
 static bool sd_is_secret_key(const char *key)
 {
     return (strcmp(key, "ssid")       == 0 || strcmp(key, "password")  == 0 ||
@@ -9991,6 +10060,11 @@ static void sd_apply_config_if_present(void)
     bool secrets_in_sd  = false;
 #if CONFIG_CORE2_HW
     char openai_key[256] = {0};
+    char sip_server[64]  = {0};
+    char sip_port[8]     = {0};
+    char sip_user[48]    = {0};
+    char sip_pass[64]    = {0};
+    char sip_domain[64]  = {0};
 #endif
 
     char line[384];
@@ -10035,9 +10109,32 @@ static void sd_apply_config_if_present(void)
 #if CONFIG_CORE2_HW
         else if (strcmp(key, "openai_key") == 0)
             snprintf(openai_key, sizeof(openai_key), "%s", val);
+        else if (strcmp(key, "sip_server") == 0)
+            snprintf(sip_server, sizeof(sip_server), "%s", val);
+        else if (strcmp(key, "sip_port") == 0)
+            snprintf(sip_port, sizeof(sip_port), "%s", val);
+        else if (strcmp(key, "sip_user") == 0)
+            snprintf(sip_user, sizeof(sip_user), "%s", val);
+        else if (strcmp(key, "sip_password") == 0)
+            snprintf(sip_pass, sizeof(sip_pass), "%s", val);
+        else if (strcmp(key, "sip_domain") == 0)
+            snprintf(sip_domain, sizeof(sip_domain), "%s", val);
 #endif
     }
     fclose(f);
+
+#if CONFIG_CORE2_HW
+    /* SIP settings: always mirror to NVS (the SIP client reads NVS) but, unlike
+     * wifi/openai secrets, they are NOT stripped from secrets_config.txt — they
+     * persist on the SD card so the account survives and is editable there. */
+    if (sip_server[0]) nvs_write_str("sip_srv",  sip_server);
+    if (sip_port[0])   nvs_write_str("sip_port", sip_port);
+    if (sip_user[0])   nvs_write_str("sip_user", sip_user);
+    if (sip_pass[0])   nvs_write_str("sip_pass", sip_pass);
+    if (sip_domain[0]) nvs_write_str("sip_dom",  sip_domain);
+    if (sip_server[0])
+        ESP_LOGI(TAG, "sd config: SIP settings loaded from SD (server='%s')", sip_server);
+#endif
 
     if (secrets_in_sd) {
         /* Keep secrets in SD card only — store in module vars, skip NVS writes. */

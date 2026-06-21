@@ -24,6 +24,10 @@
 #define TAG         "http_pf_cfg"
 #define TAG_PF_WIFI "http_pf_cfg"
 #define NVS_NS      "pf_cfg"
+
+/* Defined in picture_frame.c — persist SIP settings to the SD card. */
+bool pf_sip_save_to_sd(const char *server, const char *port, const char *user,
+                       const char *pass, const char *domain);
 #define NVS_KEY_CID "computer_id"
 #define NVS_KEY_STT "stt_key"
 
@@ -343,10 +347,23 @@ static esp_err_t post_sip_handler(httpd_req_t *req)
         ESP_LOGI(TAG, "SIP settings saved (srv='%s' user='%s')", srv, user);
     }
 
+    /* If the password field was left blank, keep the existing one for the SD
+     * copy too (otherwise it would be dropped from the card). */
+    if (!pass[0]) {
+        nvs_handle_t rh;
+        if (nvs_open(NVS_NS, NVS_READONLY, &rh) == ESP_OK) {
+            size_t l = sizeof(pass);
+            nvs_get_str(rh, "sip_pass", pass, &l);
+            nvs_close(rh);
+        }
+    }
+    /* Persist to the SD card so the account survives and is editable there. */
+    pf_sip_save_to_sd(srv, port, user, pass, dom);
+
     httpd_resp_set_type(req, "text/html");
     httpd_resp_sendstr_chunk(req, s_html_head);
     httpd_resp_sendstr_chunk(req,
-        "<p class='ok'>&#10003; SIP settings saved. Rebooting&hellip;</p>");
+        "<p class='ok'>&#10003; SIP settings saved (NVS + SD card). Rebooting&hellip;</p>");
     httpd_resp_sendstr_chunk(req, s_tail);
     httpd_resp_sendstr_chunk(req, NULL);
 
