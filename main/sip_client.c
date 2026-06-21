@@ -41,6 +41,11 @@ static volatile bool  s_registered;
 
 static char          *s_rxbuf;     /* SIP_RX_BUF bytes, allocated from PSRAM */
 static size_t         s_rxlen;
+/* Off-stack scratch (PSRAM) so the sip task stack stays small: s_msgbuf builds
+ * outgoing messages, s_inbuf holds the incoming message being dispatched. Only
+ * the single-threaded sip task touches them, and never both as the same role. */
+static char          *s_msgbuf;
+static char          *s_inbuf;
 
 /* Registration dialog */
 static char     s_reg_callid[96];
@@ -406,8 +411,8 @@ static void send_register(bool with_auth)
     if (with_auth && s_auth_have) build_auth_header("REGISTER", uri, auth, sizeof(auth));
 
     s_reg_cseq++;
-    char msg[SIP_MSG_BUF];
-    snprintf(msg, sizeof(msg),
+    char *msg = s_msgbuf;
+    snprintf(msg, SIP_MSG_BUF,
         "REGISTER %s SIP/2.0\r\n"
         "Via: SIP/2.0/TLS %s:%d;branch=z9hG4bK%s;rport\r\n"
         "Max-Forwards: 70\r\n"
@@ -441,8 +446,8 @@ static void send_invite(bool with_auth)
     int sdplen = build_sdp(sdp, sizeof(sdp), s_call.local_port, -1);
 
     s_call.cseq++;
-    char msg[SIP_MSG_BUF];
-    snprintf(msg, sizeof(msg),
+    char *msg = s_msgbuf;
+    snprintf(msg, SIP_MSG_BUF,
         "INVITE %s SIP/2.0\r\n"
         "Via: SIP/2.0/TLS %s:%d;branch=z9hG4bK%s;rport\r\n"
         "Max-Forwards: 70\r\n"
@@ -464,8 +469,8 @@ static void send_invite(bool with_auth)
 /* ACK a non-2xx final response to our INVITE (same branch + CSeq number). */
 static void send_ack_failure(const char *to_with_tag)
 {
-    char msg[SIP_MSG_BUF];
-    snprintf(msg, sizeof(msg),
+    char *msg = s_msgbuf;
+    snprintf(msg, SIP_MSG_BUF,
         "ACK %s SIP/2.0\r\n"
         "Via: SIP/2.0/TLS %s:%d;branch=z9hG4bK%s;rport\r\n"
         "Max-Forwards: 70\r\n"
@@ -483,8 +488,8 @@ static void send_ack_failure(const char *to_with_tag)
 static void send_ack_ok(void)
 {
     char branch[40]; rand_hex(branch, 10);
-    char msg[SIP_MSG_BUF];
-    snprintf(msg, sizeof(msg),
+    char *msg = s_msgbuf;
+    snprintf(msg, SIP_MSG_BUF,
         "ACK %s SIP/2.0\r\n"
         "Via: SIP/2.0/TLS %s:%d;branch=z9hG4bK%s;rport\r\n"
         "Max-Forwards: 70\r\n"
@@ -503,8 +508,8 @@ static void send_bye(void)
 {
     char branch[40]; rand_hex(branch, 10);
     s_call.cseq++;
-    char msg[SIP_MSG_BUF];
-    snprintf(msg, sizeof(msg),
+    char *msg = s_msgbuf;
+    snprintf(msg, SIP_MSG_BUF,
         "BYE %s SIP/2.0\r\n"
         "Via: SIP/2.0/TLS %s:%d;branch=z9hG4bK%s;rport\r\n"
         "Max-Forwards: 70\r\n"
@@ -522,8 +527,8 @@ static void send_bye(void)
 /* CANCEL our pending outgoing INVITE (same branch + CSeq number). */
 static void send_cancel(void)
 {
-    char msg[SIP_MSG_BUF];
-    snprintf(msg, sizeof(msg),
+    char *msg = s_msgbuf;
+    snprintf(msg, SIP_MSG_BUF,
         "CANCEL %s SIP/2.0\r\n"
         "Via: SIP/2.0/TLS %s:%d;branch=z9hG4bK%s;rport\r\n"
         "Max-Forwards: 70\r\n"
@@ -566,15 +571,15 @@ static void send_response(const char *req, int code, const char *reason,
                  s_cfg.user, s_local_ip, SIP_DEFAULT_PORT);
     }
 
-    char msg[SIP_MSG_BUF];
+    char *msg = s_msgbuf;
     if (sdp && sdp[0]) {
-        snprintf(msg, sizeof(msg),
+        snprintf(msg, SIP_MSG_BUF,
             "SIP/2.0 %d %s\r\n%sFrom: %s\r\nTo: %s\r\nCall-ID: %s\r\nCSeq: %s\r\n"
             "%sContent-Type: application/sdp\r\nContent-Length: %d\r\n\r\n%s",
             code, reason, via, from, to_tagged, callid, cseq, contact,
             (int)strlen(sdp), sdp);
     } else {
-        snprintf(msg, sizeof(msg),
+        snprintf(msg, SIP_MSG_BUF,
             "SIP/2.0 %d %s\r\n%sFrom: %s\r\nTo: %s\r\nCall-ID: %s\r\nCSeq: %s\r\n"
             "%sContent-Length: 0\r\n\r\n",
             code, reason, via, from, to_tagged, callid, cseq, contact);
@@ -670,8 +675,8 @@ static void answer_incoming(void)
     snprintf(contact, sizeof(contact), "Contact: <sip:%s@%s:%d;transport=tls>\r\n",
              s_cfg.user, s_local_ip, SIP_DEFAULT_PORT);
 
-    char msg[SIP_MSG_BUF];
-    snprintf(msg, sizeof(msg),
+    char *msg = s_msgbuf;
+    snprintf(msg, SIP_MSG_BUF,
         "SIP/2.0 200 OK\r\n%sFrom: %s\r\nTo: %s\r\nCall-ID: %s\r\nCSeq: %s\r\n"
         "%sContent-Type: application/sdp\r\nContent-Length: %d\r\n\r\n%s",
         s_call.in_via, s_call.in_from, to_tagged, s_call.call_id, s_call.in_cseq,
@@ -821,9 +826,9 @@ static void process_rx(void)
         size_t total = hdr_len + clen;
         if (s_rxlen < total) return;   /* need more bytes */
 
-        /* Isolate and process this message. */
-        char one[SIP_MSG_BUF];
-        size_t cp = total < sizeof(one) - 1 ? total : sizeof(one) - 1;
+        /* Isolate and process this message (off-stack scratch). */
+        char *one = s_inbuf;
+        size_t cp = total < (size_t)(SIP_MSG_BUF - 1) ? total : (size_t)(SIP_MSG_BUF - 1);
         memcpy(one, s_rxbuf, cp);
         one[cp] = '\0';
         process_message(one);
@@ -923,10 +928,11 @@ static void do_hangup(void)
         case CALL_IN_RINGING:
             /* Reject the still-ringing incoming INVITE. */
             {
-                char msg[SIP_MSG_BUF], to_tagged[240];
+                char *msg = s_msgbuf;
+                char to_tagged[240];
                 snprintf(to_tagged, sizeof(to_tagged), "%s;tag=%s",
                          s_call.in_to, s_call.local_tag);
-                snprintf(msg, sizeof(msg),
+                snprintf(msg, SIP_MSG_BUF,
                     "SIP/2.0 486 Busy Here\r\n%sFrom: %s\r\nTo: %s\r\nCall-ID: %s\r\n"
                     "CSeq: %s\r\nContent-Length: 0\r\n\r\n",
                     s_call.in_via, s_call.in_from, to_tagged, s_call.call_id,
@@ -1019,20 +1025,37 @@ esp_err_t sip_client_start(const sip_config_t *cfg, sip_event_cb_t cb, void *ctx
 
     if (!s_cmd_q) {
         s_cmd_q = xQueueCreate(4, sizeof(sip_cmd_msg_t));
-        if (!s_cmd_q) return ESP_ERR_NO_MEM;
+        if (!s_cmd_q) { ESP_LOGE(TAG, "cmd queue alloc failed"); return ESP_ERR_NO_MEM; }
     }
     if (!s_rxbuf) {
         s_rxbuf = heap_caps_malloc(SIP_RX_BUF, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
         if (!s_rxbuf) s_rxbuf = malloc(SIP_RX_BUF);
-        if (!s_rxbuf) return ESP_ERR_NO_MEM;
+        if (!s_rxbuf) { ESP_LOGE(TAG, "rxbuf alloc failed"); return ESP_ERR_NO_MEM; }
+    }
+    if (!s_msgbuf) {
+        s_msgbuf = heap_caps_malloc(SIP_MSG_BUF, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (!s_msgbuf) s_msgbuf = malloc(SIP_MSG_BUF);
+        if (!s_msgbuf) { ESP_LOGE(TAG, "msgbuf alloc failed"); return ESP_ERR_NO_MEM; }
+    }
+    if (!s_inbuf) {
+        s_inbuf = heap_caps_malloc(SIP_MSG_BUF, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (!s_inbuf) s_inbuf = malloc(SIP_MSG_BUF);
+        if (!s_inbuf) { ESP_LOGE(TAG, "inbuf alloc failed"); return ESP_ERR_NO_MEM; }
     }
     s_rxlen = 0;
 
     s_running = true;
-    /* 12 KB stack: TLS + large SIP-message snprintf frames. PSRAM not allowed
-     * for task stacks, but core2 has ample internal SRAM after boot. */
-    BaseType_t ok = xTaskCreate(sip_task, "sip", 12288, NULL, 5, &s_task);
-    if (ok != pdPASS) { s_running = false; return ESP_ERR_NO_MEM; }
+    /* 8 KB stack: enough for the TLS handshake and SIP-message building (large
+     * snprintf scratch buffers live off-stack). The task stack must come from
+     * internal SRAM, which is fragmented after BT+WiFi+TLS, so keep it modest. */
+    BaseType_t ok = xTaskCreate(sip_task, "sip", 8192, NULL, 5, &s_task);
+    if (ok != pdPASS) {
+        ESP_LOGE(TAG, "sip task create failed — internal free=%u largest=%u",
+                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+                 (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
+        s_running = false;
+        return ESP_ERR_NO_MEM;
+    }
     ESP_LOGI(TAG, "started for %s@%s", s_cfg.user, s_cfg.server);
     return ESP_OK;
 }

@@ -8394,11 +8394,18 @@ static void pf_sip_start_from_nvs(void)
     char portbuf[8] = {0};
     if (nvs_read_str("sip_port", portbuf, sizeof(portbuf))) cfg.port = (uint16_t)atoi(portbuf);
 
+    ESP_LOGI(TAG, "SIP config: server='%s' port=%u user='%s' domain='%s'",
+             cfg.server, cfg.port ? cfg.port : 5061, cfg.user,
+             cfg.domain[0] ? cfg.domain : "(=server)");
+
     if (!s_sip_evt_q) s_sip_evt_q = xQueueCreate(6, sizeof(sip_event_info_t));
     if (!s_sip_evt_q) { ESP_LOGE(TAG, "SIP: event queue alloc failed"); return; }
 
-    if (sip_client_start(&cfg, pf_sip_event_cb, NULL) == ESP_OK) {
+    esp_err_t serr = sip_client_start(&cfg, pf_sip_event_cb, NULL);
+    if (serr == ESP_OK) {
         ESP_LOGI(TAG, "SIP client started for %s@%s", cfg.user, cfg.server);
+    } else {
+        ESP_LOGE(TAG, "SIP client start failed: %s", esp_err_to_name(serr));
     }
 }
 #endif /* CONFIG_CORE2_HW */
