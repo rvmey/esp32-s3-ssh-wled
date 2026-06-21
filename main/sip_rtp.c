@@ -108,6 +108,7 @@ static uint32_t s_ssrc;
 /* Diagnostics: packet counts for this session. */
 static uint32_t s_rx_pkts;
 static uint32_t s_tx_pkts;
+static TickType_t s_last_rx_tick;   /* updated on each received packet */
 
 uint16_t sip_rtp_pick_local_port(void)
 {
@@ -151,6 +152,7 @@ size_t sip_rtp_recv(int16_t *pcm, size_t max_samples)
         for (int i = 0; i < plen; i++) pcm[i] = ulaw2linear(payload[i]);
     }
     s_rx_pkts++;
+    s_last_rx_tick = xTaskGetTickCount();
     if (s_rx_pkts == 1) {
         ESP_LOGI(TAG, "first RTP RX from %s:%u (%d samples)",
                  inet_ntoa(src.sin_addr), ntohs(src.sin_port), plen);
@@ -205,6 +207,7 @@ esp_err_t sip_rtp_start(uint16_t local_port,
     s_ssrc      = esp_random();
     s_rx_pkts   = 0;
     s_tx_pkts   = 0;
+    s_last_rx_tick = xTaskGetTickCount();
     sip_rtp_set_remote(remote_ip, remote_port);
     s_running = true;
 
@@ -255,6 +258,17 @@ void sip_rtp_send_frame(const int16_t *pcm, size_t samples)
         ESP_LOGI(TAG, "first RTP TX to %s:%u (sent=%d errno=%d)",
                  inet_ntoa(dst.sin_addr), ntohs(dst.sin_port), sent, errno);
     }
+}
+
+uint32_t sip_rtp_idle_ms(void)
+{
+    if (!s_running) return 0;
+    return (uint32_t)((xTaskGetTickCount() - s_last_rx_tick) * portTICK_PERIOD_MS);
+}
+
+void sip_rtp_reset_idle(void)
+{
+    s_last_rx_tick = xTaskGetTickCount();
 }
 
 void sip_rtp_stop(void)

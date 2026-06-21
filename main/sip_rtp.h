@@ -40,4 +40,10 @@ size_t sip_rtp_recv(int16_t *pcm, size_t max_samples);
 /* Encode and send one frame (160 samples, 8 kHz mono). */
 void sip_rtp_send_frame(const int16_t *pcm, size_t samples);
 
+/* Milliseconds since the last RTP packet was received (for hangup detection
+ * when the peer/server doesn't deliver a BYE). Returns 0 when not running. */
+uint32_t sip_rtp_idle_ms(void);
+/* Reset the idle timer (call when resuming RX after a talk period). */
+void sip_rtp_reset_idle(void);
+
 void sip_rtp_stop(void);
