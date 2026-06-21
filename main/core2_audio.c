@@ -123,26 +123,10 @@ static void core2_audio_start_writer_task(void)
     xTaskCreate(core2_audio_writer_task, "core2_i2s", 4096, NULL, 6, &s_writer_task);
 }
 
-esp_err_t core2_audio_init(void)
+/* Create + configure + enable the I2S TX channel (DMA) at the current sample
+ * rate. Does not touch the ring buffer or writer task. */
+static esp_err_t core2_audio_create_channel(void)
 {
-    if (s_tx_chan) return ESP_OK;
-
-    if (!s_ring_mutex) {
-        s_ring_mutex = xSemaphoreCreateMutexStatic(&s_ring_mutex_storage);
-    }
-    if (!s_ring_buf) {
-        s_ring_buf = heap_caps_malloc(CORE2_I2S_RING_BYTES, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-        s_ring_capacity = CORE2_I2S_RING_BYTES;
-        if (!s_ring_buf) {
-            s_ring_buf = heap_caps_malloc(CORE2_I2S_RING_FALLBACK_BYTES, MALLOC_CAP_8BIT);
-            s_ring_capacity = s_ring_buf ? CORE2_I2S_RING_FALLBACK_BYTES : 0;
-        }
-        if (!s_ring_buf) {
-            ESP_LOGE(TAG, "Failed to allocate speaker PCM ring buffer");
-            return ESP_ERR_NO_MEM;
-        }
-    }
-
     i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(CORE2_I2S_PORT, I2S_ROLE_MASTER);
     chan_cfg.auto_clear = true;
     chan_cfg.dma_desc_num = CORE2_I2S_DMA_DESC_NUM;
@@ -151,6 +135,7 @@ esp_err_t core2_audio_init(void)
     esp_err_t err = i2s_new_channel(&chan_cfg, &s_tx_chan, NULL);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "i2s_new_channel failed: %s", esp_err_to_name(err));
+        s_tx_chan = NULL;
         return err;
     }
 
@@ -186,6 +171,31 @@ esp_err_t core2_audio_init(void)
         s_tx_chan = NULL;
         return err;
     }
+    return ESP_OK;
+}
+
+esp_err_t core2_audio_init(void)
+{
+    if (s_tx_chan) return ESP_OK;
+
+    if (!s_ring_mutex) {
+        s_ring_mutex = xSemaphoreCreateMutexStatic(&s_ring_mutex_storage);
+    }
+    if (!s_ring_buf) {
+        s_ring_buf = heap_caps_malloc(CORE2_I2S_RING_BYTES, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        s_ring_capacity = CORE2_I2S_RING_BYTES;
+        if (!s_ring_buf) {
+            s_ring_buf = heap_caps_malloc(CORE2_I2S_RING_FALLBACK_BYTES, MALLOC_CAP_8BIT);
+            s_ring_capacity = s_ring_buf ? CORE2_I2S_RING_FALLBACK_BYTES : 0;
+        }
+        if (!s_ring_buf) {
+            ESP_LOGE(TAG, "Failed to allocate speaker PCM ring buffer");
+            return ESP_ERR_NO_MEM;
+        }
+    }
+
+    esp_err_t err = core2_audio_create_channel();
+    if (err != ESP_OK) return err;
     core2_audio_start_writer_task();
 
     ESP_LOGI(TAG, "I2S TX ready on BCK=%d WS=%d DOUT=%d @ %lu Hz",
@@ -194,6 +204,39 @@ esp_err_t core2_audio_init(void)
              CORE2_I2S_DOUT_GPIO,
              (unsigned long)s_sample_rate_hz);
     ESP_LOGI(TAG, "speaker pcm ring=%lu bytes", (unsigned long)s_ring_capacity);
+    return ESP_OK;
+}
+
+/* Free ONLY the I2S TX DMA channel (so the PDM mic's DMA fits), keeping the
+ * ring buffer and writer task alive. Use around mic streaming during a SIP
+ * call — unlike pause(), this does not destroy the writer task, which can't be
+ * recreated mid-call once internal SRAM is fragmented. */
+void core2_audio_release_dma(void)
+{
+    if (!s_tx_chan) return;
+    if (xSemaphoreTake(s_ring_mutex, portMAX_DELAY) == pdTRUE) {
+        core2_audio_reset_ring_locked();
+        xSemaphoreGive(s_ring_mutex);
+    }
+    i2s_channel_disable(s_tx_chan);
+    i2s_del_channel(s_tx_chan);
+    s_tx_chan = NULL;   /* writer task keeps running, skips writes while NULL */
+    ESP_LOGI(TAG, "audio DMA released (writer task kept)");
+}
+
+/* Re-create the I2S TX DMA channel after core2_audio_release_dma(). The writer
+ * task is already running; no task is created. */
+esp_err_t core2_audio_acquire_dma(void)
+{
+    if (s_tx_chan) return ESP_OK;
+    if (!s_ring_buf) return core2_audio_init();   /* never set up — full init */
+    esp_err_t err = core2_audio_create_channel();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "acquire_dma failed: %s", esp_err_to_name(err));
+        return err;
+    }
+    core2_audio_start_writer_task();   /* no-op if the task is still alive */
+    ESP_LOGI(TAG, "audio DMA re-acquired @ %lu Hz", (unsigned long)s_sample_rate_hz);
     return ESP_OK;
 }
 

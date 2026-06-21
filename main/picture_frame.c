@@ -8204,16 +8204,15 @@ static void pf_sip_media_pump(void)
 
     if (s_sip_talk != s_media_hw_talking) {
         if (s_sip_talk) {
-            /* Fully free the speaker (DMA + writer task) so the mic's PDM DMA
-             * descriptors have internal RAM — pause() alone keeps them and the
-             * mic init then fails with ESP_ERR_NO_MEM. */
-            core2_audio_deinit();
+            /* Release only the speaker DMA (keep the writer task — it can't be
+             * recreated mid-call) so the mic's PDM DMA descriptors have RAM. */
+            core2_audio_release_dma();
             if (core2_mic_init() == ESP_OK) core2_mic_stream_start();
         } else {
             core2_mic_stream_stop();
             core2_mic_deinit();
-            esp_err_t aerr = core2_audio_init();   /* re-creates at 8 kHz */
-            if (aerr != ESP_OK) ESP_LOGE(TAG, "speaker re-init failed: %s",
+            esp_err_t aerr = core2_audio_acquire_dma();   /* back at 8 kHz */
+            if (aerr != ESP_OK) ESP_LOGE(TAG, "speaker re-acquire failed: %s",
                                          esp_err_to_name(aerr));
             sip_rtp_reset_idle();   /* don't count talk time as RX idle */
         }
@@ -8278,7 +8277,7 @@ static void pf_sip_media_stop(void)
     if (s_media_hw_talking) {
         core2_mic_stream_stop();
         core2_mic_deinit();
-        core2_audio_resume();
+        core2_audio_acquire_dma();
         s_media_hw_talking = false;
     }
     sip_rtp_stop();
