@@ -21,6 +21,7 @@ static const char *TAG = "sip";
 #define SIP_DEFAULT_PORT   5061
 #define SIP_REG_EXPIRES    300
 #define SIP_KEEPALIVE_SEC  30
+#define SIP_OUT_CALL_TIMEOUT_SEC 45   /* give up on an unanswered outgoing call */
 #define SIP_RX_BUF         4096
 #define SIP_MSG_BUF        3072
 
@@ -94,6 +95,7 @@ static struct {
     uint16_t remote_port;
     uint16_t local_port;
     sip_codec_t codec;
+    TickType_t out_start;   /* tick when an outgoing call began (for timeout) */
 } s_call;
 
 /* ── Command queue (cross-task requests) ──────────────────────────────────── */
@@ -929,9 +931,13 @@ static void do_call(const char *target)
     strlcpy(s_call.peer_user, target, sizeof(s_call.peer_user));
     s_call.local_port = sip_rtp_pick_local_port();
     s_call.state = CALL_OUT_TRYING;
+    s_call.out_start = xTaskGetTickCount();
     s_auth_have = false;
     ESP_LOGI(TAG, "calling %s", s_call.ruri);
     send_invite(false);
+    /* Show the outgoing-call UI immediately so the user can cancel even if the
+     * callee never sends a provisional (180) response. */
+    emit(SIP_EVT_RINGING);
 }
 
 static void do_hangup(void)
@@ -1022,6 +1028,16 @@ static void sip_task(void *arg)
         if ((int32_t)(now - s_next_keepalive) >= 0) {
             tls_send("\r\n\r\n", 4);   /* CRLF keep-alive */
             s_next_keepalive = now + pdMS_TO_TICKS(SIP_KEEPALIVE_SEC * 1000);
+        }
+
+        /* Outgoing-call signaling timeout: if a call never connects (no final
+         * 200, e.g. callee unreachable or the device dialed its own AOR), give
+         * up so the call state resets and later calls aren't blocked by a stuck
+         * "already in a call". CANCEL + reset + ENDED via do_hangup(). */
+        if ((s_call.state == CALL_OUT_TRYING || s_call.state == CALL_OUT_RINGING) &&
+            (int32_t)(now - s_call.out_start) >= (int32_t)pdMS_TO_TICKS(SIP_OUT_CALL_TIMEOUT_SEC * 1000)) {
+            ESP_LOGW(TAG, "outgoing call timed out with no answer — cancelling");
+            do_hangup();
         }
     }
     disconnect_tls();
