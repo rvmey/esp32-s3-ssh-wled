@@ -60,13 +60,14 @@ esp_err_t core2_mic_init(void)
 {
     if (s_rx_chan) return ESP_OK;
 
-    /* Use 4 DMA descriptors to reduce internal DMA-capable SRAM usage.
-     * When BT is active the controller also needs internal SRAM; 8 descriptors
-     * leave too little for both, causing i2s_alloc_dma_desc to fail and
-     * ESP_ERROR_CHECK to crash the device. */
+    /* Keep the DMA footprint small (3 x 256 = 1.5 KB vs the old 4 x 512 = 4 KB)
+     * so the mic can be initialized even when BT + WiFi + TLS + the always-on
+     * SIP tasks have fragmented internal DMA-capable SRAM. Recording/streaming
+     * read in a loop, so a shallower DMA is fine. Larger configs caused
+     * i2s_alloc_dma_desc to fail ("Voice: no audio captured"). */
     i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(MIC_I2S_PORT, I2S_ROLE_MASTER);
-    chan_cfg.dma_desc_num  = 4;
-    chan_cfg.dma_frame_num = DMA_BUF_SAMPLES;
+    chan_cfg.dma_desc_num  = 3;
+    chan_cfg.dma_frame_num = 256;
     esp_err_t err = i2s_new_channel(&chan_cfg, NULL, &s_rx_chan);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "i2s_new_channel failed: %s", esp_err_to_name(err));
