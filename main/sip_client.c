@@ -330,9 +330,12 @@ static int build_sdp(char *out, size_t outsz, uint16_t rtp_port, int single_pt)
             (unsigned long)sid, (unsigned long)sid, s_local_ip, s_local_ip,
             rtp_port, single_pt, single_pt, single_pt == 8 ? "PCMA" : "PCMU");
     }
+    /* Offer PCMU only: A-law (PCMA) audio is noticeably worse on this device,
+     * and PCMU (µ-law) is mandatory G.711 that every server supports. Offering
+     * only PCMU forces the cleaner codec for outgoing calls. */
     return snprintf(out, outsz,
         "v=0\r\no=- %lu %lu IN IP4 %s\r\ns=core2\r\nc=IN IP4 %s\r\nt=0 0\r\n"
-        "m=audio %u RTP/AVP 0 8\r\na=rtpmap:0 PCMU/8000\r\na=rtpmap:8 PCMA/8000\r\n"
+        "m=audio %u RTP/AVP 0\r\na=rtpmap:0 PCMU/8000\r\n"
         "a=ptime:20\r\na=sendrecv\r\n",
         (unsigned long)sid, (unsigned long)sid, s_local_ip, s_local_ip, rtp_port);
 }
