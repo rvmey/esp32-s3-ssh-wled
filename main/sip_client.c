@@ -739,7 +739,12 @@ static void handle_response(const char *msg)
             parse_challenge(msg);
             send_register(true);
         } else if (code == 200) {
-            if (!s_registered) ESP_LOGI(TAG, "registered");
+            if (!s_registered) {
+                ESP_LOGI(TAG, "registered (internal heap free=%u largest=%u, DMA free=%u)",
+                         (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+                         (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
+                         (unsigned)heap_caps_get_free_size(MALLOC_CAP_DMA));
+            }
             s_registered = true;
             s_next_register = xTaskGetTickCount() +
                               pdMS_TO_TICKS((SIP_REG_EXPIRES / 2) * 1000);
@@ -1079,10 +1084,12 @@ esp_err_t sip_client_start(const sip_config_t *cfg, sip_event_cb_t cb, void *ctx
     s_rxlen = 0;
 
     s_running = true;
-    /* 8 KB stack: enough for the TLS handshake and SIP-message building (large
-     * snprintf scratch buffers live off-stack). The task stack must come from
-     * internal SRAM, which is fragmented after BT+WiFi+TLS, so keep it modest. */
-    BaseType_t ok = xTaskCreate(sip_task, "sip", 8192, NULL, 5, &s_task);
+    /* 7 KB stack: enough for the esp-tls handshake (SIP-message snprintf scratch
+     * lives off-stack in PSRAM). The stack must come from internal SRAM, which
+     * is critically scarce after BT+WiFi+TLS — an 8 KB stack left too little
+     * DMA-capable SRAM for the SD-card SPI driver, crashing the 'save' command.
+     * esp-tls handshakes fit well within 7 KB (cf. the websocket TLS task). */
+    BaseType_t ok = xTaskCreate(sip_task, "sip", 7168, NULL, 5, &s_task);
     if (ok != pdPASS) {
         ESP_LOGE(TAG, "sip task create failed — internal free=%u largest=%u",
                  (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),

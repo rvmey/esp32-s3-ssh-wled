@@ -32,7 +32,7 @@
 #include "camera_server.h"
 #endif
 
-#define APP_VERSION "2.0.547"
+#define APP_VERSION "2.0.548"
 const char g_firmware_version[] = APP_VERSION;
 
 static const char *TAG = "main";
