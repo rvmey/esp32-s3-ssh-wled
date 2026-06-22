@@ -56,23 +56,27 @@ static int16_t ulaw2linear(uint8_t u)
     return (int16_t)((u & 0x80) ? (G711_BIAS - t) : (t - G711_BIAS));
 }
 
-static uint8_t linear2alaw(int16_t pcm)
+static uint8_t linear2alaw(int16_t pcm16)
 {
-    int16_t sign = (~pcm >> 8) & 0x80;   /* a-law: sign bit set for positive */
-    if (!sign) pcm = -pcm;
-    if (pcm > G711_CLIP) pcm = G711_CLIP;
-    uint8_t out;
-    if (pcm >= 256) {
-        int exponent = 7;
-        for (int mask = 0x4000; (pcm & mask) == 0 && exponent > 0; mask >>= 1) {
-            exponent--;
-        }
-        int mantissa = (pcm >> (exponent + 3)) & 0x0F;
-        out = (uint8_t)((exponent << 4) | mantissa);
+    /* Canonical G.711 A-law encoder. A-law operates on a 13-bit magnitude, so
+     * the 16-bit sample must be shifted down by 3 first (the missing >>3 was
+     * making loud audio encode to garbage). */
+    static const int seg_end[8] = {0x1F, 0x3F, 0x7F, 0xFF, 0x1FF, 0x3FF, 0x7FF, 0xFFF};
+    int pcm = pcm16 >> 3;
+    int mask;
+    if (pcm >= 0) {
+        mask = 0xD5;            /* sign bit = 1 for positive */
     } else {
-        out = (uint8_t)(pcm >> 4);
+        mask = 0x55;
+        pcm = -pcm - 1;
     }
-    return out ^ (sign ^ 0x55);
+    int seg = 8;
+    for (int i = 0; i < 8; i++) { if (pcm <= seg_end[i]) { seg = i; break; } }
+    if (seg >= 8) return (uint8_t)(0x7F ^ mask);   /* out of range → max */
+    uint8_t aval = (uint8_t)(seg << 4);
+    if (seg < 2) aval |= (pcm >> 1) & 0x0F;
+    else         aval |= (pcm >> seg) & 0x0F;
+    return aval ^ (uint8_t)mask;
 }
 
 static int16_t alaw2linear(uint8_t a)
@@ -155,7 +159,9 @@ size_t sip_rtp_recv(int16_t *pcm, size_t max_samples)
     const uint8_t *payload = s_rxpkt + hdr;
     int plen = n - hdr;
     if (plen > (int)max_samples) plen = (int)max_samples;
-    if (s_codec == SIP_CODEC_PCMA) {
+    /* Decode by the packet's actual payload type, not the negotiated codec, so
+     * a codec mismatch can't turn into static. */
+    if (pt == SIP_CODEC_PCMA) {
         for (int i = 0; i < plen; i++) pcm[i] = alaw2linear(payload[i]);
     } else {
         for (int i = 0; i < plen; i++) pcm[i] = ulaw2linear(payload[i]);
