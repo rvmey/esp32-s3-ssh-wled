@@ -60,14 +60,14 @@ esp_err_t core2_mic_init(void)
 {
     if (s_rx_chan) return ESP_OK;
 
-    /* Halve the DMA footprint (2 x 512 = 2 KB vs the old 4 x 512 = 4 KB) so the
-     * mic can be initialized even when BT + WiFi + TLS + the always-on SIP tasks
-     * have fragmented internal DMA-capable SRAM (the 4 KB alloc intermittently
-     * failed → "Voice: no audio captured"). Keep dma_frame_num at 512: lowering
-     * it (e.g. 256) made PDM reads time out with zero samples. 2 descriptors is
-     * the minimum the I2S driver allows. */
+    /* 4 DMA descriptors x 512 frames. NOTE: reducing this (tried 3x256 and
+     * 2x512) regressed SIP call audio to garbled, so it is kept at the original
+     * size. The intermittent "Voice: no audio captured" (mic DMA alloc failing
+     * when the speaker still holds its DMA) is instead addressed by freeing the
+     * speaker's DMA before mic init. dma_frame_num must stay 512: lower values
+     * make PDM reads time out with zero samples. */
     i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(MIC_I2S_PORT, I2S_ROLE_MASTER);
-    chan_cfg.dma_desc_num  = 2;
+    chan_cfg.dma_desc_num  = 4;
     chan_cfg.dma_frame_num = DMA_BUF_SAMPLES;
     esp_err_t err = i2s_new_channel(&chan_cfg, NULL, &s_rx_chan);
     if (err != ESP_OK) {
