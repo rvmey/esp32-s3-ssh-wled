@@ -5497,10 +5497,13 @@ static void do_core2_voice_query(void)
      * single exit point at the bottom after all network work is done. */
     if (s_mp3.active && !s_mp3.paused) s_mp3.paused = true;
     if (s_mp3_task) vTaskSuspend(s_mp3_task);
-    /* Free the speaker's DMA (not just pause it) so the mic's 4 KB DMA can be
-     * allocated — otherwise the held speaker DMA starves it and recording fails
-     * with "no audio captured". The writer task + ring stay alive. */
-    core2_audio_release_dma();
+    /* Fully deinit the speaker: frees its DMA so the mic's 4 KB DMA fits AND
+     * stops the I2S writer task so it doesn't compete with the WiFi/TLS stack
+     * on CPU0 during the STT/Chat uploads (that contention resets the TLS
+     * connection — "STT failed"). release_dma() alone keeps the writer task and
+     * reintroduced that failure; pause() alone keeps the DMA and starves the
+     * mic. deinit() does both; core2_audio_init() restores it at the end. */
+    core2_audio_deinit();
 
     uint8_t *wav    = NULL;
     size_t   wav_len = 0;
@@ -5602,7 +5605,7 @@ voice_done:
      * during the query has already set the correct audio state. */
     if (wav) { free(wav); }
     if (resp) { free(resp); }
-    core2_audio_acquire_dma();   /* re-create the speaker DMA freed above */
+    core2_audio_init();   /* re-create the speaker (DMA + writer task) deinit'd above */
     if (s_mp3_task) vTaskResume(s_mp3_task);
     s_pending_vibrate = true;
 }
