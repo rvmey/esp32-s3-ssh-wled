@@ -8192,16 +8192,17 @@ static void pf_sip_restore_screen(void);
  * speaker paused. Listening: RTP RX → speaker + comfort silence TX (keeps the
  * symmetric-RTP / comedia pinhole open). Handles the GPIO 0 mic/speaker handoff.
  * Pacing comes from the blocking mic read (talk) or RTP recv timeout (listen). */
-/* Prime ~80 ms of silence into the speaker ring when entering listen mode, so
+/* Prime ~160 ms of silence into the speaker ring when entering listen mode, so
  * the playback buffer runs with depth instead of near-empty. This is the RX
  * jitter buffer: it absorbs network timing variance (especially via linphone's
  * relay) and brief audio-writer starvation, preventing DMA underruns/jitter.
- * Costs ~80 ms of added latency, acceptable for a speakerphone. */
+ * Costs ~160 ms of added latency, acceptable for a speakerphone. Reduce the
+ * loop count to trade smoothing for lower latency. */
 static void pf_sip_prime_speaker(void)
 {
     int16_t z[SIP_RTP_FRAME_SAMPLES];
     memset(z, 0, sizeof(z));
-    for (int i = 0; i < 4; i++) {   /* 4 x 20 ms = 80 ms */
+    for (int i = 0; i < 8; i++) {   /* 8 x 20 ms = 160 ms */
         core2_audio_write_pcm(z, SIP_RTP_FRAME_SAMPLES, 1, 100);
     }
 }
