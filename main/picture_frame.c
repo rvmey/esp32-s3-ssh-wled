@@ -8258,7 +8258,10 @@ static void pf_sip_media_pump(void)
     } else {
         /* Listen: drain one RTP packet (blocks up to ~20 ms) → speaker. */
         size_t got = sip_rtp_recv(s_media_rxpcm, SIP_RTP_FRAME_SAMPLES * 2);
-        if (got > 0) core2_audio_write_pcm(s_media_rxpcm, got, 1, 100);
+        if (got > 0) {
+            int call_vol = s_mp3.muted ? 0 : s_mp3.volume;
+            core2_audio_write_pcm(s_media_rxpcm, got, 1, call_vol);
+        }
         memset(s_media_pcm8, 0, SIP_RTP_FRAME_SAMPLES * sizeof(int16_t));
         sip_rtp_send_frame(s_media_pcm8, SIP_RTP_FRAME_SAMPLES);
 
