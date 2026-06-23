@@ -8192,6 +8192,20 @@ static void pf_sip_restore_screen(void);
  * speaker paused. Listening: RTP RX → speaker + comfort silence TX (keeps the
  * symmetric-RTP / comedia pinhole open). Handles the GPIO 0 mic/speaker handoff.
  * Pacing comes from the blocking mic read (talk) or RTP recv timeout (listen). */
+/* Prime ~80 ms of silence into the speaker ring when entering listen mode, so
+ * the playback buffer runs with depth instead of near-empty. This is the RX
+ * jitter buffer: it absorbs network timing variance (especially via linphone's
+ * relay) and brief audio-writer starvation, preventing DMA underruns/jitter.
+ * Costs ~80 ms of added latency, acceptable for a speakerphone. */
+static void pf_sip_prime_speaker(void)
+{
+    int16_t z[SIP_RTP_FRAME_SAMPLES];
+    memset(z, 0, sizeof(z));
+    for (int i = 0; i < 4; i++) {   /* 4 x 20 ms = 80 ms */
+        core2_audio_write_pcm(z, SIP_RTP_FRAME_SAMPLES, 1, 100);
+    }
+}
+
 static void pf_sip_media_pump(void)
 {
     if (!s_media_mic16) {
@@ -8220,6 +8234,7 @@ static void pf_sip_media_pump(void)
             esp_err_t aerr = core2_audio_acquire_dma();   /* back at 8 kHz */
             if (aerr != ESP_OK) ESP_LOGE(TAG, "speaker re-acquire failed: %s",
                                          esp_err_to_name(aerr));
+            pf_sip_prime_speaker();   /* rebuild the RX jitter buffer */
             sip_rtp_reset_idle();   /* don't count talk time as RX idle */
         }
         s_media_hw_talking = s_sip_talk;
@@ -8277,6 +8292,7 @@ static void pf_sip_media_start(const sip_event_info_t *ev)
 
     sip_rtp_start(ev->local_rtp_port, ev->remote_ip, ev->remote_rtp_port,
                   ev->codec);
+    pf_sip_prime_speaker();   /* initial RX jitter buffer */
     ESP_LOGI(TAG, "SIP media up: %s:%u codec=%d local_rtp=%u",
              ev->remote_ip, ev->remote_rtp_port, ev->codec, ev->local_rtp_port);
 }
