@@ -8235,6 +8235,7 @@ static void pf_sip_media_pump(void)
             esp_err_t aerr = core2_audio_acquire_dma();   /* back at 8 kHz */
             if (aerr != ESP_OK) ESP_LOGE(TAG, "speaker re-acquire failed: %s",
                                          esp_err_to_name(aerr));
+            sip_rtp_flush();          /* drop RTP that queued during talk */
             pf_sip_prime_speaker();   /* rebuild the RX jitter buffer */
             sip_rtp_reset_idle();   /* don't count talk time as RX idle */
         }

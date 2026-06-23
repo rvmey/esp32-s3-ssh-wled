@@ -275,6 +275,19 @@ void sip_rtp_send_frame(const int16_t *pcm, size_t samples)
     }
 }
 
+void sip_rtp_flush(void)
+{
+    if (!s_running || s_sock < 0) return;
+    uint8_t tmp[64];
+    int guard = 0;
+    /* MSG_DONTWAIT: drain every queued datagram, then stop on EWOULDBLOCK.
+     * recvfrom consumes one whole UDP datagram per call even if truncated. */
+    while (recvfrom(s_sock, tmp, sizeof(tmp), MSG_DONTWAIT, NULL, NULL) > 0) {
+        if (++guard > 1000) break;
+    }
+    s_last_rx_tick = xTaskGetTickCount();
+}
+
 uint32_t sip_rtp_idle_ms(void)
 {
     if (!s_running) return 0;
