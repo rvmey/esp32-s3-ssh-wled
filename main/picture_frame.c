@@ -8207,6 +8207,57 @@ static void pf_sip_prime_speaker(void)
     }
 }
 
+/* Post any queued command/result and run/save ("Command ran") frames over the
+ * existing Socket.IO session. Factored out of the main loop so it can also run
+ * during a SIP call, where the loop body is otherwise skipped (the call branch
+ * does `continue`) and acks would sit queued until hangup. */
+static void pf_flush_pending_run_save(void)
+{
+    if (s_pending_has_result) {
+        char result_json[640];
+        snprintf(result_json, sizeof(result_json),
+                 "{\"computer_id\":\"%s\",\"command_id\":\"%s\",\"result\":\"%s\"}",
+                 s_computer_id, s_pending_run_id, s_pending_result);
+        esp_err_t result_err = socketio_send_vpost("/api/command/result",
+                                                   s_hw_token, result_json);
+        ESP_LOGI(TAG, "command/result vpost → %s", esp_err_to_name(result_err));
+        s_pending_has_result = false;
+    }
+
+    if (s_pending_run &&
+        (s_pending_run_retry_after == 0 ||
+         xTaskGetTickCount() >= s_pending_run_retry_after)) {
+        char data_json[320];
+        snprintf(data_json, sizeof(data_json),
+                 "{\"status\":\"Command ran\",\"computer\":\"%s\",\"command\":\"%s\"}",
+                 s_computer_id, s_pending_run_id);
+        esp_err_t post_err = socketio_send_vpost("/api/run/save", s_hw_token, data_json);
+        ESP_LOGI(TAG, "run/save vpost → %s", esp_err_to_name(post_err));
+
+        if (post_err == ESP_OK) {
+            s_pending_run = false;
+            s_pending_run_tries = 0;
+            s_pending_run_retry_after = 0;
+        } else {
+            s_pending_run_tries++;
+            if (s_pending_run_tries >= 5) {
+                ESP_LOGE(TAG, "run/save dropped after %d attempts (id=%s)",
+                         s_pending_run_tries, s_pending_run_id);
+                s_pending_run = false;
+                s_pending_run_tries = 0;
+                s_pending_run_retry_after = 0;
+            } else {
+                TickType_t backoff = pdMS_TO_TICKS(300U * (uint32_t)s_pending_run_tries);
+                s_pending_run_retry_after = xTaskGetTickCount() + backoff;
+                ESP_LOGW(TAG, "run/save retry %d scheduled in %lu ms (id=%s)",
+                         s_pending_run_tries,
+                         (unsigned long)(backoff * portTICK_PERIOD_MS),
+                         s_pending_run_id);
+            }
+        }
+    }
+}
+
 static void pf_sip_media_pump(void)
 {
     if (!s_media_mic16) {
@@ -10743,6 +10794,10 @@ void picture_frame_run(void)
              * alive so the WS connection survives the call. */
             if (s_sipui == SIPUI_INCALL) {
                 pf_sip_media_pump();
+                /* The general loop body is skipped during a call, so flush any
+                 * queued command/result and run/save here — otherwise acks (e.g.
+                 * "Command ran" for a volume change) sit queued until hangup. */
+                pf_flush_pending_run_save();
                 if ((xTaskGetTickCount() - last_ping_tick) >= pdMS_TO_TICKS(20000)) {
                     socketio_send_eio_ping();
                     last_ping_tick = xTaskGetTickCount();
@@ -10908,54 +10963,11 @@ void picture_frame_run(void)
                                 s_pending_dir_run_id);
             }
 
-            /* Post command/result — dedicated result payload for commands that
-             * return data (e.g. "battery").  Sent before run/save so the server
-             * has the result ready when the MCP tool reply is triggered. */
-            if (s_pending_has_result) {
-                char result_json[640];
-                snprintf(result_json, sizeof(result_json),
-                         "{\"computer_id\":\"%s\",\"command_id\":\"%s\",\"result\":\"%s\"}",
-                         s_computer_id, s_pending_run_id, s_pending_result);
-                esp_err_t result_err = socketio_send_vpost("/api/command/result",
-                                                           s_hw_token, result_json);
-                ESP_LOGI(TAG, "command/result vpost → %s", esp_err_to_name(result_err));
-                s_pending_has_result = false;
-            }
-
-            /* Post run/save from the main task — over existing Socket.IO session
-             * so we avoid a second TLS handshake under low-memory conditions. */
-            if (s_pending_run &&
-                (s_pending_run_retry_after == 0 ||
-                 xTaskGetTickCount() >= s_pending_run_retry_after)) {
-                char data_json[320];
-                snprintf(data_json, sizeof(data_json),
-                         "{\"status\":\"Command ran\",\"computer\":\"%s\",\"command\":\"%s\"}",
-                         s_computer_id, s_pending_run_id);
-                esp_err_t post_err = socketio_send_vpost("/api/run/save", s_hw_token, data_json);
-                ESP_LOGI(TAG, "run/save vpost → %s", esp_err_to_name(post_err));
-
-                if (post_err == ESP_OK) {
-                    s_pending_run = false;
-                    s_pending_run_tries = 0;
-                    s_pending_run_retry_after = 0;
-                } else {
-                    s_pending_run_tries++;
-                    if (s_pending_run_tries >= 5) {
-                        ESP_LOGE(TAG, "run/save dropped after %d attempts (id=%s)",
-                                 s_pending_run_tries, s_pending_run_id);
-                        s_pending_run = false;
-                        s_pending_run_tries = 0;
-                        s_pending_run_retry_after = 0;
-                    } else {
-                        TickType_t backoff = pdMS_TO_TICKS(300U * (uint32_t)s_pending_run_tries);
-                        s_pending_run_retry_after = xTaskGetTickCount() + backoff;
-                        ESP_LOGW(TAG, "run/save retry %d scheduled in %lu ms (id=%s)",
-                                 s_pending_run_tries,
-                                 (unsigned long)(backoff * portTICK_PERIOD_MS),
-                                 s_pending_run_id);
-                    }
-                }
-            }
+            /* Post command/result and run/save ("Command ran") over the existing
+             * Socket.IO session so we avoid a second TLS handshake under
+             * low-memory conditions. Result is sent before run/save so the server
+             * has it ready when the MCP tool reply is triggered. */
+            pf_flush_pending_run_save();
 
             if (s_pending_save) {
                 s_pending_save = false;
