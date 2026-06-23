@@ -342,6 +342,52 @@ static int build_sdp(char *out, size_t outsz, uint16_t rtp_port, int single_pt)
         (unsigned long)sid, (unsigned long)sid, s_local_ip, s_local_ip, rtp_port);
 }
 
+/* True for RFC1918 / link-local / loopback IPv4 — addresses unreachable across
+ * networks (e.g. a caller's LAN host candidate over a different WiFi). */
+static bool is_private_ipv4(const char *ip)
+{
+    int a = 0, b = 0;
+    if (sscanf(ip, "%d.%d", &a, &b) != 2) return false;
+    if (a == 10 || a == 127 || a == 0) return true;
+    if (a == 192 && b == 168) return true;
+    if (a == 169 && b == 254) return true;
+    if (a == 172 && b >= 16 && b <= 31) return true;
+    return false;
+}
+
+/* When the offer carries ICE candidates (linphone always does), the m=/c=
+ * address is usually a private host candidate that isn't reachable from another
+ * network. Pick the best reachable RTP (component 1) candidate instead:
+ * relay (linphone's TURN, always reachable) > server-reflexive (public). */
+static bool sdp_pick_ice_candidate(const char *body, char *ip, size_t ipsz,
+                                   uint16_t *port)
+{
+    const char *p = body;
+    int best_rank = 0;   /* 2 = relay, 1 = srflx */
+    while ((p = strstr(p, "a=candidate:")) != NULL) {
+        p += 12;
+        char foundation[40], transport[8], addr[40], type[12];
+        int component = 0, prt = 0;
+        unsigned long prio = 0;
+        int n = sscanf(p, "%39s %d %7s %lu %39s %d typ %11s",
+                       foundation, &component, transport, &prio, addr, &prt, type);
+        if (n == 7 && component == 1) {
+            int rank = 0;
+            if (strncmp(type, "relay", 5) == 0)      rank = 2;
+            else if (strncmp(type, "srflx", 5) == 0) rank = 1;
+            if (rank > best_rank) {
+                best_rank = rank;
+                strlcpy(ip, addr, ipsz);
+                *port = (uint16_t)prt;
+            }
+        }
+        const char *nl = strchr(p, '\n');
+        if (!nl) break;
+        p = nl + 1;
+    }
+    return best_rank > 0;
+}
+
 /* Parse peer SDP: fill remote ip/port and choose a codec (prefer PCMU). */
 static bool parse_sdp(const char *body, char *ip, size_t ipsz,
                       uint16_t *port, sip_codec_t *codec)
@@ -382,6 +428,24 @@ static bool parse_sdp(const char *body, char *ip, size_t ipsz,
             }
         }
         if (!has0 && has8) *codec = SIP_CODEC_PCMA;
+    }
+
+    /* If the media address is private (unreachable across networks), switch to
+     * the offer's relay/srflx ICE candidate so media actually flows — this is
+     * what makes incoming linphone calls work off-LAN. */
+    if (is_private_ipv4(ip)) {
+        char cand_ip[40];
+        uint16_t cand_port = 0;
+        if (sdp_pick_ice_candidate(body, cand_ip, sizeof(cand_ip), &cand_port) &&
+            cand_port != 0) {
+            ESP_LOGI(TAG, "SDP media %s:%u is private — using ICE candidate %s:%u",
+                     ip, *port, cand_ip, cand_port);
+            strlcpy(ip, cand_ip, ipsz);
+            *port = cand_port;
+        } else {
+            ESP_LOGW(TAG, "SDP media %s:%u is private and no usable ICE candidate",
+                     ip, *port);
+        }
     }
     return true;
 }
