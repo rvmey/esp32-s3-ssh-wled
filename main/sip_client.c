@@ -22,8 +22,11 @@ static const char *TAG = "sip";
 #define SIP_REG_EXPIRES    300
 #define SIP_KEEPALIVE_SEC  30
 #define SIP_OUT_CALL_TIMEOUT_SEC 45   /* give up on an unanswered outgoing call */
-#define SIP_RX_BUF         4096
-#define SIP_MSG_BUF        3072
+/* Buffers live in PSRAM, so generous sizes are cheap. ICE INVITEs from linphone
+ * are large (many IPv4+IPv6 candidates); keep them big enough not to truncate
+ * the candidate list before the IPv4 relay/srflx entries. */
+#define SIP_RX_BUF         8192
+#define SIP_MSG_BUF        6144
 
 /* ── Configuration / connection state ─────────────────────────────────────── */
 
@@ -371,7 +374,10 @@ static bool sdp_pick_ice_candidate(const char *body, char *ip, size_t ipsz,
         unsigned long prio = 0;
         int n = sscanf(p, "%39s %d %7s %lu %39s %d typ %11s",
                        foundation, &component, transport, &prio, addr, &prt, type);
-        if (n == 7 && component == 1) {
+        /* Only IPv4 RTP (component 1) candidates — our RTP socket is AF_INET,
+         * so an IPv6 candidate (which linphone also offers) is unusable. */
+        if (n == 7 && component == 1 &&
+            strchr(addr, '.') != NULL && strchr(addr, ':') == NULL) {
             int rank = 0;
             if (strncmp(type, "relay", 5) == 0)      rank = 2;
             else if (strncmp(type, "srflx", 5) == 0) rank = 1;
