@@ -60,14 +60,14 @@ esp_err_t core2_mic_init(void)
 {
     if (s_rx_chan) return ESP_OK;
 
-    /* 4 DMA descriptors x 512 frames. NOTE: reducing this (tried 3x256 and
-     * 2x512) regressed SIP call audio to garbled, so it is kept at the original
-     * size. The intermittent "Voice: no audio captured" (mic DMA alloc failing
-     * when the speaker still holds its DMA) is instead addressed by freeing the
-     * speaker's DMA before mic init. dma_frame_num must stay 512: lower values
-     * make PDM reads time out with zero samples. */
+    /* 3 DMA descriptors x 512 frames = 3 KB. At 4x512 (4 KB) the mic init failed
+     * with ESP_ERR_NO_MEM mid-SIP-call (fragmented DMA RAM), so TALK produced no
+     * audio. 3x512 allocates more reliably while staying deep enough to avoid TX
+     * garble. dma_frame_num MUST stay 512 — lower values make PDM reads time out
+     * with zero samples. (Earlier "2x512 garbled audio" was the pre-jitter-buffer
+     * RX problem, now fixed by the speaker-side jitter buffer.) */
     i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(MIC_I2S_PORT, I2S_ROLE_MASTER);
-    chan_cfg.dma_desc_num  = 4;
+    chan_cfg.dma_desc_num  = 3;
     chan_cfg.dma_frame_num = DMA_BUF_SAMPLES;
     esp_err_t err = i2s_new_channel(&chan_cfg, NULL, &s_rx_chan);
     if (err != ESP_OK) {
