@@ -716,8 +716,11 @@ static int            s_file_list_count = 0;
  * from /sdcard/sip_addresses.txt, one per line, and stored in the same
  * top-to-bottom order they were drawn, one per line below the "Call:" header. */
 #define PF_SIP_LIST_MAX 16
+#define PF_SIP_ADDR_LEN 64
 static volatile bool s_sip_list_display_active = false;
-static char          s_sip_list_addrs[PF_SIP_LIST_MAX][64];
+/* Lazily allocated in PSRAM the first time the picker is shown, so the
+ * feature costs no permanent internal RAM (which the SD/SPI DMA path needs). */
+static char        (*s_sip_list_addrs)[PF_SIP_ADDR_LEN] = NULL;
 static int           s_sip_list_count = 0;
 /* Set by the touch task on tap; consumed by the main task's loop, since
  * sip_call() needs more stack than touch_poll_task's 3KB. -1 = none pending. */
@@ -4712,6 +4715,18 @@ static bool pf_show_sip_call_picker(void)
     if (!mount_sd_card_if_needed()) {
         screen_draw_text("No SD card");
         return false;
+    }
+    if (!s_sip_list_addrs) {
+        s_sip_list_addrs = heap_caps_malloc(
+            sizeof(char[PF_SIP_LIST_MAX][PF_SIP_ADDR_LEN]),
+            MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (!s_sip_list_addrs)
+            s_sip_list_addrs = malloc(sizeof(char[PF_SIP_LIST_MAX][PF_SIP_ADDR_LEN]));
+        if (!s_sip_list_addrs) {
+            ESP_LOGE(TAG, "call: no memory for SIP address list");
+            screen_draw_text("Out of memory");
+            return false;
+        }
     }
     FILE *f = fopen(MP3_ROOT_PATH "/sip_addresses.txt", "r");
     if (!f) {
