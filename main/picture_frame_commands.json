@@ -338,7 +338,7 @@
   "command": "call",
   "voice": "call",
   "allowParams": "true",
-  "mcpToolDescription": "Place a SIP phone call from the user's Core2 device. The parameter is an extension or full SIP URI. Example: '1001' or 'sip:1001@pbx.example.com'",
+  "mcpToolDescription": "Place a SIP phone call from the user's Core2 device. The parameter is an extension or full SIP URI. Example: '1001' or 'sip:1001@pbx.example.com'. With no parameter, the device shows an on-screen menu of the addresses in sip_addresses.txt on the SD card to pick from.",
   "icon": "📞"
  },
  {

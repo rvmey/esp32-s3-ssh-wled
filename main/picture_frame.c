@@ -711,6 +711,18 @@ static pf_file_type_t s_file_list_types[PF_FILE_LIST_MAX];
 static int            s_file_list_subidx[PF_FILE_LIST_MAX];
 static int            s_file_list_count = 0;
 
+/* Set while the SIP-address picker (from the "call" command with no
+ * parameter) is on screen; tapping an address dials it. Addresses are read
+ * from /sdcard/sip_addresses.txt, one per line, and stored in the same
+ * top-to-bottom order they were drawn, one per line below the "Call:" header. */
+#define PF_SIP_LIST_MAX 16
+static volatile bool s_sip_list_display_active = false;
+static char          s_sip_list_addrs[PF_SIP_LIST_MAX][64];
+static int           s_sip_list_count = 0;
+/* Set by the touch task on tap; consumed by the main task's loop, since
+ * sip_call() needs more stack than touch_poll_task's 3KB. -1 = none pending. */
+static volatile int  s_pending_sip_tap_idx = -1;
+
 /* Font scale saved when entering the folder/file list display, like the
  * menu's own saved scale; -1 means not currently saved. */
 static int            s_list_saved_font_scale = -1;
@@ -4327,7 +4339,7 @@ typedef enum {
     PF_MENU_MUTE, PF_MENU_SHUFFLE, PF_MENU_REPEAT_TRACK, PF_MENU_REPEAT_PLAYLIST,
     PF_MENU_VISUALIZER, PF_MENU_VIZ_NEXT, PF_MENU_VIZ_PREV,
     PF_MENU_LEDCOLOR, PF_MENU_SLEEP_TIMER, PF_MENU_SLEEP_ON_POWER, PF_MENU_AI_SPEECH,
-    PF_MENU_CLOCK, PF_MENU_CAMERA,
+    PF_MENU_CLOCK, PF_MENU_CAMERA, PF_MENU_CALL,
     PF_MENU_ITEM_COUNT
 } pf_menu_item_id_t;
 
@@ -4437,6 +4449,7 @@ static void pf_menu_item_label(int idx, char *out, size_t out_sz)
                 snprintf(out, out_sz, "Camera: No IP");
             }
             break;
+        case PF_MENU_CALL:          snprintf(out, out_sz, "Call"); break;
         default:
             snprintf(out, out_sz, "?");
             break;
@@ -4528,6 +4541,12 @@ static bool pf_menu_execute_item(int idx)
             } else {
                 pf_menu_dispatch("camera", ""); /* resume with last IP */
             }
+            return true;
+        case PF_MENU_CALL:
+            /* Draws its own SIP-address picker; keep it on screen after the
+             * menu closes, like the other result-screen actions. */
+            pf_menu_dispatch("call", "");
+            s_menu_skip_close_redraw = true;
             return true;
         default: return true;
     }
@@ -4682,6 +4701,69 @@ static bool pf_menu_handle_swipe(screen_gesture_t gesture)
     return true;
 }
 
+/* Read /sdcard/sip_addresses.txt and draw a tappable list of SIP addresses,
+ * one per line. Blank lines and lines beginning with '#' are skipped. Each
+ * stored line is dialled verbatim (an extension like "1001" or a full SIP
+ * URI). Shown at font scale 2 like the folder/file lists; a tap dials the
+ * picked address via the main loop. Returns true if a list was drawn. */
+static bool mount_sd_card_if_needed(void);
+static bool pf_show_sip_call_picker(void)
+{
+    if (!mount_sd_card_if_needed()) {
+        screen_draw_text("No SD card");
+        return false;
+    }
+    FILE *f = fopen(MP3_ROOT_PATH "/sip_addresses.txt", "r");
+    if (!f) {
+        ESP_LOGW(TAG, "call: no sip_addresses.txt on SD card");
+        screen_draw_text("No\nsip_addresses.txt");
+        return false;
+    }
+
+    s_sip_list_count = 0;
+    int  max_cols = pf_list_max_cols();
+    char msg[256];
+    int  msg_len = snprintf(msg, sizeof(msg), "Call:");
+    char line[96];
+    while (s_sip_list_count < PF_SIP_LIST_MAX && fgets(line, sizeof(line), f)) {
+        /* trim trailing CR/LF/whitespace */
+        size_t n = strlen(line);
+        while (n > 0 && (line[n - 1] == '\n' || line[n - 1] == '\r' ||
+                         line[n - 1] == ' '  || line[n - 1] == '\t'))
+            line[--n] = '\0';
+        /* trim leading whitespace */
+        char *p = line;
+        while (*p == ' ' || *p == '\t') p++;
+        if (*p == '\0' || *p == '#') continue;
+
+        strncpy(s_sip_list_addrs[s_sip_list_count], p,
+                sizeof(s_sip_list_addrs[0]) - 1);
+        s_sip_list_addrs[s_sip_list_count][sizeof(s_sip_list_addrs[0]) - 1] = '\0';
+
+        int disp_len = (int)strlen(p);
+        if (disp_len > max_cols) disp_len = max_cols;
+        if (msg_len + 1 + disp_len < (int)sizeof(msg) - 1) {
+            msg[msg_len++] = '\n';
+            memcpy(msg + msg_len, p, (size_t)disp_len);
+            msg_len += disp_len;
+            msg[msg_len] = '\0';
+        }
+        s_sip_list_count++;
+    }
+    fclose(f);
+
+    if (s_sip_list_count == 0) {
+        screen_draw_text("No SIP\naddresses");
+        return false;
+    }
+
+    pf_list_enter_scale2();
+    screen_draw_text(msg);
+    s_sip_list_display_active = true;
+    ESP_LOGI(TAG, "call: showing %d SIP address(es)", s_sip_list_count);
+    return true;
+}
+
 #endif /* CONFIG_CORE2_HW */
 
 #if CONFIG_CORE2_HW
@@ -4753,6 +4835,24 @@ static bool pf_touch_handler(int x, int y, screen_gesture_t gesture)
         int idx = row - 1;
         if (idx >= 0 && idx < s_folder_list_count) {
             s_pending_folder_tap_idx = idx;
+        }
+        return true;
+    }
+    if (s_sip_list_display_active && gesture == SCREEN_GESTURE_TAP) {
+        /* The SIP-address list was drawn at font scale 2 (32px rows), with the
+         * "Call:" header on row 0 and addresses on the rows below. Tapping an
+         * address dials it (deferred to the main task — sip_call needs stack). */
+        bool landscape = true;
+        screen_get_landscape(&landscape);
+        int lcd_h_val = landscape ? 240 : 320;
+        int ch = 32;
+        int total_lines = 1 + s_sip_list_count;
+        int start_y = (lcd_h_val - total_lines * ch) / 2;
+        if (start_y < 0) start_y = 0;
+        int row = (y - start_y) / ch;
+        int idx = row - 1;
+        if (idx >= 0 && idx < s_sip_list_count) {
+            s_pending_sip_tap_idx = idx;
         }
         return true;
     }
@@ -7402,7 +7502,7 @@ static const pf_cmd_t s_pf_cmds[] = {
 #if CONFIG_CORE2_HW
     /* SIP speakerphone (Core2 only). Configure the SIP account on the device's
      * web config page before use. Half-duplex: tap the screen to talk/listen. */
-    { "call",      "call",      "true",  "Place a SIP phone call. Parameter: an extension or full SIP URI. Example: '1001' or 'sip:1001@pbx.example.com'", "\xF0\x9F\x93\x9E" /* 📞 */, NULL },
+    { "call",      "call",      "true",  "Place a SIP phone call. Parameter: an extension or full SIP URI. Example: '1001' or 'sip:1001@pbx.example.com'. With no parameter, shows an on-screen menu of the addresses in sip_addresses.txt on the SD card to pick from.", "\xF0\x9F\x93\x9E" /* 📞 */, NULL },
     { "answer",    "answer",    "false", "Answer the incoming SIP call.", "\xF0\x9F\x93\x9E" /* 📞 */, NULL },
     { "hangup",    "hangup",    "false", "Hang up the current SIP call, or reject an incoming one.", "\xF0\x9F\x93\xB4" /* 📴 */, NULL },
     { "sipstatus", "sipstatus", "false", "Report SIP registration and call state.", "\xF0\x9F\x93\xB6" /* 📶 */, "{{result}}" },
@@ -7990,6 +8090,7 @@ static bool pf_clock_blocked(void)
            s_camera_live ||
            s_pending_text_draw || s_menu_active || s_battery_display_active ||
            s_folder_list_display_active || s_file_list_display_active ||
+           s_sip_list_display_active ||
            s_menu_result_active || (s_mp3.active && s_mp3_ui_override_allowed);
 }
 
@@ -8678,13 +8779,15 @@ static void pf_event_handler(const char *event_name,
      * pre-display font scale. The folders -> files drill-down is the one
      * exception where we stay in list mode and keep the saved scale. */
     if ((s_battery_display_active ||
-         s_folder_list_display_active || s_file_list_display_active) &&
+         s_folder_list_display_active || s_file_list_display_active ||
+         s_sip_list_display_active) &&
         strcmp(s_trigger, "files") != 0) {
         pf_list_restore_scale();
     }
     s_battery_display_active = false;
     s_folder_list_display_active = false;
     s_file_list_display_active = false;
+    s_sip_list_display_active = false;
     s_menu_result_active = false;
     s_save_result_saved_font_scale = -1;
     /* Any command other than "clock" or "save" takes the screen back.
@@ -9306,7 +9409,9 @@ static void pf_event_handler(const char *event_name,
         if (s_params[0]) {
             sip_call(s_params);
         } else {
-            ESP_LOGW(TAG, "call: missing extension/URI");
+            /* No extension/URI given: show a tappable picker of the
+             * addresses listed in /sdcard/sip_addresses.txt. */
+            pf_show_sip_call_picker();
         }
     } else if (strcmp(s_trigger, "hangup") == 0) {
         sip_hangup();
@@ -9948,6 +10053,7 @@ static bool download_and_show_jpeg(const char *url)
         if (s_menu_active || s_battery_display_active
                           || s_folder_list_display_active
                           || s_file_list_display_active
+                          || s_sip_list_display_active
                           || s_menu_result_active) {
             free(jpeg_buf);
             return false;
@@ -10947,6 +11053,15 @@ void picture_frame_run(void)
                     pf_menu_dispatch("files", s_folder_list_names[idx]);
                 }
             }
+            if (s_pending_sip_tap_idx >= 0) {
+                int idx = s_pending_sip_tap_idx;
+                s_pending_sip_tap_idx = -1;
+                if (idx < s_sip_list_count) {
+                    s_sip_list_display_active = false;
+                    pf_list_restore_scale();
+                    pf_menu_dispatch("call", s_sip_list_addrs[idx]);
+                }
+            }
 #endif
             if (s_pending_bg_color) {
                 s_pending_bg_color = false;
@@ -11029,6 +11144,7 @@ void picture_frame_run(void)
                 && !s_battery_display_active
                 && !s_folder_list_display_active
                 && !s_file_list_display_active
+                && !s_sip_list_display_active
                 && !s_menu_result_active
 #endif
                ) {
@@ -11067,6 +11183,7 @@ void picture_frame_run(void)
                            && !s_battery_display_active
                            && !s_folder_list_display_active
                            && !s_file_list_display_active
+                           && !s_sip_list_display_active
                            && !s_menu_result_active
 #endif
                           ) {
