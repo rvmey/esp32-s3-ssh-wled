@@ -8175,6 +8175,11 @@ static QueueHandle_t       s_sip_evt_q = NULL;
 static sip_event_info_t    s_sip_active;
 static volatile bool       s_sip_talk = false;     /* false = listen, true = talk */
 static char                s_sip_caller[96];
+/* Background colour in effect before the SIP UI took over the screen. The SIP
+ * screens use their own status colours (blue/amber/green); these let us restore
+ * the user's original background once the call ends. */
+static bool                s_sip_bg_saved = false;
+static uint8_t             s_sip_save_bg_r, s_sip_save_bg_g, s_sip_save_bg_b;
 /* Media pump runs in the main loop (no dedicated task — internal SRAM is too
  * tight after BT+WiFi+TLS+SIP to allocate another stack). Scratch in PSRAM. */
 static int16_t            *s_media_mic16;
@@ -8373,6 +8378,13 @@ static void pf_sip_media_stop(void)
 static void pf_sip_draw(void)
 {
     char m[160];
+    /* Remember the user's background colour the first time a SIP screen comes
+     * up, before we override it with the call-status colour. Restored when the
+     * call ends (see pf_sip_restore_screen). */
+    if (!s_sip_bg_saved) {
+        screen_get_color(&s_sip_save_bg_r, &s_sip_save_bg_g, &s_sip_save_bg_b);
+        s_sip_bg_saved = true;
+    }
     screen_set_font_scale(2);
     screen_set_text_color(255, 255, 255);
     switch (s_sipui) {
@@ -8403,6 +8415,12 @@ static void pf_sip_draw(void)
 /* Restore the normal display after a call ends. */
 static void pf_sip_restore_screen(void)
 {
+    /* Put back the background colour the SIP screens overrode, so text/menu/
+     * music return to the user's original colour rather than the call colour. */
+    if (s_sip_bg_saved) {
+        screen_set_color(s_sip_save_bg_r, s_sip_save_bg_g, s_sip_save_bg_b);
+        s_sip_bg_saved = false;
+    }
     if (s_mp3.active && s_mp3_ui_override_allowed) {
         mp3_request_ui_refresh();
     } else {
