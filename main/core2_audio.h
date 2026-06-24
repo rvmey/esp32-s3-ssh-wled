@@ -19,6 +19,7 @@ esp_err_t core2_audio_acquire_dma(void);
  * music (false). Re-creates the channel in place if one is open. */
 void core2_audio_set_small_dma(bool small);
 void core2_audio_set_sample_rate(uint32_t sample_rate_hz);
+uint32_t core2_audio_get_sample_rate(void);
 
 /* sample_count is the total number of samples in input buffer, not frames. */
 void core2_audio_write_pcm(const int16_t *samples,

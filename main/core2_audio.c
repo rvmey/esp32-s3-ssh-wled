@@ -347,6 +347,11 @@ void core2_audio_set_sample_rate(uint32_t sample_rate_hz)
     s_sample_rate_hz = sample_rate_hz;
 }
 
+uint32_t core2_audio_get_sample_rate(void)
+{
+    return s_sample_rate_hz;
+}
+
 static int16_t scale_sample(int16_t s, int volume_percent)
 {
     if (volume_percent >= 100) return s;

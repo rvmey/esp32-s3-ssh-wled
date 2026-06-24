@@ -8191,6 +8191,7 @@ static bool pf_sip_ui_active(void) { return s_sipui != SIPUI_NONE; }
 
 static void pf_sip_media_stop(void);
 static void pf_sip_restore_screen(void);
+static void pf_sip_resume_music(void);
 
 /* One 20 ms media iteration, called repeatedly from the main loop while a call
  * is up (no dedicated task — see s_media_* note above). Talking: mic → RTP TX,
@@ -8333,15 +8334,115 @@ static void pf_sip_media_pump(void)
         sip_hangup();              /* best-effort BYE to the server */
         pf_sip_media_stop();
         s_sipui = SIPUI_NONE;
+        pf_sip_resume_music();     /* resume music if the call interrupted it */
         pf_sip_restore_screen();
     }
+}
+
+/* True if music was actually playing when a call arrived, so it can be resumed
+ * after the call ends. Set by pf_sip_pause_music(), cleared by resume. */
+static bool s_sip_music_was_playing = false;
+
+/* Pause MP3/BT music for an incoming or outgoing call. Idempotent and safe to
+ * call on the ring event (before answer) and again at media start. Mirrors the
+ * "pause" command's BT teardown so A2DP streaming actually stops. */
+static void pf_sip_pause_music(void)
+{
+    if (!(s_mp3.active && !s_mp3.paused)) return;
+    s_sip_music_was_playing = true;
+    s_mp3.paused = true;
+    s_mp3_resume_on_bt_reconnect = false;
+#if CONFIG_BT_ENABLED && CONFIG_BT_A2DP_ENABLE
+    s_bt_media_prime_pending = false;
+    s_bt_media_prime_deadline = 0;
+    s_bt_media_prime_target_bytes = BT_PCM_START_PRIME_BYTES;
+    bt_media_stop_if_needed();
+#endif
+    mp3_request_ui_refresh();
+}
+
+/* Resume music after a call ends, but only if pf_sip_pause_music() had paused it
+ * (don't override a user who had deliberately stopped playback). Mirrors the
+ * "play" command's BT re-prime. */
+static void pf_sip_resume_music(void)
+{
+    if (s_sip_music_was_playing && s_mp3.active) {
+        s_mp3.paused = false;
+        s_mp3_resume_on_bt_reconnect = false;
+        s_mp3.last_tick = xTaskGetTickCount();
+#if CONFIG_BT_ENABLED && CONFIG_BT_A2DP_ENABLE
+        if (s_bt.connected) {
+            size_t bt_fill = bt_pcm_fill_bytes();
+            if (bt_fill >= BT_PCM_RESUME_PRIME_BYTES) {
+                bt_media_start_if_needed();
+                s_bt_media_prime_pending = false;
+                s_bt_media_prime_deadline = 0;
+                s_bt_media_prime_target_bytes = BT_PCM_START_PRIME_BYTES;
+            } else {
+                s_bt_media_prime_pending = true;
+                s_bt_media_prime_target_bytes = BT_PCM_RESUME_PRIME_BYTES;
+                s_bt_media_prime_deadline = xTaskGetTickCount() +
+                                            pdMS_TO_TICKS(BT_PCM_RESUME_PRIME_TIMEOUT_MS);
+            }
+        } else {
+            s_bt_media_prime_pending = false;
+            s_bt_media_prime_deadline = 0;
+            s_bt_media_prime_target_bytes = BT_PCM_START_PRIME_BYTES;
+        }
+#endif
+        mp3_request_ui_refresh();
+    }
+    s_sip_music_was_playing = false;
+}
+
+/* Play one short ring tone on the local Core2 speaker for an incoming call.
+ * Music is already paused, so the speaker is free; the mp3 task is still running
+ * (paused) and won't write, so we can borrow the existing I2S channel. Uses the
+ * current sample rate so the pitch is correct whether or not music was local. */
+static void pf_sip_ring_beep(void)
+{
+    if (core2_audio_init() != ESP_OK) return;
+    uint32_t sr = core2_audio_get_sample_rate();
+    if (sr == 0) sr = 44100;
+
+    size_t n = sr / 4;                 /* 250 ms */
+    int16_t *tone = heap_caps_malloc(n * sizeof(int16_t),
+                                     MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!tone) tone = malloc(n * sizeof(int16_t));
+    if (!tone) return;
+
+    size_t ramp = sr / 50;             /* 20 ms fade in/out to avoid clicks */
+    for (size_t i = 0; i < n; i++) {
+        float env = 1.0f;
+        if (i < ramp)            env = (float)i / (float)ramp;
+        else if (i > n - ramp)   env = (float)(n - i) / (float)ramp;
+        float s = sinf(2.0f * (float)M_PI * 880.0f * (float)i / (float)sr);
+        tone[i] = (int16_t)(env * 9000.0f * s);
+    }
+
+    int vol = s_mp3.muted ? 0 : (s_mp3.volume > 0 ? s_mp3.volume : 60);
+    core2_audio_write_pcm(tone, n, 1, vol);
+    free(tone);
+}
+
+/* When to emit the next ring tone (0 = beep immediately). Reset on each new
+ * incoming call so the ring starts right away and repeats while it rings. */
+static TickType_t s_sip_ring_next_tick = 0;
+
+static void pf_sip_ring_tick(void)
+{
+    if (s_sipui != SIPUI_INCOMING) return;
+    TickType_t now = xTaskGetTickCount();
+    if (s_sip_ring_next_tick != 0 && now < s_sip_ring_next_tick) return;
+    pf_sip_ring_beep();
+    s_sip_ring_next_tick = now + pdMS_TO_TICKS(3000);   /* ring cadence */
 }
 
 static void pf_sip_media_start(const sip_event_info_t *ev)
 {
     s_sip_active = *ev;
     /* Suspend the MP3 player so it doesn't fight for the speaker / CPU. */
-    if (s_mp3.active && !s_mp3.paused) s_mp3.paused = true;
+    pf_sip_pause_music();
     if (s_mp3_task) vTaskSuspend(s_mp3_task);
 
     core2_audio_init();
@@ -8474,12 +8575,15 @@ static void pf_sip_process_events(void)
                 if (s_sipui == SIPUI_NONE) {
                     strlcpy(s_sip_caller, ev.caller, sizeof(s_sip_caller));
                     s_sipui = SIPUI_INCOMING;
+                    pf_sip_pause_music();         /* hush music while it rings */
+                    s_sip_ring_next_tick = 0;     /* beep immediately, then repeat */
                     pf_sip_draw();
                 }
                 break;
             case SIP_EVT_RINGING:
                 strlcpy(s_sip_caller, ev.caller, sizeof(s_sip_caller));
                 s_sipui = SIPUI_OUTGOING;
+                pf_sip_pause_music();             /* hush music while we call out */
                 pf_sip_draw();
                 break;
             case SIP_EVT_ANSWERED:
@@ -8491,6 +8595,8 @@ static void pf_sip_process_events(void)
             case SIP_EVT_ENDED:
                 if (s_sipui == SIPUI_INCALL) pf_sip_media_stop();
                 s_sipui = SIPUI_NONE;
+                s_sip_ring_next_tick = 0;
+                pf_sip_resume_music();    /* resume music if the call interrupted it */
                 pf_sip_restore_screen();
                 break;
         }
@@ -10808,6 +10914,7 @@ void picture_frame_run(void)
         while (true) {
 #if CONFIG_CORE2_HW
             pf_sip_process_events();
+            pf_sip_ring_tick();   /* audible ring while an incoming call alerts */
             /* During a SIP call, dedicate this loop to the 20 ms media pump
              * (its blocking RTP recv / mic read provides the pacing). Skip the
              * 200 ms-paced general loop body, but keep the Socket.IO keepalive
