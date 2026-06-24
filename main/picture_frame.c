@@ -8288,7 +8288,6 @@ static void pf_sip_media_pump(void)
                                          esp_err_to_name(aerr));
             sip_rtp_flush();          /* drop RTP that queued during talk */
             pf_sip_prime_speaker();   /* rebuild the RX jitter buffer */
-            sip_rtp_reset_idle();   /* don't count talk time as RX idle */
         }
         s_media_hw_talking = s_sip_talk;
     }
@@ -8306,6 +8305,9 @@ static void pf_sip_media_pump(void)
         } else {
             vTaskDelay(pdMS_TO_TICKS(20));
         }
+        /* Drain (and discard) far-end RTP so the idle timer stays live — lets the
+         * remote-hangup check below fire even while talking. */
+        sip_rtp_drain_rx();
     } else {
         /* Listen: drain one RTP packet (blocks up to ~20 ms) → speaker. */
         size_t got = sip_rtp_recv(s_media_rxpcm, SIP_RTP_FRAME_SAMPLES * 2);
@@ -8315,18 +8317,18 @@ static void pf_sip_media_pump(void)
         }
         memset(s_media_pcm8, 0, SIP_RTP_FRAME_SAMPLES * sizeof(int16_t));
         sip_rtp_send_frame(s_media_pcm8, SIP_RTP_FRAME_SAMPLES);
+    }
 
-        /* Hangup detection: linphone doesn't route the in-dialog BYE back over
-         * our TLS connection, so detect a remote hangup by loss of inbound RTP
-         * (the relay stops sending when the far end goes away). Only checked
-         * while listening — talk periods legitimately have no RX. */
-        if (sip_rtp_idle_ms() > 10000) {
-            ESP_LOGI(TAG, "SIP: no inbound RTP for 10 s — ending call");
-            sip_hangup();              /* best-effort BYE to the server */
-            pf_sip_media_stop();
-            s_sipui = SIPUI_NONE;
-            pf_sip_restore_screen();
-        }
+    /* Hangup detection: linphone doesn't route the in-dialog BYE back over our
+     * TLS connection, so detect a remote hangup by loss of inbound RTP (the
+     * relay stops forwarding when the far end goes away). Checked in both talk
+     * and listen — talk mode keeps the timer live via sip_rtp_drain_rx(). */
+    if (sip_rtp_idle_ms() > 10000) {
+        ESP_LOGI(TAG, "SIP: no inbound RTP for 10 s — ending call");
+        sip_hangup();              /* best-effort BYE to the server */
+        pf_sip_media_stop();
+        s_sipui = SIPUI_NONE;
+        pf_sip_restore_screen();
     }
 }
 

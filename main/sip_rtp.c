@@ -288,6 +288,26 @@ void sip_rtp_flush(void)
     s_last_rx_tick = xTaskGetTickCount();
 }
 
+void sip_rtp_drain_rx(void)
+{
+    if (!s_running || s_sock < 0 || !s_rxpkt) return;
+    /* Non-blocking: consume every queued datagram. Update the idle timer only
+     * for valid G.711 audio RTP (same filter as sip_rtp_recv) so far-end audio
+     * keeps the call alive during talk, while STUN/RTCP noise is ignored. The
+     * decoded audio is discarded — talk mode plays the mic, not the far end. */
+    int guard = 0;
+    for (;;) {
+        int n = recvfrom(s_sock, s_rxpkt, RTP_RXPKT_MAX, MSG_DONTWAIT, NULL, NULL);
+        if (n < 12) break;                       /* EWOULDBLOCK / too short */
+        if (++guard > 1000) break;
+        if ((s_rxpkt[0] & 0xC0) != 0x80) continue;   /* not RTP v2 */
+        uint8_t pt = s_rxpkt[1] & 0x7F;
+        if (pt != SIP_CODEC_PCMU && pt != SIP_CODEC_PCMA) continue;
+        s_rx_pkts++;
+        s_last_rx_tick = xTaskGetTickCount();
+    }
+}
+
 uint32_t sip_rtp_idle_ms(void)
 {
     if (!s_running) return 0;

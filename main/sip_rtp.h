@@ -44,6 +44,11 @@ void sip_rtp_send_frame(const int16_t *pcm, size_t samples);
  * resuming RX after a talk period so a backlog doesn't flood the speaker. */
 void sip_rtp_flush(void);
 
+/* Drain all queued inbound RTP without decoding (non-blocking), but keep the
+ * idle timer alive for valid G.711 audio packets. Call during talk mode so a
+ * remote hangup (loss of far-end RTP) is detected even while transmitting. */
+void sip_rtp_drain_rx(void);
+
 /* Milliseconds since the last RTP packet was received (for hangup detection
  * when the peer/server doesn't deliver a BYE). Returns 0 when not running. */
 uint32_t sip_rtp_idle_ms(void);
