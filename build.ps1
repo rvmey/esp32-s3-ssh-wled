@@ -137,8 +137,33 @@ function Write-Step([string]$msg) {
     Write-Host "`n>>> $msg" -ForegroundColor Cyan
 }
 
+function Resolve-IdfPython([PSCustomObject]$variant) {
+    # idf.py aborts when the active `python` (first on PATH) differs from the one
+    # the project was configured with:
+    #   "<python> is currently active ... while the project was configured with <other>".
+    # ESP-IDF picks its venv from whichever python is first on PATH when
+    # export.ps1 runs, so an unrelated venv sitting ahead (e.g. a py3.11 venv)
+    # makes export select the wrong venv -- which is already locked in by the time
+    # we get here. The build dir records the python it was actually configured with
+    # in CMakeCache.txt; put that python's directory first on PATH so the active
+    # python matches and idf.py proceeds. (No-op for a fresh build with no cache.)
+    $cache = Join-Path (Join-Path $PSScriptRoot $variant.BuildDir) 'CMakeCache.txt'
+    if (-not (Test-Path $cache)) { return }
+    $line = Select-String -Path $cache -Pattern '^PYTHON:[^=]*=(.+)$' | Select-Object -First 1
+    if (-not $line) { return }
+    $configuredPy = $line.Matches[0].Groups[1].Value.Trim()
+    if (-not (Test-Path $configuredPy)) { return }
+    $pyDir = Split-Path $configuredPy -Parent
+    if ($env:PATH -notlike "$pyDir;*") {
+        $env:PATH = "$pyDir;$env:PATH"
+        Write-Host "  Using project-configured python: $configuredPy" -ForegroundColor DarkGray
+    }
+}
+
 function Invoke-IdfBuild([PSCustomObject]$variant) {
     Write-Step "Building variant: $($variant.Name)"
+
+    Resolve-IdfPython -variant $variant
 
     # idf.py expects SDKCONFIG_DEFAULTS as a cmake variable.
     # Semicolons inside a quoted string are literal in PowerShell, which is
