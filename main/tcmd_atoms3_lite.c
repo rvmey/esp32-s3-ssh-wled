@@ -43,6 +43,7 @@
 #include "esp_wifi.h"
 #include "esp_event.h"
 #include "esp_netif.h"
+#include "lwip/sockets.h"
 #include "esp_mac.h"
 #include "esp_system.h"
 #include "esp_http_client.h"
@@ -77,6 +78,25 @@ extern const char g_firmware_version[];
 #define NVS_KEY_LED_G    "led_g"
 #define NVS_KEY_LED_B    "led_b"
 
+/* Core2 remote trigger */
+#define NVS_KEY_CORE2_IP   "core2_ip"
+#define NVS_KEY_CORE2_NAME "core2_name"
+#define NVS_KEY_CMD1       "core2_cmd1"
+#define NVS_KEY_PAR1       "core2_par1"
+#define NVS_KEY_CMD2       "core2_cmd2"
+#define NVS_KEY_PAR2       "core2_par2"
+#define NVS_KEY_CMD3       "core2_cmd3"
+#define NVS_KEY_PAR3       "core2_par3"
+#define NVS_KEY_CMD4       "core2_cmd4"
+#define NVS_KEY_PAR4       "core2_par4"
+
+#define CORE2_IP_MAX     48
+#define CORE2_NAME_MAX   64
+#define CMD_NAME_MAX     64
+#define CMD_PARAMS_MAX  128
+
+#define TCMD_DISCOVER_PORT 5380
+
 #define TCMD_BASE_URL    "https://www.triggercmd.com"
 #define COMPUTER_MODEL   "TCMDATOMS3"
 
@@ -99,6 +119,18 @@ static char s_bookmark_url[BOOKMARK_MAX]      = {0};
 static char s_bookmark_url2[BOOKMARK_MAX]     = {0};
 static char s_bookmark_url3[BOOKMARK_MAX]     = {0};
 static char s_bookmark_url4[BOOKMARK_MAX]     = {0};
+
+/* Core2 remote trigger state */
+static char s_core2_ip[CORE2_IP_MAX]       = {0};
+static char s_core2_name[CORE2_NAME_MAX]   = {0};
+static char s_core2_cmd1[CMD_NAME_MAX]     = {0};
+static char s_core2_par1[CMD_PARAMS_MAX]   = {0};
+static char s_core2_cmd2[CMD_NAME_MAX]     = {0};
+static char s_core2_par2[CMD_PARAMS_MAX]   = {0};
+static char s_core2_cmd3[CMD_NAME_MAX]     = {0};
+static char s_core2_par3[CMD_PARAMS_MAX]   = {0};
+static char s_core2_cmd4[CMD_NAME_MAX]     = {0};
+static char s_core2_par4[CMD_PARAMS_MAX]   = {0};
 
 /* Set by Socket.IO callback, consumed by main loop */
 static volatile bool s_pending_color = false;
@@ -572,6 +604,137 @@ static void call_url(const char *url)
     vTaskDelay(pdMS_TO_TICKS(500));
 }
 
+/* ── Core2 UDP discovery + remote trigger ────────────────────────────────── */
+
+static bool discover_core2(void)
+{
+    if (s_core2_ip[0]) return true;
+
+    int sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if (sock < 0) return false;
+
+    int broadcast = 1;
+    setsockopt(sock, SOL_SOCKET, SO_BROADCAST, &broadcast, sizeof(broadcast));
+
+    struct timeval tv = { .tv_sec = 2, .tv_usec = 0 };
+    setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
+    struct sockaddr_in dest = {
+        .sin_family      = AF_INET,
+        .sin_port        = htons(TCMD_DISCOVER_PORT),
+        .sin_addr.s_addr = htonl(INADDR_BROADCAST),
+    };
+
+    const char *msg = "TCMD_DISCOVER";
+    sendto(sock, msg, strlen(msg), 0,
+           (struct sockaddr *)&dest, sizeof(dest));
+
+    char buf[64];
+    struct sockaddr_in src;
+    socklen_t src_len = sizeof(src);
+    int n = recvfrom(sock, buf, sizeof(buf) - 1, 0,
+                     (struct sockaddr *)&src, &src_len);
+    close(sock);
+
+    if (n <= 0) return false;
+    buf[n] = '\0';
+
+    if (strncmp(buf, "TCMD_CORE2 ", 11) != 0) return false;
+
+    strncpy(s_core2_ip, buf + 11, sizeof(s_core2_ip) - 1);
+    s_core2_ip[sizeof(s_core2_ip) - 1] = '\0';
+    ESP_LOGI(TAG, "discovered Core2 at %s", s_core2_ip);
+    return true;
+}
+
+static bool trigger_core2(const char *cmd, const char *params)
+{
+    if (!cmd || !cmd[0]) return false;
+
+    atoms3_led_set(0, 0, 255);
+
+    /* ── Try local HTTP POST ─────────────────────────────────────────── */
+    for (int attempt = 0; attempt < 2; attempt++) {
+        if (!s_core2_ip[0]) {
+            if (!discover_core2()) break;
+        }
+
+        char url[80];
+        snprintf(url, sizeof(url), "http://%s/trigger", s_core2_ip);
+
+        char body[384];
+        snprintf(body, sizeof(body),
+                 "{\"trigger\":\"%s\",\"params\":\"%s\"}",
+                 cmd, params ? params : "");
+
+        esp_http_client_config_t cfg = {
+            .url        = url,
+            .method     = HTTP_METHOD_POST,
+            .timeout_ms = 5000,
+        };
+        esp_http_client_handle_t client = esp_http_client_init(&cfg);
+        if (!client) break;
+
+        esp_http_client_set_header(client, "Content-Type", "application/json");
+        esp_http_client_set_post_field(client, body, strlen(body));
+
+        esp_err_t err = esp_http_client_perform(client);
+        int status = (err == ESP_OK) ? esp_http_client_get_status_code(client) : -1;
+        esp_http_client_cleanup(client);
+
+        if (status >= 200 && status < 300) {
+            ESP_LOGI(TAG, "Core2 local trigger '%s' -> HTTP %d", cmd, status);
+            atoms3_led_set(0, 64, 0);
+            vTaskDelay(pdMS_TO_TICKS(500));
+            return true;
+        }
+
+        ESP_LOGW(TAG, "Core2 local trigger failed (%d), %s",
+                 status, attempt == 0 ? "re-discovering..." : "trying cloud...");
+        s_core2_ip[0] = '\0';
+    }
+
+    /* ── Cloud API fallback ──────────────────────────────────────────── */
+    if (s_core2_name[0] && s_hw_token[0]) {
+        char body[256];
+        snprintf(body, sizeof(body),
+                 "{\"computer\":\"%s\",\"trigger\":\"%s\",\"params\":\"%s\"}",
+                 s_core2_name, cmd, params ? params : "");
+
+        char bearer[HW_TOKEN_MAX + 10];
+        snprintf(bearer, sizeof(bearer), "Bearer %s", s_hw_token);
+
+        esp_http_client_config_t cfg = {
+            .url               = TCMD_BASE_URL "/api/run/triggerSave",
+            .method            = HTTP_METHOD_POST,
+            .timeout_ms        = 10000,
+            .crt_bundle_attach = esp_crt_bundle_attach,
+        };
+        esp_http_client_handle_t client = esp_http_client_init(&cfg);
+        if (client) {
+            esp_http_client_set_header(client, "Content-Type", "application/json");
+            esp_http_client_set_header(client, "Authorization", bearer);
+            esp_http_client_set_post_field(client, body, strlen(body));
+
+            esp_err_t err = esp_http_client_perform(client);
+            int status = (err == ESP_OK) ? esp_http_client_get_status_code(client) : -1;
+            esp_http_client_cleanup(client);
+
+            if (status >= 200 && status < 300) {
+                ESP_LOGI(TAG, "Core2 cloud trigger '%s' -> HTTP %d", cmd, status);
+                atoms3_led_set(0, 64, 0);
+                vTaskDelay(pdMS_TO_TICKS(500));
+                return true;
+            }
+            ESP_LOGE(TAG, "Core2 cloud trigger failed: HTTP %d", status);
+        }
+    }
+
+    atoms3_led_set(64, 0, 0);
+    vTaskDelay(pdMS_TO_TICKS(1000));
+    return false;
+}
+
 /* ── Button polling ──────────────────────────────────────────────────────── */
 
 typedef enum { BTN_NONE, BTN_SINGLE, BTN_DOUBLE, BTN_TRIPLE, BTN_LONG } btn_press_t;
@@ -744,6 +907,68 @@ static esp_err_t cfg_get_handler(httpd_req_t *req)
         "<button type='submit'>Save URL</button>"
         "</form>");
 
+    /* ── Core2 remote trigger section ────────────────────────────────── */
+    httpd_resp_sendstr_chunk(req,
+        "<hr>"
+        "<h2>Core2 Remote Trigger</h2>"
+        "<p>Configure button presses to trigger commands on a Core2 device. "
+        "Local HTTP is tried first; TRIGGERcmd cloud is the fallback. "
+        "Leave a command blank to use the Bookmark URL instead.</p>"
+        "<form method='POST' action='/core2'>"
+        "<label>Core2 IP Address (leave blank for auto-discovery)</label>"
+        "<input name='core2_ip' value='");
+    send_escaped(req, s_core2_ip);
+    httpd_resp_sendstr_chunk(req,
+        "' placeholder='192.168.1.42'>"
+        "<label>Core2 Computer Name (for cloud fallback)</label>"
+        "<input name='core2_name' value='");
+    send_escaped(req, s_core2_name);
+    httpd_resp_sendstr_chunk(req,
+        "' placeholder='My Picture Frame'>"
+        "<hr style='border-color:#1e2130'>"
+        "<label>Single-Click Command</label>"
+        "<input name='cmd1' value='");
+    send_escaped(req, s_core2_cmd1);
+    httpd_resp_sendstr_chunk(req,
+        "' placeholder='speak'>"
+        "<label>Single-Click Params</label>"
+        "<input name='par1' value='");
+    send_escaped(req, s_core2_par1);
+    httpd_resp_sendstr_chunk(req,
+        "' placeholder='Hello world'>"
+        "<label>Double-Click Command</label>"
+        "<input name='cmd2' value='");
+    send_escaped(req, s_core2_cmd2);
+    httpd_resp_sendstr_chunk(req,
+        "' placeholder='color'>"
+        "<label>Double-Click Params</label>"
+        "<input name='par2' value='");
+    send_escaped(req, s_core2_par2);
+    httpd_resp_sendstr_chunk(req,
+        "' placeholder='red'>"
+        "<label>Triple-Click Command</label>"
+        "<input name='cmd3' value='");
+    send_escaped(req, s_core2_cmd3);
+    httpd_resp_sendstr_chunk(req,
+        "' placeholder='play'>"
+        "<label>Triple-Click Params</label>"
+        "<input name='par3' value='");
+    send_escaped(req, s_core2_par3);
+    httpd_resp_sendstr_chunk(req,
+        "'>"
+        "<label>Long-Press Command</label>"
+        "<input name='cmd4' value='");
+    send_escaped(req, s_core2_cmd4);
+    httpd_resp_sendstr_chunk(req,
+        "' placeholder='sleep'>"
+        "<label>Long-Press Params</label>"
+        "<input name='par4' value='");
+    send_escaped(req, s_core2_par4);
+    httpd_resp_sendstr_chunk(req,
+        "'>"
+        "<button type='submit'>Save Core2 Settings</button>"
+        "</form>");
+
     /* ── Secondary WiFi section ───────────────────────────────────────── */
     httpd_resp_sendstr_chunk(req,
         "<hr>"
@@ -894,6 +1119,72 @@ static esp_err_t cfg_reprovision_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
+static esp_err_t cfg_core2_handler(httpd_req_t *req)
+{
+    int len = req->content_len;
+    if (len <= 0 || len >= 2048) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, NULL);
+        return ESP_OK;
+    }
+    char *body = calloc(len + 1, 1);
+    if (!body) { httpd_resp_send_500(req); return ESP_OK; }
+    int got = 0;
+    while (got < len) {
+        int n = httpd_req_recv(req, body + got, len - got);
+        if (n <= 0) { free(body); httpd_resp_send_500(req); return ESP_OK; }
+        got += n;
+    }
+    body[got] = '\0';
+
+    char ip[CORE2_IP_MAX] = {0}, name[CORE2_NAME_MAX] = {0};
+    char cmd1[CMD_NAME_MAX] = {0}, par1[CMD_PARAMS_MAX] = {0};
+    char cmd2[CMD_NAME_MAX] = {0}, par2[CMD_PARAMS_MAX] = {0};
+    char cmd3[CMD_NAME_MAX] = {0}, par3[CMD_PARAMS_MAX] = {0};
+    char cmd4[CMD_NAME_MAX] = {0}, par4[CMD_PARAMS_MAX] = {0};
+
+    form_get_field(body, "core2_ip",   ip,   sizeof(ip));
+    form_get_field(body, "core2_name", name, sizeof(name));
+    form_get_field(body, "cmd1",       cmd1, sizeof(cmd1));
+    form_get_field(body, "par1",       par1, sizeof(par1));
+    form_get_field(body, "cmd2",       cmd2, sizeof(cmd2));
+    form_get_field(body, "par2",       par2, sizeof(par2));
+    form_get_field(body, "cmd3",       cmd3, sizeof(cmd3));
+    form_get_field(body, "par3",       par3, sizeof(par3));
+    form_get_field(body, "cmd4",       cmd4, sizeof(cmd4));
+    form_get_field(body, "par4",       par4, sizeof(par4));
+    free(body);
+
+    strncpy(s_core2_ip,   ip,   sizeof(s_core2_ip) - 1);
+    strncpy(s_core2_name, name, sizeof(s_core2_name) - 1);
+    strncpy(s_core2_cmd1, cmd1, sizeof(s_core2_cmd1) - 1);
+    strncpy(s_core2_par1, par1, sizeof(s_core2_par1) - 1);
+    strncpy(s_core2_cmd2, cmd2, sizeof(s_core2_cmd2) - 1);
+    strncpy(s_core2_par2, par2, sizeof(s_core2_par2) - 1);
+    strncpy(s_core2_cmd3, cmd3, sizeof(s_core2_cmd3) - 1);
+    strncpy(s_core2_par3, par3, sizeof(s_core2_par3) - 1);
+    strncpy(s_core2_cmd4, cmd4, sizeof(s_core2_cmd4) - 1);
+    strncpy(s_core2_par4, par4, sizeof(s_core2_par4) - 1);
+
+    nvs_write_str(NVS_KEY_CORE2_IP,   s_core2_ip);
+    nvs_write_str(NVS_KEY_CORE2_NAME, s_core2_name);
+    nvs_write_str(NVS_KEY_CMD1,       s_core2_cmd1);
+    nvs_write_str(NVS_KEY_PAR1,       s_core2_par1);
+    nvs_write_str(NVS_KEY_CMD2,       s_core2_cmd2);
+    nvs_write_str(NVS_KEY_PAR2,       s_core2_par2);
+    nvs_write_str(NVS_KEY_CMD3,       s_core2_cmd3);
+    nvs_write_str(NVS_KEY_PAR3,       s_core2_par3);
+    nvs_write_str(NVS_KEY_CMD4,       s_core2_cmd4);
+    nvs_write_str(NVS_KEY_PAR4,       s_core2_par4);
+
+    ESP_LOGI(TAG, "Core2 config saved: ip='%s' name='%s' cmd1='%s'",
+             s_core2_ip, s_core2_name, s_core2_cmd1);
+
+    httpd_resp_set_status(req, "303 See Other");
+    httpd_resp_set_hdr(req, "Location", "/");
+    httpd_resp_send(req, NULL, 0);
+    return ESP_OK;
+}
+
 static void start_config_server(void)
 {
     if (s_cfg_server) return;
@@ -903,7 +1194,7 @@ static void start_config_server(void)
     cfg.lru_purge_enable = true;
     cfg.max_open_sockets = 4;
     cfg.stack_size       = 8192;
-    cfg.max_uri_handlers = 8;
+    cfg.max_uri_handlers = 9;
 
     if (httpd_start(&s_cfg_server, &cfg) != ESP_OK) {
         ESP_LOGE(TAG, "httpd_start failed");
@@ -918,6 +1209,7 @@ static void start_config_server(void)
     static const httpd_uri_t u_bkmk4 = { "/bookmark4",   HTTP_POST, cfg_bookmark4_handler,     NULL };
     static const httpd_uri_t u_wifi  = { "/wifi",        HTTP_POST, cfg_wifi_handler,          NULL };
     static const httpd_uri_t u_repr  = { "/reprovision", HTTP_POST, cfg_reprovision_handler,   NULL };
+    static const httpd_uri_t u_core2 = { "/core2",       HTTP_POST, cfg_core2_handler,         NULL };
 
     httpd_register_uri_handler(s_cfg_server, &u_get);
     httpd_register_uri_handler(s_cfg_server, &u_bkmk);
@@ -926,6 +1218,7 @@ static void start_config_server(void)
     httpd_register_uri_handler(s_cfg_server, &u_bkmk4);
     httpd_register_uri_handler(s_cfg_server, &u_wifi);
     httpd_register_uri_handler(s_cfg_server, &u_repr);
+    httpd_register_uri_handler(s_cfg_server, &u_core2);
 
     esp_netif_ip_info_t ip;
     esp_netif_t *netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
@@ -1459,6 +1752,20 @@ void tcmd_atoms3_lite_run(void)
     nvs_read_str(NVS_KEY_BOOKMARK3, s_bookmark_url3, sizeof(s_bookmark_url3));
     nvs_read_str(NVS_KEY_BOOKMARK4, s_bookmark_url4, sizeof(s_bookmark_url4));
 
+    nvs_read_str(NVS_KEY_CORE2_IP,   s_core2_ip,   sizeof(s_core2_ip));
+    nvs_read_str(NVS_KEY_CORE2_NAME, s_core2_name, sizeof(s_core2_name));
+    nvs_read_str(NVS_KEY_CMD1,       s_core2_cmd1, sizeof(s_core2_cmd1));
+    nvs_read_str(NVS_KEY_PAR1,       s_core2_par1, sizeof(s_core2_par1));
+    nvs_read_str(NVS_KEY_CMD2,       s_core2_cmd2, sizeof(s_core2_cmd2));
+    nvs_read_str(NVS_KEY_PAR2,       s_core2_par2, sizeof(s_core2_par2));
+    nvs_read_str(NVS_KEY_CMD3,       s_core2_cmd3, sizeof(s_core2_cmd3));
+    nvs_read_str(NVS_KEY_PAR3,       s_core2_par3, sizeof(s_core2_par3));
+    nvs_read_str(NVS_KEY_CMD4,       s_core2_cmd4, sizeof(s_core2_cmd4));
+    nvs_read_str(NVS_KEY_PAR4,       s_core2_par4, sizeof(s_core2_par4));
+
+    /* Try to discover Core2 on the LAN if no manual IP is configured */
+    if (!s_core2_ip[0]) discover_core2();
+
     /* ── Pair code flow ───────────────────────────────────────────────────── */
     if (!have_token) {
         /* Slow white pulse while waiting for pair */
@@ -1565,10 +1872,19 @@ void tcmd_atoms3_lite_run(void)
 
         /* Button handling */
         btn_press_t btn = poll_button();
-        if      (btn == BTN_SINGLE) call_url(s_bookmark_url);
-        else if (btn == BTN_DOUBLE) call_url(s_bookmark_url3);
-        else if (btn == BTN_TRIPLE) call_url(s_bookmark_url4);
-        else if (btn == BTN_LONG)   call_url(s_bookmark_url2);
+        if (btn == BTN_SINGLE) {
+            if (s_core2_cmd1[0]) trigger_core2(s_core2_cmd1, s_core2_par1);
+            else call_url(s_bookmark_url);
+        } else if (btn == BTN_DOUBLE) {
+            if (s_core2_cmd2[0]) trigger_core2(s_core2_cmd2, s_core2_par2);
+            else call_url(s_bookmark_url3);
+        } else if (btn == BTN_TRIPLE) {
+            if (s_core2_cmd3[0]) trigger_core2(s_core2_cmd3, s_core2_par3);
+            else call_url(s_bookmark_url4);
+        } else if (btn == BTN_LONG) {
+            if (s_core2_cmd4[0]) trigger_core2(s_core2_cmd4, s_core2_par4);
+            else call_url(s_bookmark_url2);
+        }
 
         vTaskDelay(pdMS_TO_TICKS(20));
     }

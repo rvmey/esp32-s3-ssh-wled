@@ -28,6 +28,8 @@
 /* Defined in picture_frame.c — persist SIP settings to the SD card. */
 bool pf_sip_save_to_sd(const char *server, const char *port, const char *user,
                        const char *pass, const char *domain);
+/* Defined in picture_frame.c — queue a trigger+params for main-loop dispatch. */
+void pf_set_pending_http_trigger(const char *trigger, const char *params);
 #define NVS_KEY_CID "computer_id"
 #define NVS_KEY_STT "stt_key"
 
@@ -494,6 +496,66 @@ static esp_err_t post_stt_key_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
+/* ── POST /trigger — accept a command from another device on the LAN ──── */
+
+static bool json_extract_pf(const char *json, const char *key,
+                             char *out, size_t out_sz)
+{
+    out[0] = '\0';
+    char needle[72];
+    snprintf(needle, sizeof(needle), "\"%s\"", key);
+    const char *p = strstr(json, needle);
+    if (!p) return false;
+    p += strlen(needle);
+    while (*p == ' ' || *p == ':') p++;
+    if (*p != '"') return false;
+    p++;
+    size_t i = 0;
+    bool esc = false;
+    while (*p && (esc || *p != '"')) {
+        if (!esc && *p == '\\') { esc = true; p++; continue; }
+        if (i < out_sz - 1) out[i++] = *p;
+        esc = false;
+        p++;
+    }
+    out[i] = '\0';
+    return i > 0;
+}
+
+static esp_err_t post_trigger_handler(httpd_req_t *req)
+{
+    int len = req->content_len;
+    if (len <= 0 || len >= 512) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "body too large");
+        return ESP_OK;
+    }
+    char *body = calloc(len + 1, 1);
+    if (!body) { httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, NULL); return ESP_OK; }
+    int got = 0, rem = len;
+    while (rem > 0) {
+        int n = httpd_req_recv(req, body + got, rem);
+        if (n <= 0) { free(body); httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, NULL); return ESP_OK; }
+        got += n; rem -= n;
+    }
+
+    char trigger[64] = {0}, params[256] = {0};
+    json_extract_pf(body, "trigger", trigger, sizeof(trigger));
+    json_extract_pf(body, "params", params, sizeof(params));
+    free(body);
+
+    if (!trigger[0]) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "missing trigger");
+        return ESP_OK;
+    }
+
+    pf_set_pending_http_trigger(trigger, params);
+    ESP_LOGI(TAG, "/trigger: '%s' params='%.80s'", trigger, params);
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, "{\"status\":\"queued\"}");
+    return ESP_OK;
+}
+
 /* ── Public API ──────────────────────────────────────────────────────────── */
 
 esp_err_t http_pf_config_start(const char *pair_code)
@@ -525,12 +587,14 @@ esp_err_t http_pf_config_start(const char *pair_code)
     static const httpd_uri_t u_wifi = { .uri = "/wifi",        .method = HTTP_POST, .handler = post_wifi_handler,        .user_ctx = NULL };
     static const httpd_uri_t u_stt  = { .uri = "/stt_key",     .method = HTTP_POST, .handler = post_stt_key_handler,     .user_ctx = NULL };
     static const httpd_uri_t u_sip  = { .uri = "/sip",         .method = HTTP_POST, .handler = post_sip_handler,         .user_ctx = NULL };
+    static const httpd_uri_t u_trig = { .uri = "/trigger",    .method = HTTP_POST, .handler = post_trigger_handler,    .user_ctx = NULL };
 
     httpd_register_uri_handler(s_server, &u_get);
     httpd_register_uri_handler(s_server, &u_repr);
     httpd_register_uri_handler(s_server, &u_wifi);
     httpd_register_uri_handler(s_server, &u_stt);
     httpd_register_uri_handler(s_server, &u_sip);
+    httpd_register_uri_handler(s_server, &u_trig);
 
     ESP_LOGI(TAG, "Pairing info server started on port 80 (code=%s)", s_pair_code);
     return ESP_OK;

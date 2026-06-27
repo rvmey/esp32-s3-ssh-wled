@@ -78,6 +78,7 @@
 #include "driver/rtc_io.h"
 #include "esp_wifi.h"
 #include "esp_netif.h"
+#include "lwip/sockets.h"
 #include "esp_event.h"
 #include "esp_http_server.h"
 
@@ -805,6 +806,11 @@ static volatile bool s_pending_bg_color = false;
 static uint8_t       s_pending_bg_r = 0, s_pending_bg_g = 0, s_pending_bg_b = 0;
 static volatile bool s_pending_fg_color = false;
 static uint8_t       s_pending_fg_r = 255, s_pending_fg_g = 255, s_pending_fg_b = 255;
+
+/* HTTP /trigger endpoint — set by http_pf_config.c handler, consumed by main loop */
+static char          s_pending_http_trigger[64]  = {0};
+static char          s_pending_http_params[256]  = {0};
+static volatile bool s_pending_http_cmd          = false;
 
 /* Cached compressed JPEG — kept in PSRAM so orientation changes can redraw
  * without re-downloading.  Freed when a non-jpeg command replaces the display. */
@@ -4368,6 +4374,16 @@ static const char *const PF_MENU_LED_COLORS[] = {
 static int s_menu_fontsize_idx   = PF_MENU_FONTSIZE_COUNT - 1;
 static int s_menu_sleeptimer_idx = PF_MENU_SLEEP_MIN_COUNT - 1;
 static int s_menu_ledcolor_idx   = PF_MENU_LED_COLOR_COUNT - 1;
+
+void pf_set_pending_http_trigger(const char *trigger, const char *params)
+{
+    strncpy(s_pending_http_trigger, trigger, sizeof(s_pending_http_trigger) - 1);
+    s_pending_http_trigger[sizeof(s_pending_http_trigger) - 1] = '\0';
+    strncpy(s_pending_http_params, params ? params : "",
+            sizeof(s_pending_http_params) - 1);
+    s_pending_http_params[sizeof(s_pending_http_params) - 1] = '\0';
+    s_pending_http_cmd = true;
+}
 
 /* Build a {"trigger":"...","params":"..."} payload and run it through the
  * normal command dispatcher, exactly as if it had arrived over the socket --
@@ -10595,6 +10611,66 @@ static void sd_apply_config_if_present(void)
     }
 }
 
+/* ── UDP discovery listener (port 5380) ─────────────────────────────────
+ * Other devices on the LAN broadcast "TCMD_DISCOVER" and we reply with our
+ * hostname + IP so they can send us local /trigger HTTP requests. */
+
+#define TCMD_DISCOVER_PORT 5380
+
+static void udp_discover_task(void *arg)
+{
+    (void)arg;
+    int sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if (sock < 0) {
+        ESP_LOGE(TAG, "udp discover: socket() failed");
+        vTaskDelete(NULL);
+        return;
+    }
+
+    struct sockaddr_in bind_addr = {
+        .sin_family      = AF_INET,
+        .sin_port        = htons(TCMD_DISCOVER_PORT),
+        .sin_addr.s_addr = htonl(INADDR_ANY),
+    };
+    if (bind(sock, (struct sockaddr *)&bind_addr, sizeof(bind_addr)) < 0) {
+        ESP_LOGE(TAG, "udp discover: bind() failed");
+        close(sock);
+        vTaskDelete(NULL);
+        return;
+    }
+
+    ESP_LOGI(TAG, "UDP discover listener on port %d", TCMD_DISCOVER_PORT);
+
+    char buf[32];
+    struct sockaddr_in src;
+    socklen_t src_len;
+
+    while (true) {
+        src_len = sizeof(src);
+        int n = recvfrom(sock, buf, sizeof(buf) - 1, 0,
+                         (struct sockaddr *)&src, &src_len);
+        if (n <= 0) continue;
+        buf[n] = '\0';
+
+        if (strcmp(buf, "TCMD_DISCOVER") != 0) continue;
+
+        esp_netif_ip_info_t ip_info;
+        esp_netif_t *netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+        if (!netif || esp_netif_get_ip_info(netif, &ip_info) != ESP_OK) continue;
+
+        char reply[64];
+        snprintf(reply, sizeof(reply), "TCMD_CORE2 " IPSTR, IP2STR(&ip_info.ip));
+        sendto(sock, reply, strlen(reply), 0,
+               (struct sockaddr *)&src, src_len);
+        ESP_LOGI(TAG, "udp discover: replied '%s'", reply);
+    }
+}
+
+static void start_udp_discover_listener(void)
+{
+    xTaskCreate(udp_discover_task, "udp_disc", 2048, NULL, 3, NULL);
+}
+
 /* ── Main entry point ───────────────────────────────────────────────────── */
 
 void picture_frame_run(void)
@@ -10705,6 +10781,7 @@ void picture_frame_run(void)
      * esp_tls_init() failed with ESP_ERR_NO_MEM. On CYD the config server is
      * deferred until AFTER the first websocket connects (see below). */
     http_pf_config_start(NULL);
+    start_udp_discover_listener();
 #endif
 
     {
@@ -11219,6 +11296,11 @@ void picture_frame_run(void)
                 pf_run_dir_scan(s_pending_dir_is_files,
                                 s_pending_dir_param,
                                 s_pending_dir_run_id);
+            }
+
+            if (s_pending_http_cmd) {
+                s_pending_http_cmd = false;
+                pf_menu_dispatch(s_pending_http_trigger, s_pending_http_params);
             }
 
             /* Post command/result and run/save ("Command ran") over the existing
