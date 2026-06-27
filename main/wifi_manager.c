@@ -24,6 +24,28 @@
 
 static const char *TAG = "wifi";
 
+/* Hostname reported to DHCP/routers (replaces the default "espressif").
+ * Picked per hardware variant at build time. */
+#if CONFIG_HARDWARE_CORE2
+#define WIFI_STA_HOSTNAME    "tcmd-core2"
+#elif CONFIG_HARDWARE_CYD
+#define WIFI_STA_HOSTNAME    "tcmd-cyd"
+#elif CONFIG_HARDWARE_PICTURE_FRAME
+#define WIFI_STA_HOSTNAME    "tcmd-picture-frame"
+#elif CONFIG_HARDWARE_JC3248W535
+#define WIFI_STA_HOSTNAME    "tcmd-screen"
+#elif CONFIG_HARDWARE_DEVKITC
+#define WIFI_STA_HOSTNAME    "tcmd-devkitc"
+#elif CONFIG_HARDWARE_ESP32S3_CAM
+#define WIFI_STA_HOSTNAME    "tcmd-cam"
+#elif CONFIG_HARDWARE_ATOMS3_LITE
+#define WIFI_STA_HOSTNAME    "tcmd-atoms3-lite"
+#elif CONFIG_HARDWARE_TCMD_ATOM_ECHO
+#define WIFI_STA_HOSTNAME    "tcmd-atom-echo"
+#elif CONFIG_HARDWARE_BIKE_TRACKER
+#define WIFI_STA_HOSTNAME    "tcmd-bike-tracker"
+#endif
+
 /* Persistent across connection attempts ------------------------------------ */
 static bool            s_stack_initialized = false;
 static bool            s_wifi_started      = false;
@@ -71,6 +93,14 @@ static void wifi_stack_init(void)
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
     s_netif = esp_netif_create_default_wifi_sta();
+
+#ifdef WIFI_STA_HOSTNAME
+    /* Show a friendly name on the router/network instead of "espressif" */
+    esp_err_t herr = esp_netif_set_hostname(s_netif, WIFI_STA_HOSTNAME);
+    if (herr != ESP_OK) {
+        ESP_LOGW(TAG, "set hostname failed: %s", esp_err_to_name(herr));
+    }
+#endif
 
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&cfg));
