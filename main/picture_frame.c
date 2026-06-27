@@ -1776,6 +1776,7 @@ static void pf_pinch_handler(screen_pinch_phase_t phase, int x1, int y1, int x2,
 static void pf_clock_stop(void);
 static void pf_clock_start(const char *params);
 static void pf_clock_render(void);
+static bool pf_clock_blocked(void);
 #endif
 
 /* Installed only during wifi_connect() -- any tap aborts the retry loop. */
@@ -4811,9 +4812,7 @@ static bool pf_touch_handler(int x, int y, screen_gesture_t gesture)
         if (gesture == SCREEN_GESTURE_TAP) return pf_menu_handle_tap(x, y);
         return pf_menu_handle_swipe(gesture);
     }
-    if (s_clock_mode != PF_CLOCK_OFF && gesture == SCREEN_GESTURE_TAP) {
-        /* Tap toggles between digital and analog views; the next main-loop
-         * tick redraws via pf_clock_render(). */
+    if (s_clock_mode != PF_CLOCK_OFF && !pf_clock_blocked() && gesture == SCREEN_GESTURE_TAP) {
         s_clock_mode = (s_clock_mode == PF_CLOCK_ANALOG) ? PF_CLOCK_DIGITAL : PF_CLOCK_ANALOG;
         s_clock_last_sec = -1;
         nvs_write_u8(NVS_KEY_CLOCK_MODE, (uint8_t)s_clock_mode);
