@@ -638,6 +638,24 @@ static void draw_pair_qr_screen(const char *pair_code)
 #define COMPUTER_ID_MAX_LEN  33   /* 32 payload + NUL  */
 #define COMPUTER_NAME_LEN    32   /* "TCMDCORE2-AABBCCDDEEFF" + NUL */
 
+/* TRIGGERcmd model/computer-name prefix (CYD registers as a distinct model). */
+#if CONFIG_HARDWARE_CYD
+#define TCMD_MODEL_NAME     "TCMDCYD"
+#else
+#define TCMD_MODEL_NAME     "TCMDCORE2"
+#endif
+
+/* Build the TRIGGERcmd computer name from the WiFi STA base MAC, e.g.
+ * "TCMDCORE2-AABBCCDDEEFF". This same string is used as the WiFi/network
+ * hostname so the device shows up under its TRIGGERcmd name on the router. */
+static void pf_build_computer_name(char *buf, size_t len)
+{
+    uint8_t mac[6] = {0};
+    esp_read_mac(mac, ESP_MAC_WIFI_STA);
+    snprintf(buf, len, TCMD_MODEL_NAME "-%02X%02X%02X%02X%02X%02X",
+             mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+}
+
 /* ── Module-level statics shared with event handler ────────────────────── */
 static char s_hw_token[HW_TOKEN_MAX_LEN]      __attribute__((unused)) = {0};
 static char s_computer_id[COMPUTER_ID_MAX_LEN] __attribute__((unused)) = {0};
@@ -5690,12 +5708,8 @@ static void do_core2_voice_query(void)
     }
 
     {
-        uint8_t mac[6] = {0};
-        esp_read_mac(mac, ESP_MAC_WIFI_STA);
-        char computer_name[32];
-        snprintf(computer_name, sizeof(computer_name),
-                 "TCMDCORE2-%02X%02X%02X%02X%02X%02X",
-                 mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+        char computer_name[COMPUTER_NAME_LEN];
+        pf_build_computer_name(computer_name, sizeof(computer_name));
 
         char json_body[CORE2_TRANSCRIPT_MAX + 256];
         if (s_voice_conv_id[0]) {
@@ -10201,12 +10215,8 @@ static esp_err_t cyd_create_computer_over_ws(void)
 {
     if (s_computer_id[0]) return ESP_OK;   /* already provisioned */
 
-    uint8_t mac[6] = {0};
-    esp_read_mac(mac, ESP_MAC_WIFI_STA);
     char computer_name[COMPUTER_NAME_LEN];
-    snprintf(computer_name, sizeof(computer_name),
-             "TCMDCYD-%02X%02X%02X%02X%02X%02X",
-             mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+    pf_build_computer_name(computer_name, sizeof(computer_name));
 
     ESP_LOGI(TAG, "Creating computer over WS: %s", computer_name);
     pf_status_draw("Creating computer...");
@@ -10700,6 +10710,15 @@ void picture_frame_run(void)
 #endif
 
     /* ── WiFi ────────────────────────────────────────────────────────────── */
+    /* Report the TRIGGERcmd computer name as the DHCP/network hostname so the
+     * device shows up under that name on the router (instead of "espressif").
+     * Must be set before connecting for the DHCP lease to carry it. */
+    {
+        char hostname[COMPUTER_NAME_LEN];
+        pf_build_computer_name(hostname, sizeof(hostname));
+        wifi_set_sta_hostname(hostname);
+    }
+
     pf_status_draw("Waiting for WiFi...");
 
     esp_err_t wifi_ret;
@@ -10918,12 +10937,8 @@ void picture_frame_run(void)
 #if !CONFIG_HARDWARE_CYD
     if (!have_comp_id) {
         /* Build a unique computer name from the WiFi base MAC */
-        uint8_t mac[6] = {0};
-        esp_read_mac(mac, ESP_MAC_WIFI_STA);
         char computer_name[COMPUTER_NAME_LEN];
-        snprintf(computer_name, sizeof(computer_name),
-                 "TCMDCORE2-%02X%02X%02X%02X%02X%02X",
-                 mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+        pf_build_computer_name(computer_name, sizeof(computer_name));
 
         ESP_LOGI(TAG, "Creating computer: %s", computer_name);
         pf_status_draw("Creating computer...");

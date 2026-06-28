@@ -50,3 +50,11 @@ bool wifi_connect_was_aborted(void);
  * Must be called before esp_netif_create_default_wifi_ap/sta.
  */
 void wifi_stack_init_public(void);
+
+/**
+ * Set the STA hostname reported to DHCP/routers (e.g. the TRIGGERcmd computer
+ * name), overriding the per-variant compile-time default. Safe to call before
+ * or after the WiFi stack is initialised; for it to affect the DHCP lease it
+ * must be set before the connection is established.
+ */
+esp_err_t wifi_set_sta_hostname(const char *hostname);

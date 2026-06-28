@@ -51,6 +51,11 @@ static bool            s_stack_initialized = false;
 static bool            s_wifi_started      = false;
 static esp_netif_t    *s_netif             = NULL;
 
+/* Optional runtime hostname override (e.g. the TRIGGERcmd computer name).
+ * Takes precedence over the per-variant WIFI_STA_HOSTNAME default. Empty = use
+ * the default. Set via wifi_set_sta_hostname(), applied in wifi_stack_init(). */
+static char            s_hostname_override[33] = {0};
+
 /* Per-attempt state -------------------------------------------------------- */
 static EventGroupHandle_t s_wifi_event_group = NULL;
 static int                s_retry_count      = 0;
@@ -94,13 +99,24 @@ static void wifi_stack_init(void)
     ESP_ERROR_CHECK(esp_event_loop_create_default());
     s_netif = esp_netif_create_default_wifi_sta();
 
+    /* Show a friendly name on the router/network instead of "espressif".
+     * A runtime override (e.g. the TRIGGERcmd computer name) wins; otherwise
+     * fall back to the per-variant compile-time default. */
+    const char *hn = NULL;
+    if (s_hostname_override[0]) {
+        hn = s_hostname_override;
+    }
 #ifdef WIFI_STA_HOSTNAME
-    /* Show a friendly name on the router/network instead of "espressif" */
-    esp_err_t herr = esp_netif_set_hostname(s_netif, WIFI_STA_HOSTNAME);
-    if (herr != ESP_OK) {
-        ESP_LOGW(TAG, "set hostname failed: %s", esp_err_to_name(herr));
+    else {
+        hn = WIFI_STA_HOSTNAME;
     }
 #endif
+    if (hn) {
+        esp_err_t herr = esp_netif_set_hostname(s_netif, hn);
+        if (herr != ESP_OK) {
+            ESP_LOGW(TAG, "set hostname failed: %s", esp_err_to_name(herr));
+        }
+    }
 
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&cfg));
@@ -109,6 +125,25 @@ static void wifi_stack_init(void)
 }
 
 void wifi_stack_init_public(void) { wifi_stack_init(); }
+
+esp_err_t wifi_set_sta_hostname(const char *hostname)
+{
+    if (!hostname || !hostname[0]) return ESP_ERR_INVALID_ARG;
+
+    strncpy(s_hostname_override, hostname, sizeof(s_hostname_override) - 1);
+    s_hostname_override[sizeof(s_hostname_override) - 1] = '\0';
+
+    /* If the netif already exists, apply now; otherwise wifi_stack_init() will
+     * pick it up when it creates the STA netif. */
+    if (s_netif) {
+        esp_err_t err = esp_netif_set_hostname(s_netif, s_hostname_override);
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "set hostname failed: %s", esp_err_to_name(err));
+        }
+        return err;
+    }
+    return ESP_OK;
+}
 
 /* -------------------------------------------------------------------------- */
 
