@@ -24,7 +24,7 @@
 #define ADC_MIC_BITWIDTH    ADC_BITWIDTH_12
 
 #define ADC_MIC_SAMPLE_RATE 16000
-#define ADC_MIC_MAX_MS      4000   /* 4 s max — 128 KB PCM, allocated in PSRAM */
+#define ADC_MIC_MAX_MS      30000  /* 30 s max — 960 KB PCM, allocated in PSRAM */
 
 /* ADC continuous-mode frame and store sizes.
  * frame_size must be a multiple of SOC_ADC_DIGI_DATA_BYTES_PER_CONV (4).

@@ -23,7 +23,7 @@
 #define MIC_CLK_PIN     0
 #define MIC_DATA_PIN    34
 #define MIC_SAMPLE_RATE 16000
-#define MIC_MAX_MS      4000   /* 4 s max — 128 KB PCM, allocated in PSRAM */
+#define MIC_MAX_MS      30000  /* 30 s max — 960 KB PCM, allocated in PSRAM */
 
 #define DMA_BUF_SAMPLES  512
 #define DMA_BUF_BYTES    (DMA_BUF_SAMPLES * sizeof(int16_t))

@@ -758,6 +758,8 @@ static volatile bool s_pending_run        = false;
 static volatile bool s_pending_save       = false;  /* deferred to main loop — NVS+SD writes overflow WS task stack */
 static volatile bool s_pending_vibrate    __attribute__((unused)) = false;
 static volatile bool s_pending_voice_query __attribute__((unused)) = false;
+static volatile bool s_pending_voice_note  __attribute__((unused)) = false;
+static uint32_t      s_voice_note_ms       __attribute__((unused)) = 10000;
 static volatile bool s_pending_speak       __attribute__((unused)) = false;
 static char          s_pending_speak_text[256] __attribute__((unused)) = {0};
 static int           s_pending_run_tries  __attribute__((unused)) = 0;
@@ -5765,6 +5767,96 @@ static void core2_poll_pwr_key(void)
     ESP_LOGI(TAG, "PWR key short press detected — starting voice query");
     do_core2_voice_query();
 }
+
+static void do_core2_voice_note(uint32_t max_ms)
+{
+    ESP_LOGI(TAG, "Voice note: recording %lu ms", (unsigned long)max_ms);
+    pf_clock_stop();
+    if (s_mp3_saved_font_scale >= 0) {
+        screen_set_font_scale_silent(s_mp3_saved_font_scale);
+        s_mp3_saved_font_scale = -1;
+    }
+
+    char msg[48];
+    snprintf(msg, sizeof(msg), "Recording %lus...", (unsigned long)(max_ms / 1000));
+    screen_draw_text(msg);
+
+    if (s_mp3.active && !s_mp3.paused) s_mp3.paused = true;
+    if (s_mp3_task) vTaskSuspend(s_mp3_task);
+    core2_audio_deinit();
+
+    uint8_t *wav    = NULL;
+    size_t   wav_len = 0;
+    if (s_mic_src_grove) {
+        if (core2_adc_mic_init() == ESP_OK) {
+            wav_len = core2_adc_mic_record(&wav, max_ms);
+            core2_adc_mic_deinit();
+        } else {
+            ESP_LOGW(TAG, "Voice note: ADC mic init failed");
+            screen_draw_text("Record: mic init\nfailed");
+        }
+    } else {
+        if (core2_mic_init() == ESP_OK) {
+            wav_len = core2_mic_record(&wav, max_ms);
+            core2_mic_deinit();
+        } else {
+            ESP_LOGW(TAG, "Voice note: PDM mic init failed");
+            screen_draw_text("Record: mic init\nfailed");
+        }
+    }
+
+    if (wav_len == 0 || !wav) {
+        ESP_LOGW(TAG, "Voice note: no audio captured");
+        screen_draw_text("Record: no audio\ncaptured");
+        goto note_done;
+    }
+
+    screen_draw_text("Saving...");
+
+    if (!mount_sd_card_if_needed()) {
+        ESP_LOGW(TAG, "Voice note: no SD card");
+        screen_draw_text("No SD card");
+        goto note_done;
+    }
+
+    {
+        const char *notes_dir = MP3_ROOT_PATH "/voice-notes";
+        mkdir(notes_dir, 0755);
+
+        char fpath[128];
+        time_t now = time(NULL);
+        struct tm tm_info;
+        localtime_r(&now, &tm_info);
+        snprintf(fpath, sizeof(fpath), "%s/note_%04d%02d%02d_%02d%02d%02d.wav",
+                 notes_dir,
+                 tm_info.tm_year + 1900, tm_info.tm_mon + 1, tm_info.tm_mday,
+                 tm_info.tm_hour, tm_info.tm_min, tm_info.tm_sec);
+
+        FILE *f = fopen(fpath, "wb");
+        if (!f) {
+            ESP_LOGE(TAG, "Voice note: cannot create %s", fpath);
+            screen_draw_text("Record: save\nfailed");
+        } else {
+            size_t written = fwrite(wav, 1, wav_len, f);
+            fclose(f);
+            if (written == wav_len) {
+                char ok_msg[160];
+                snprintf(ok_msg, sizeof(ok_msg), "Saved!\n%s\n%u bytes",
+                         fpath + strlen(MP3_ROOT_PATH) + 1, (unsigned)wav_len);
+                screen_draw_text(ok_msg);
+                ESP_LOGI(TAG, "Voice note: %s (%u bytes)", fpath, (unsigned)wav_len);
+            } else {
+                ESP_LOGE(TAG, "Voice note: short write %u/%u", (unsigned)written, (unsigned)wav_len);
+                screen_draw_text("Record: write\nerror");
+            }
+        }
+    }
+
+note_done:
+    if (wav) free(wav);
+    core2_audio_init();
+    if (s_mp3_task) vTaskResume(s_mp3_task);
+}
 #endif /* CONFIG_CORE2_HW */
 
 static int mp3_find_folder_trigger(const char *trigger)
@@ -7532,6 +7624,7 @@ static const pf_cmd_t s_pf_cmds[] = {
     /* battery (AXP192) and listen (microphone) are Core2-only hardware. */
     { "battery",   "battery",   "false", "Get the battery level of the user's Core2 device. Returns level (0-100), voltage in mV, and whether it is charging.", "\xF0\x9F\x94\x8B" /* 🔋 */, "{{result}}" },
     { "listen",    "listen",    "false", "Start listening for a voice command on the user's Core2 device (records for 4 seconds then processes as an AI prompt).", "\xF0\x9F\x8E\xA4" /* 🎤 */, NULL },
+    { "record",    "record",    "true",  "Record a voice note and save it as a WAV file to the SD card. Optional parameter: seconds to record (1-30, default 10). Example: '15'", "\xF0\x9F\x8E\x99\xEF\xB8\x8F" /* 🎙️ */, NULL },
     { "sleeponpower","sleeponpower","true", "Toggle whether the device can auto-sleep while on USB power (default off = only sleep on battery). Pass 'on'/'off' or omit to toggle.", "\xF0\x9F\x94\x8C" /* 🔌 */, NULL },
     { "askpic",    "askpic",    "true",  "Ask a question about the picture currently displayed, using AI vision. Example: 'What is in this picture?'", "\xE2\x9D\x93" /* ❓ */, "{{result}}" },
     { "askgpt",    "askgpt",    "true",  "Ask GPT a general question (no picture context). Example: 'What is the capital of France?'", "\xF0\x9F\x92\xAC" /* 💬 */, "{{result}}" },
@@ -9375,6 +9468,19 @@ static void pf_event_handler(const char *event_name,
     } else if (strcmp(s_trigger, "listen") == 0) {
 #if CONFIG_CORE2_HW
         s_pending_voice_query = true;
+#endif
+
+    } else if (strcmp(s_trigger, "record") == 0) {
+#if CONFIG_CORE2_HW
+        {
+            uint32_t ms = 10000;
+            if (s_params[0]) {
+                int secs = atoi(s_params);
+                if (secs > 0 && secs <= 30) ms = (uint32_t)secs * 1000;
+            }
+            s_voice_note_ms = ms;
+            s_pending_voice_note = true;
+        }
 #endif
 
 #if !CONFIG_HARDWARE_CYD
@@ -11418,6 +11524,10 @@ void picture_frame_run(void)
             if (s_pending_voice_query) {
                 s_pending_voice_query = false;
                 do_core2_voice_query();
+            }
+            if (s_pending_voice_note) {
+                s_pending_voice_note = false;
+                do_core2_voice_note(s_voice_note_ms);
             }
             if (s_pending_speak) {
                 s_pending_speak = false;
