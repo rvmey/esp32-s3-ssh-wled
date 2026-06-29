@@ -322,8 +322,8 @@
   "trigger": "record",
   "command": "record",
   "voice": "record",
-  "allowParams": "true",
-  "mcpToolDescription": "Record a voice note and save it as a WAV file to the SD card on the user's Core2 device. Optional parameter: seconds to record (1-30, default 10). Example: '15'",
+  "allowParams": "false",
+  "mcpToolDescription": "Record a voice note and save it as a WAV file on the SD card on the user's Core2 device (up to 30 seconds). Tap the screen to stop recording.",
   "icon": "🎙️"
  },
  {

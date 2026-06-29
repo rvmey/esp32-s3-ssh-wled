@@ -113,7 +113,8 @@ esp_err_t core2_mic_init(void)
     return ESP_OK;
 }
 
-size_t core2_mic_record(uint8_t **wav_out, uint32_t max_ms)
+size_t core2_mic_record(uint8_t **wav_out, uint32_t max_ms,
+                        const volatile bool *stop_flag)
 {
     *wav_out = NULL;
     if (!s_rx_chan) {
@@ -170,6 +171,7 @@ size_t core2_mic_record(uint8_t **wav_out, uint32_t max_ms)
         uint32_t elapsed = (uint32_t)((xTaskGetTickCount() - start_tick) * portTICK_PERIOD_MS);
         if (elapsed >= max_ms) break;
         if (pcm_written + DMA_BUF_BYTES > max_pcm_bytes) break;
+        if (stop_flag && *stop_flag) break;
 
         size_t   bytes_read = 0;
         esp_err_t err = i2s_channel_read(s_rx_chan,

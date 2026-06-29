@@ -15,7 +15,8 @@
  */
 
 esp_err_t core2_mic_init(void);   /* returns ESP_ERR_NO_MEM if DMA alloc fails */
-size_t    core2_mic_record(uint8_t **wav_out, uint32_t max_ms);
+size_t    core2_mic_record(uint8_t **wav_out, uint32_t max_ms,
+                          const volatile bool *stop_flag);
 void      core2_mic_deinit(void);
 
 /*

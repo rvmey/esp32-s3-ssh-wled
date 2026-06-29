@@ -20,5 +20,6 @@
  */
 
 esp_err_t core2_adc_mic_init(void);
-size_t    core2_adc_mic_record(uint8_t **wav_out, uint32_t max_ms);
+size_t    core2_adc_mic_record(uint8_t **wav_out, uint32_t max_ms,
+                              const volatile bool *stop_flag);
 void      core2_adc_mic_deinit(void);

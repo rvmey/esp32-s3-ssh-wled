@@ -110,7 +110,8 @@ esp_err_t core2_adc_mic_init(void)
     return ESP_OK;
 }
 
-size_t core2_adc_mic_record(uint8_t **wav_out, uint32_t max_ms)
+size_t core2_adc_mic_record(uint8_t **wav_out, uint32_t max_ms,
+                            const volatile bool *stop_flag)
 {
     *wav_out = NULL;
     if (!s_adc_handle) {
@@ -155,6 +156,7 @@ size_t core2_adc_mic_record(uint8_t **wav_out, uint32_t max_ms)
         uint32_t elapsed = (uint32_t)((xTaskGetTickCount() - start_tick) * portTICK_PERIOD_MS);
         if (elapsed >= max_ms) break;
         if (sample_count >= max_samples) break;
+        if (stop_flag && *stop_flag) break;
 
         uint32_t out_len = 0;
         err = adc_continuous_read(s_adc_handle, raw, ADC_MIC_FRAME_BYTES,

@@ -758,8 +758,9 @@ static volatile bool s_pending_run        = false;
 static volatile bool s_pending_save       = false;  /* deferred to main loop — NVS+SD writes overflow WS task stack */
 static volatile bool s_pending_vibrate    __attribute__((unused)) = false;
 static volatile bool s_pending_voice_query __attribute__((unused)) = false;
-static volatile bool s_pending_voice_note  __attribute__((unused)) = false;
-static uint32_t      s_voice_note_ms       __attribute__((unused)) = 10000;
+static volatile bool s_pending_voice_note    __attribute__((unused)) = false;
+static volatile bool s_voice_note_recording __attribute__((unused)) = false;
+static volatile bool s_voice_note_stop      __attribute__((unused)) = false;
 static volatile bool s_pending_speak       __attribute__((unused)) = false;
 static char          s_pending_speak_text[256] __attribute__((unused)) = {0};
 static int           s_pending_run_tries  __attribute__((unused)) = 0;
@@ -4832,6 +4833,10 @@ static bool pf_touch_handler(int x, int y, screen_gesture_t gesture)
     s_last_activity_tick = xTaskGetTickCount();
 #endif
 #if CONFIG_CORE2_HW
+    if (s_voice_note_recording && gesture == SCREEN_GESTURE_TAP) {
+        s_voice_note_stop = true;
+        return true;
+    }
     /* An active SIP call screen takes priority over all other touch handling. */
     if (pf_sip_ui_active()) {
         return pf_sip_touch(x, y, gesture);
@@ -5659,7 +5664,7 @@ static void do_core2_voice_query(void)
     size_t   wav_len = 0;
     if (s_mic_src_grove) {
         if (core2_adc_mic_init() == ESP_OK) {
-            wav_len = core2_adc_mic_record(&wav, 4000);
+            wav_len = core2_adc_mic_record(&wav, 4000, NULL);
             core2_adc_mic_deinit();
         } else {
             ESP_LOGW(TAG, "Voice query: ADC mic init failed");
@@ -5667,7 +5672,7 @@ static void do_core2_voice_query(void)
         }
     } else {
         if (core2_mic_init() == ESP_OK) {
-            wav_len = core2_mic_record(&wav, 4000);
+            wav_len = core2_mic_record(&wav, 4000, NULL);
             core2_mic_deinit();
         } else {
             ESP_LOGW(TAG, "Voice query: PDM mic init failed (DMA alloc)");
@@ -5768,28 +5773,29 @@ static void core2_poll_pwr_key(void)
     do_core2_voice_query();
 }
 
-static void do_core2_voice_note(uint32_t max_ms)
+static void do_core2_voice_note(void)
 {
-    ESP_LOGI(TAG, "Voice note: recording %lu ms", (unsigned long)max_ms);
+    ESP_LOGI(TAG, "Voice note: recording (tap to stop, 30 s max)");
     pf_clock_stop();
     if (s_mp3_saved_font_scale >= 0) {
         screen_set_font_scale_silent(s_mp3_saved_font_scale);
         s_mp3_saved_font_scale = -1;
     }
 
-    char msg[48];
-    snprintf(msg, sizeof(msg), "Recording %lus...", (unsigned long)(max_ms / 1000));
-    screen_draw_text(msg);
+    screen_draw_text("Recording...\n\nTap to stop");
 
     if (s_mp3.active && !s_mp3.paused) s_mp3.paused = true;
     if (s_mp3_task) vTaskSuspend(s_mp3_task);
     core2_audio_deinit();
 
+    s_voice_note_stop = false;
+    s_voice_note_recording = true;
+
     uint8_t *wav    = NULL;
     size_t   wav_len = 0;
     if (s_mic_src_grove) {
         if (core2_adc_mic_init() == ESP_OK) {
-            wav_len = core2_adc_mic_record(&wav, max_ms);
+            wav_len = core2_adc_mic_record(&wav, 30000, &s_voice_note_stop);
             core2_adc_mic_deinit();
         } else {
             ESP_LOGW(TAG, "Voice note: ADC mic init failed");
@@ -5797,13 +5803,16 @@ static void do_core2_voice_note(uint32_t max_ms)
         }
     } else {
         if (core2_mic_init() == ESP_OK) {
-            wav_len = core2_mic_record(&wav, max_ms);
+            wav_len = core2_mic_record(&wav, 30000, &s_voice_note_stop);
             core2_mic_deinit();
         } else {
             ESP_LOGW(TAG, "Voice note: PDM mic init failed");
             screen_draw_text("Record: mic init\nfailed");
         }
     }
+
+    s_voice_note_recording = false;
+    s_voice_note_stop = false;
 
     if (wav_len == 0 || !wav) {
         ESP_LOGW(TAG, "Voice note: no audio captured");
@@ -7624,7 +7633,7 @@ static const pf_cmd_t s_pf_cmds[] = {
     /* battery (AXP192) and listen (microphone) are Core2-only hardware. */
     { "battery",   "battery",   "false", "Get the battery level of the user's Core2 device. Returns level (0-100), voltage in mV, and whether it is charging.", "\xF0\x9F\x94\x8B" /* 🔋 */, "{{result}}" },
     { "listen",    "listen",    "false", "Start listening for a voice command on the user's Core2 device (records for 4 seconds then processes as an AI prompt).", "\xF0\x9F\x8E\xA4" /* 🎤 */, NULL },
-    { "record",    "record",    "true",  "Record a voice note and save it as a WAV file to the SD card. Optional parameter: seconds to record (1-30, default 10). Example: '15'", "\xF0\x9F\x8E\x99\xEF\xB8\x8F" /* 🎙️ */, NULL },
+    { "record",    "record",    "false", "Record a voice note and save it as a WAV file on the SD card (up to 30 s). Tap the screen to stop recording.", "\xF0\x9F\x8E\x99\xEF\xB8\x8F" /* 🎙️ */, NULL },
     { "sleeponpower","sleeponpower","true", "Toggle whether the device can auto-sleep while on USB power (default off = only sleep on battery). Pass 'on'/'off' or omit to toggle.", "\xF0\x9F\x94\x8C" /* 🔌 */, NULL },
     { "askpic",    "askpic",    "true",  "Ask a question about the picture currently displayed, using AI vision. Example: 'What is in this picture?'", "\xE2\x9D\x93" /* ❓ */, "{{result}}" },
     { "askgpt",    "askgpt",    "true",  "Ask GPT a general question (no picture context). Example: 'What is the capital of France?'", "\xF0\x9F\x92\xAC" /* 💬 */, "{{result}}" },
@@ -9472,15 +9481,7 @@ static void pf_event_handler(const char *event_name,
 
     } else if (strcmp(s_trigger, "record") == 0) {
 #if CONFIG_CORE2_HW
-        {
-            uint32_t ms = 10000;
-            if (s_params[0]) {
-                int secs = atoi(s_params);
-                if (secs > 0 && secs <= 30) ms = (uint32_t)secs * 1000;
-            }
-            s_voice_note_ms = ms;
-            s_pending_voice_note = true;
-        }
+        s_pending_voice_note = true;
 #endif
 
 #if !CONFIG_HARDWARE_CYD
@@ -11527,7 +11528,7 @@ void picture_frame_run(void)
             }
             if (s_pending_voice_note) {
                 s_pending_voice_note = false;
-                do_core2_voice_note(s_voice_note_ms);
+                do_core2_voice_note();
             }
             if (s_pending_speak) {
                 s_pending_speak = false;
