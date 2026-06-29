@@ -5763,14 +5763,40 @@ voice_done:
 
 /* ── AXP192 PEK (power key) short-press detection ───────────────────────── */
 
+#define PWR_DOUBLE_TAP_MS 500
+
+static TickType_t s_pwr_first_press_tick = 0;
+
 static void core2_poll_pwr_key(void)
 {
     uint8_t irq = 0;
     if (core2_axp_read_reg(0x46, &irq) != ESP_OK) return;
-    if (!(irq & 0x02)) return;                    /* bit1 = PEK short press */
-    (void)core2_axp_write_reg(0x46, 0x02);        /* clear bit by writing 1 */
-    ESP_LOGI(TAG, "PWR key short press detected — starting voice query");
-    do_core2_voice_query();
+
+    if (irq & 0x02) {
+        (void)core2_axp_write_reg(0x46, 0x02);        /* clear bit */
+
+        TickType_t now = xTaskGetTickCount();
+        uint32_t since = (uint32_t)((now - s_pwr_first_press_tick) * portTICK_PERIOD_MS);
+
+        if (s_pwr_first_press_tick && since < PWR_DOUBLE_TAP_MS) {
+            s_pwr_first_press_tick = 0;
+            ESP_LOGI(TAG, "PWR key double press — starting voice note");
+            s_pending_voice_note = true;
+        } else {
+            s_pwr_first_press_tick = now;
+        }
+        return;
+    }
+
+    if (s_pwr_first_press_tick) {
+        uint32_t since = (uint32_t)((xTaskGetTickCount() - s_pwr_first_press_tick)
+                                     * portTICK_PERIOD_MS);
+        if (since >= PWR_DOUBLE_TAP_MS) {
+            s_pwr_first_press_tick = 0;
+            ESP_LOGI(TAG, "PWR key single press — starting voice query");
+            s_pending_voice_query = true;
+        }
+    }
 }
 
 static void do_core2_voice_note(void)
