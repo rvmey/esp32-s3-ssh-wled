@@ -342,6 +342,13 @@
   "icon": "📶"
  },
  {
+  "trigger": "radio",
+  "command": "radio",
+  "allowParams": "true",
+  "mcpToolDescription": "Play an internet radio stream on the user's Core2 device. Pass a stream URL to start, or 'off' to stop. Example: 'http://stream.example.com:8000/radio.mp3'",
+  "icon": "📻"
+ },
+ {
   "trigger": "call",
   "command": "call",
   "voice": "call",
