@@ -723,7 +723,7 @@ static volatile int  s_pending_folder_tap_idx = -1;
  * types, and per-type indices are stored in the same top-to-bottom order
  * they were drawn, one per line below the "<folder>:" header line. */
 #define PF_FILE_LIST_MAX 16
-typedef enum { PF_FILE_OTHER, PF_FILE_MP3, PF_FILE_JPEG, PF_FILE_WAV } pf_file_type_t;
+typedef enum { PF_FILE_OTHER, PF_FILE_MP3, PF_FILE_JPEG, PF_FILE_WAV, PF_FILE_TXT } pf_file_type_t;
 static volatile bool  s_file_list_display_active = false;
 static char           s_file_list_folder_trigger[MP3_MAX_TRIGGER_LEN];
 static char           s_file_list_folder_path[MP3_MAX_PATH_LEN];
@@ -3403,6 +3403,11 @@ static bool is_wav_file_name(const char *name)
     return str_ends_with_ci(name, ".wav");
 }
 
+static bool is_txt_file_name(const char *name)
+{
+    return str_ends_with_ci(name, ".txt");
+}
+
 static int jpeg_count_in_folder(const char *folder_path) __attribute__((unused));
 static int jpeg_count_in_folder(const char *folder_path)
 {
@@ -5325,6 +5330,32 @@ static bool pf_touch_handler(int x, int y, screen_gesture_t gesture)
                 s_pending_jpeg_file = true;
             } else if (s_file_list_types[idx] == PF_FILE_WAV) {
                 wav_start_file(s_file_list_folder_path, s_file_list_names[idx]);
+            } else if (s_file_list_types[idx] == PF_FILE_TXT) {
+                char txt_path[MP3_MAX_PATH_LEN + MP3_MAX_FILE_LEN + 4];
+                snprintf(txt_path, sizeof(txt_path), "%s/%s",
+                         s_file_list_folder_path, s_file_list_names[idx]);
+                FILE *tfp = fopen(txt_path, "rb");
+                if (tfp) {
+                    size_t n = fread(s_pending_text, 1, sizeof(s_pending_text) - 1, tfp);
+                    fclose(tfp);
+                    s_pending_text[n] = '\0';
+                    /* Strip \r so \r\n files display correctly */
+                    char *dst = s_pending_text, *src = s_pending_text;
+                    while (*src) { if (*src != '\r') *dst++ = *src; src++; }
+                    *dst = '\0';
+                    /* Trim trailing whitespace */
+                    while (dst > s_pending_text && (dst[-1] == '\n' || dst[-1] == ' ')) *--dst = '\0';
+                    if (!s_pending_text[0]) { s_pending_text[0] = ' '; s_pending_text[1] = '\0'; }
+                    strncpy(s_last_text, s_pending_text, sizeof(s_last_text) - 1);
+                    s_last_text[sizeof(s_last_text) - 1] = '\0';
+                    s_mp3_ui_override_allowed = false;
+                    s_pending_jpeg = false;
+                    s_pending_jpeg_redraw = false;
+                    s_pending_text_draw = true;
+#if CONFIG_CORE2_HW
+                    s_pending_text_redraw_retries = 5;
+#endif
+                }
             }
         }
         return true;
@@ -10421,6 +10452,9 @@ static void pf_run_dir_scan(bool is_files, const char *folder, const char *run_i
                     s_file_list_subidx[s_file_list_count] = jpeg_idx++;
                 } else if (is_wav_file_name(e->d_name)) {
                     s_file_list_types[s_file_list_count]  = PF_FILE_WAV;
+                    s_file_list_subidx[s_file_list_count] = -1;
+                } else if (is_txt_file_name(e->d_name)) {
+                    s_file_list_types[s_file_list_count]  = PF_FILE_TXT;
                     s_file_list_subidx[s_file_list_count] = -1;
                 } else {
                     s_file_list_types[s_file_list_count]  = PF_FILE_OTHER;
