@@ -5826,6 +5826,8 @@ static void core2_cycle_sd_power(void)
 
 static bool json_extract_str(const char *json, const char *key,
                               char *out, size_t out_sz);   /* defined later */
+static bool json_extract_nested(const char *json, const char *outer,
+                                const char *key, char *out, size_t out_sz); /* defined later */
 
 #define CORE2_STT_URL       "https://api.openai.com/v1/audio/transcriptions"
 #define CORE2_STT_KEY_MAX   256
@@ -6225,6 +6227,19 @@ static void do_core2_voice_query(void)
             if (new_conv[0] && strcmp(new_conv, s_voice_conv_id) != 0) {
                 strncpy(s_voice_conv_id, new_conv, sizeof(s_voice_conv_id) - 1);
                 nvs_write_str(NVS_KEY_VOICE_CONV, s_voice_conv_id);
+            }
+            /* Extract the AI's reply and display/speak it immediately so the
+             * device always responds even when the server-push speak command is
+             * delayed or suppressed (e.g. when the AI took a tool action). */
+            char ai_reply[256] = {0};
+            if (json_extract_nested(resp, "assistantMessage", "content", ai_reply, sizeof(ai_reply)) && ai_reply[0]) {
+                screen_draw_text(ai_reply);
+                if (s_ai_tts_enabled) {
+                    strncpy(s_pending_speak_text, ai_reply, sizeof(s_pending_speak_text) - 1);
+                    s_pending_speak_text[sizeof(s_pending_speak_text) - 1] = '\0';
+                    s_pending_speak = true;
+                }
+                ESP_LOGI(TAG, "Voice query: AI reply: %.80s", ai_reply);
             }
             ESP_LOGI(TAG, "Voice query: chat API success");
         } else {
