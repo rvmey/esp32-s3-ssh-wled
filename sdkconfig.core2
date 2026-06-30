@@ -12,6 +12,11 @@ CONFIG_WS_BUFFER_SIZE=8192
 CONFIG_SPIRAM=y
 CONFIG_SPIRAM_USE_MALLOC=y
 
+# Allow PSRAM-backed task stacks (required for xTaskCreateWithCaps(MALLOC_CAP_SPIRAM)).
+# Only safe for tasks whose stack is never accessed while the cache is disabled,
+# which is true for all our application-level tasks.
+CONFIG_FREERTOS_TASK_CREATE_ALLOW_EXT_MEM=y
+
 # Flash size: 16 MB (M5Stack Core2 for AWS)
 CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
 CONFIG_ESPTOOLPY_FLASHSIZE="16MB"
