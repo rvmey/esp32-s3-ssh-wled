@@ -172,7 +172,11 @@ self.addEventListener('fetch', event => {
     reqUrl.pathname.endsWith('/firmware/esp32_core2_picture_frame-2.0.560.bin') ||
     reqUrl.pathname.endsWith('/firmware/esp32_core2_picture_frame-2.0.562.bin') ||
     reqUrl.pathname.endsWith('/firmware/esp32_core2_picture_frame-2.0.569.bin') ||
-    reqUrl.pathname.endsWith('/firmware/esp32_core2_picture_frame-2.0.570.bin')
+    reqUrl.pathname.endsWith('/firmware/esp32_core2_picture_frame-2.0.570.bin') ||
+    reqUrl.pathname.endsWith('/firmware/esp32_core2_picture_frame-2.0.571.bin') ||
+    reqUrl.pathname.endsWith('/firmware/esp32_core2_picture_frame-2.0.572.bin') ||
+    reqUrl.pathname.endsWith('/firmware/esp32_core2_picture_frame-2.0.573.bin') ||
+    reqUrl.pathname.endsWith('/firmware/esp32_core2_picture_frame-2.0.574.bin')
   ) {
     const target = new URL('/esp32-s3-ssh-wled/firmware/esp32_core2_picture_frame-2.0.575.bin', self.location.origin);
     event.respondWith(fetch(target.toString(), { cache: 'no-store' }));
