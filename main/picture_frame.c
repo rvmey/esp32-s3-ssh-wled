@@ -6126,15 +6126,19 @@ static void do_core2_voice_note(void)
         const char *notes_dir = MP3_ROOT_PATH "/voice-notes";
         mkdir(notes_dir, 0755);
 
-        char fpath[128];
+        /* Build a shared timestamp stem used for both .wav and .txt */
+        char stem[64];
         time_t now = time(NULL);
         struct tm tm_info;
         localtime_r(&now, &tm_info);
-        snprintf(fpath, sizeof(fpath), "%s/note_%04d%02d%02d_%02d%02d%02d.wav",
-                 notes_dir,
+        snprintf(stem, sizeof(stem), "note_%04d%02d%02d_%02d%02d%02d",
                  tm_info.tm_year + 1900, tm_info.tm_mon + 1, tm_info.tm_mday,
                  tm_info.tm_hour, tm_info.tm_min, tm_info.tm_sec);
 
+        char fpath[128];
+        snprintf(fpath, sizeof(fpath), "%s/%s.wav", notes_dir, stem);
+
+        bool wav_ok = false;
         FILE *f = fopen(fpath, "wb");
         if (!f) {
             ESP_LOGE(TAG, "Voice note: cannot create %s", fpath);
@@ -6143,14 +6147,48 @@ static void do_core2_voice_note(void)
             size_t written = fwrite(wav, 1, wav_len, f);
             fclose(f);
             if (written == wav_len) {
-                char ok_msg[160];
-                snprintf(ok_msg, sizeof(ok_msg), "Saved!\n%s\n%u bytes",
-                         fpath + strlen(MP3_ROOT_PATH) + 1, (unsigned)wav_len);
-                screen_draw_text(ok_msg);
                 ESP_LOGI(TAG, "Voice note: %s (%u bytes)", fpath, (unsigned)wav_len);
+                wav_ok = true;
             } else {
                 ESP_LOGE(TAG, "Voice note: short write %u/%u", (unsigned)written, (unsigned)wav_len);
                 screen_draw_text("Record: write\nerror");
+            }
+        }
+
+        if (wav_ok) {
+            char stt_key[CORE2_STT_KEY_MAX] = {0};
+            char transcript[CORE2_TRANSCRIPT_MAX] = {0};
+
+            if (!read_openai_key(stt_key, sizeof(stt_key))) {
+                ESP_LOGW(TAG, "Voice note: no OpenAI key — skipping transcription");
+                char ok_msg[80];
+                snprintf(ok_msg, sizeof(ok_msg), "Saved!\n%s.wav", stem);
+                screen_draw_text(ok_msg);
+            } else {
+                screen_draw_text("Transcribing...");
+                bool tx_ok = core2_stt_transcribe(wav, wav_len, stt_key, transcript);
+
+                if (tx_ok && transcript[0]) {
+                    char tpath[128];
+                    snprintf(tpath, sizeof(tpath), "%s/%s.txt", notes_dir, stem);
+                    FILE *tf = fopen(tpath, "w");
+                    if (tf) {
+                        fputs(transcript, tf);
+                        fclose(tf);
+                        ESP_LOGI(TAG, "Voice note transcript: %s", tpath);
+                    } else {
+                        ESP_LOGE(TAG, "Voice note: cannot create %s", tpath);
+                    }
+
+                    char ok_msg[160];
+                    snprintf(ok_msg, sizeof(ok_msg), "Saved!\n%.120s", transcript);
+                    screen_draw_text(ok_msg);
+                } else {
+                    ESP_LOGW(TAG, "Voice note: transcription failed or empty");
+                    char ok_msg[120];
+                    snprintf(ok_msg, sizeof(ok_msg), "Saved!\n%s.wav\n(transcription failed)", stem);
+                    screen_draw_text(ok_msg);
+                }
             }
         }
     }
