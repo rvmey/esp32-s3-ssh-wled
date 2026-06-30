@@ -925,12 +925,16 @@ static bool s_sd_mount_warned __attribute__((unused)) = false;
 static volatile int32_t s_mp3_seek_target_ms = -1;
 
 /* ── Internet radio state ──────────────────────────────────────────────── */
-static char s_radio_url[512]     __attribute__((unused)) = {0};
-static char s_radio_title[128]   __attribute__((unused)) = {0};
-static char s_radio_station[128] __attribute__((unused)) = {0};
+/* Use PSRAM-allocated pointers instead of static arrays so internal DMA RAM
+ * is not reduced at boot (this component uses the same tight DMA pool as
+ * the SD-card SPI bounce buffers — see project_core2_first_boot_dma_ram). */
+static char *s_radio_url      = NULL;  /* PSRAM, 512 bytes, alloc at radio start */
+static char *s_radio_title    = NULL;  /* PSRAM, 128 bytes */
+static char *s_radio_station  = NULL;  /* PSRAM, 128 bytes */
+static char *s_radio_meta_buf = NULL;  /* PSRAM, 4096 bytes — ICY metadata read buffer */
 static esp_http_client_handle_t s_radio_http __attribute__((unused)) = NULL;
-static int  s_radio_icy_metaint  __attribute__((unused)) = 0;
-static int  s_radio_icy_remaining __attribute__((unused)) = 0;
+static int  s_radio_icy_metaint   = 0;
+static int  s_radio_icy_remaining = 0;
 
 /* ── On-screen clock — live digital/analog clock view ───────────────────
  * "clock digital" or "clock analog" takes over the display with a
@@ -3601,12 +3605,11 @@ static esp_err_t radio_http_event(esp_http_client_event_t *evt)
         if (strcasecmp(evt->header_key, "icy-metaint") == 0) {
             s_radio_icy_metaint = atoi(evt->header_value);
             ESP_LOGI(TAG, "radio: icy-metaint=%d", s_radio_icy_metaint);
-        } else if (strcasecmp(evt->header_key, "icy-name") == 0) {
-            strncpy(s_radio_station, evt->header_value, sizeof(s_radio_station) - 1);
-            s_radio_station[sizeof(s_radio_station) - 1] = '\0';
+        } else if (strcasecmp(evt->header_key, "icy-name") == 0 && s_radio_station) {
+            strncpy(s_radio_station, evt->header_value, 127);
+            s_radio_station[127] = '\0';
             ESP_LOGI(TAG, "radio: station=%s", s_radio_station);
-        } else if (strcasecmp(evt->header_key, "Location") == 0 ||
-                   strcasecmp(evt->header_key, "location") == 0) {
+        } else if (strcasecmp(evt->header_key, "location") == 0) {
             char *loc = (char *)evt->user_data;
             if (loc) {
                 strncpy(loc, evt->header_value, 511);
@@ -3626,20 +3629,49 @@ static void radio_close_stream(void)
     }
 }
 
+static bool radio_alloc_state(void)
+{
+    if (!s_radio_url) {
+        s_radio_url = heap_caps_malloc(512, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (!s_radio_url) s_radio_url = malloc(512);
+    }
+    if (!s_radio_title) {
+        s_radio_title = heap_caps_malloc(128, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (!s_radio_title) s_radio_title = malloc(128);
+    }
+    if (!s_radio_station) {
+        s_radio_station = heap_caps_malloc(128, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (!s_radio_station) s_radio_station = malloc(128);
+    }
+    if (!s_radio_meta_buf) {
+        s_radio_meta_buf = heap_caps_malloc(4096, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (!s_radio_meta_buf) s_radio_meta_buf = malloc(4096);
+    }
+    return s_radio_url && s_radio_title && s_radio_station && s_radio_meta_buf;
+}
+
+static void radio_free_state(void)
+{
+    radio_close_stream();
+    free(s_radio_url);      s_radio_url      = NULL;
+    free(s_radio_title);    s_radio_title    = NULL;
+    free(s_radio_station);  s_radio_station  = NULL;
+    free(s_radio_meta_buf); s_radio_meta_buf = NULL;
+}
+
 static bool radio_open_stream(void)
 {
     radio_close_stream();
+    if (!s_radio_url || !s_radio_url[0]) return false;
     s_radio_icy_metaint = 0;
     s_radio_icy_remaining = 0;
 
-    char effective_url[512];
-    strncpy(effective_url, s_radio_url, sizeof(effective_url) - 1);
-    effective_url[sizeof(effective_url) - 1] = '\0';
-
+    /* Overwrite s_radio_url with any redirect URL so the buffer doubles as the
+     * working effective-URL — avoids a 512-byte stack allocation in this task. */
     for (int redir = 0; redir < 5; redir++) {
         char loc_buf[512] = {0};
         esp_http_client_config_t cfg = {
-            .url           = effective_url,
+            .url           = s_radio_url,
             .method        = HTTP_METHOD_GET,
             .timeout_ms    = 10000,
             .buffer_size   = 4096,
@@ -3668,9 +3700,9 @@ static bool radio_open_stream(void)
             esp_http_client_cleanup(s_radio_http);
             s_radio_http = NULL;
             if (!loc_buf[0]) break;
-            strncpy(effective_url, loc_buf, sizeof(effective_url) - 1);
-            effective_url[sizeof(effective_url) - 1] = '\0';
-            ESP_LOGI(TAG, "radio: redirect -> %s", effective_url);
+            strncpy(s_radio_url, loc_buf, 511);
+            s_radio_url[511] = '\0';
+            ESP_LOGI(TAG, "radio: redirect -> %s", s_radio_url);
             continue;
         }
 
@@ -3683,8 +3715,8 @@ static bool radio_open_stream(void)
         if (s_radio_icy_metaint > 0)
             s_radio_icy_remaining = s_radio_icy_metaint;
 
-        ESP_LOGI(TAG, "radio: connected to %s (icy-metaint=%d station=\"%s\")",
-                 effective_url, s_radio_icy_metaint, s_radio_station);
+        ESP_LOGI(TAG, "radio: connected (icy-metaint=%d station=\"%s\")",
+                 s_radio_icy_metaint, s_radio_station ? s_radio_station : "");
         return true;
     }
 
@@ -3694,7 +3726,7 @@ static bool radio_open_stream(void)
 
 static int radio_refill(unsigned char *buf, int max_bytes)
 {
-    if (!s_radio_http) return 0;
+    if (!s_radio_http || !s_radio_meta_buf) return 0;
     int total = 0;
     while (total < max_bytes) {
         /* ICY metadata block at the interval boundary */
@@ -3704,22 +3736,23 @@ static int radio_refill(unsigned char *buf, int max_bytes)
             if (n <= 0) break;
             int meta_len = (int)meta_len_byte * 16;
             if (meta_len > 0) {
-                char meta[4081];
+                if (meta_len > 4095) meta_len = 4095;
                 int got = 0;
                 while (got < meta_len) {
-                    n = esp_http_client_read(s_radio_http, meta + got, meta_len - got);
+                    n = esp_http_client_read(s_radio_http,
+                                             s_radio_meta_buf + got,
+                                             meta_len - got);
                     if (n <= 0) break;
                     got += n;
                 }
-                meta[got] = '\0';
-                char *title = strstr(meta, "StreamTitle='");
-                if (title) {
+                s_radio_meta_buf[got] = '\0';
+                char *title = strstr(s_radio_meta_buf, "StreamTitle='");
+                if (title && s_radio_title) {
                     title += 13;
                     char *end = strstr(title, "';");
                     if (end) {
                         int len = (int)(end - title);
-                        if (len >= (int)sizeof(s_radio_title))
-                            len = (int)sizeof(s_radio_title) - 1;
+                        if (len > 127) len = 127;
                         memcpy(s_radio_title, title, (size_t)len);
                         s_radio_title[len] = '\0';
                         ESP_LOGI(TAG, "radio: now playing: %s", s_radio_title);
@@ -4487,14 +4520,14 @@ static void mp3_render_now_playing(void)
 
     if (s_mp3.radio) {
         char station_short[40];
-        if (s_radio_station[0]) {
+        if (s_radio_station && s_radio_station[0]) {
             strncpy(station_short, s_radio_station, sizeof(station_short) - 1);
             station_short[sizeof(station_short) - 1] = '\0';
         } else {
             strcpy(station_short, "(unknown)");
         }
         char title_short[44];
-        if (s_radio_title[0]) {
+        if (s_radio_title && s_radio_title[0]) {
             if (strlen(s_radio_title) > 40) {
                 memcpy(title_short, s_radio_title, 37);
                 strcpy(title_short + 37, "...");
@@ -9509,6 +9542,7 @@ static void pf_event_handler(const char *event_name,
             s_bt_media_prime_target_bytes = BT_PCM_START_PRIME_BYTES;
             bt_media_stop_if_needed();
 #endif
+            radio_free_state();
             ESP_LOGI(TAG, "radio: stopped by stop command");
             screen_draw_text("Radio stopped");
         } else if (s_mp3.active) {
@@ -9884,40 +9918,46 @@ static void pf_event_handler(const char *event_name,
         if (s_params[0] &&
             strcasecmp(s_params, "off") != 0 &&
             strcasecmp(s_params, "stop") != 0) {
-            s_mp3.active = false;
-            vTaskDelay(pdMS_TO_TICKS(50));
-            strncpy(s_radio_url, s_params, sizeof(s_radio_url) - 1);
-            s_radio_url[sizeof(s_radio_url) - 1] = '\0';
-            s_radio_title[0] = '\0';
-            s_radio_station[0] = '\0';
-            s_mp3.radio = true;
-            s_mp3.active = true;
-            s_mp3.paused = false;
-            s_mp3_resume_on_bt_reconnect = false;
-            s_mp3.duration_ms = 0;
-            s_mp3.position_ms = 0;
-            s_mp3.play_token++;
-            s_mp3.folder_name[0] = '\0';
-            s_mp3.file_name[0] = '\0';
-            s_mp3.file_path[0] = '\0';
+            if (!radio_alloc_state()) {
+                ESP_LOGE(TAG, "radio: failed to allocate buffers");
+                screen_draw_text("Radio: out of\nmemory");
+            } else {
+                s_mp3.active = false;
+                vTaskDelay(pdMS_TO_TICKS(50));
+                strncpy(s_radio_url, s_params, 511);
+                s_radio_url[511] = '\0';
+                s_radio_title[0] = '\0';
+                s_radio_station[0] = '\0';
+                s_mp3.radio = true;
+                s_mp3.active = true;
+                s_mp3.paused = false;
+                s_mp3_resume_on_bt_reconnect = false;
+                s_mp3.duration_ms = 0;
+                s_mp3.position_ms = 0;
+                s_mp3.play_token++;
+                s_mp3.folder_name[0] = '\0';
+                s_mp3.file_name[0] = '\0';
+                s_mp3.file_path[0] = '\0';
 #if CONFIG_BT_ENABLED && CONFIG_BT_A2DP_ENABLE
-            s_bt_resample_phase_q16 = 0;
-            s_bt_a2dp_sample_rate = BT_A2DP_TARGET_SAMPLE_RATE;
-            if (s_bt.connected) {
-                bt_pcm_clear();
-                s_bt_media_prime_pending = true;
-                s_bt_media_prime_target_bytes = BT_PCM_START_PRIME_BYTES;
-                s_bt_media_prime_deadline = xTaskGetTickCount() +
-                                            pdMS_TO_TICKS(BT_PCM_START_PRIME_TIMEOUT_MS);
-            }
+                s_bt_resample_phase_q16 = 0;
+                s_bt_a2dp_sample_rate = BT_A2DP_TARGET_SAMPLE_RATE;
+                if (s_bt.connected) {
+                    bt_pcm_clear();
+                    s_bt_media_prime_pending = true;
+                    s_bt_media_prime_target_bytes = BT_PCM_START_PRIME_BYTES;
+                    s_bt_media_prime_deadline = xTaskGetTickCount() +
+                                                pdMS_TO_TICKS(BT_PCM_START_PRIME_TIMEOUT_MS);
+                }
 #endif
-            mp3_ensure_task();
-            ESP_LOGI(TAG, "radio: starting stream %s", s_radio_url);
-            mp3_request_ui_refresh();
+                mp3_ensure_task();
+                ESP_LOGI(TAG, "radio: starting stream %s", s_radio_url);
+                mp3_request_ui_refresh();
+            }
         } else {
             if (s_mp3.radio && s_mp3.active) {
                 s_mp3.active = false;
                 s_mp3.radio = false;
+                radio_free_state();
                 ESP_LOGI(TAG, "radio: stopped");
                 screen_draw_text("Radio stopped");
             } else if (!s_params[0]) {
