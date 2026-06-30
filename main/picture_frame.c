@@ -5497,7 +5497,15 @@ static bool pf_touch_handler(int x, int y, screen_gesture_t gesture)
         case SCREEN_GESTURE_SWIPE_LEFT:
             /* Right-to-left: restart the current song, unless we're still in
              * the first 5 seconds, in which case go to the previous song. */
-            if (s_mp3.position_ms < 5000) {
+            if (s_mp3.is_wav) {
+                /* WAV files have no playlist; always restart from beginning. */
+                s_mp3.paused = false;
+                s_mp3.position_ms = 0;
+                s_mp3.last_tick = xTaskGetTickCount();
+                s_mp3.play_token++;
+                handled = true;
+                ESP_LOGI(TAG, "wav: swipe restart '%s'", s_mp3.file_name);
+            } else if (s_mp3.position_ms < 5000) {
                 handled = mp3_advance_track(-1, "swipe previous");
             } else {
                 handled = mp3_start_track(s_mp3.folder_idx, s_mp3.track_idx, false);
