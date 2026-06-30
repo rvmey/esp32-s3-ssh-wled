@@ -11145,7 +11145,11 @@ static void udp_discover_task(void *arg)
 
 static void start_udp_discover_listener(void)
 {
-    xTaskCreate(udp_discover_task, "udp_disc", 2048, NULL, 3, NULL);
+    /* Allocate stack in PSRAM to avoid consuming internal DMA-capable RAM.
+     * Internal DMA RAM is a shared resource with SD SPI bounce buffers;
+     * exhausting it at boot causes LoadProhibited crashes (see memory). */
+    xTaskCreateWithCaps(udp_discover_task, "udp_disc", 2048, NULL, 3, NULL,
+                        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
 }
 
 /* ── Main entry point ───────────────────────────────────────────────────── */
