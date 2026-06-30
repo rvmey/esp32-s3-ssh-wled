@@ -319,6 +319,7 @@ typedef struct {
     bool       active;
     bool       paused;
     bool       radio;           /* true = streaming internet radio, not SD file */
+    bool       is_wav;          /* true = raw PCM WAV file, bypass MP3 decoder */
     bool       shuffle;
     bool       repeat_track;
     bool       repeat_playlist;
@@ -722,7 +723,7 @@ static volatile int  s_pending_folder_tap_idx = -1;
  * types, and per-type indices are stored in the same top-to-bottom order
  * they were drawn, one per line below the "<folder>:" header line. */
 #define PF_FILE_LIST_MAX 16
-typedef enum { PF_FILE_OTHER, PF_FILE_MP3, PF_FILE_JPEG } pf_file_type_t;
+typedef enum { PF_FILE_OTHER, PF_FILE_MP3, PF_FILE_JPEG, PF_FILE_WAV } pf_file_type_t;
 static volatile bool  s_file_list_display_active = false;
 static char           s_file_list_folder_trigger[MP3_MAX_TRIGGER_LEN];
 static char           s_file_list_folder_path[MP3_MAX_PATH_LEN];
@@ -1836,6 +1837,7 @@ static bool pf_reboot_touch_handler(int x, int y, screen_gesture_t gesture)
 }
 static bool mp3_advance_track(int step, const char *reason);
 static bool mp3_start_track(int folder_idx, int track_idx, bool keep_position);
+static bool wav_start_file(const char *folder_path, const char *file_name);
 static int  mp3_find_folder_trigger(const char *trigger);
 static int  jpeg_find_folder_trigger(const char *trigger);
 static bool mp3_handle_track_end(void);
@@ -3396,6 +3398,11 @@ static bool is_jpeg_file_name(const char *name)
     return str_ends_with_ci(name, ".jpg") || str_ends_with_ci(name, ".jpeg");
 }
 
+static bool is_wav_file_name(const char *name)
+{
+    return str_ends_with_ci(name, ".wav");
+}
+
 static int jpeg_count_in_folder(const char *folder_path) __attribute__((unused));
 static int jpeg_count_in_folder(const char *folder_path)
 {
@@ -3809,6 +3816,9 @@ static void mp3_player_task(void *arg)
     int bytes_left = 0;
     bool speaker_path_ready = false;
     uint32_t speaker_last_rate = 0;
+    bool wav_mode = false;
+    uint32_t wav_sample_rate = 16000;
+    int wav_nchans = 1;
 
     int64_t tel_window_start_us __attribute__((unused)) = esp_timer_get_time();
     uint32_t tel_decoded_frames __attribute__((unused)) = 0;
@@ -3881,7 +3891,8 @@ static void mp3_player_task(void *arg)
 #if CONFIG_CORE2_HW
             if (s_mp3.visualizer) { s_viz_buf_pos = 0; core2_leds_off(); }
 #endif
-            int32_t paused_seek_target = s_mp3.radio ? -1 : s_mp3_seek_target_ms;
+            int32_t paused_seek_target = (s_mp3.radio || wav_mode) ? -1 : s_mp3_seek_target_ms;
+            if (wav_mode && s_mp3_seek_target_ms >= 0) s_mp3_seek_target_ms = -1;
             if (paused_seek_target >= 0) {
                 s_mp3_seek_target_ms = -1;
                 if (fp) {
@@ -4007,14 +4018,45 @@ static void mp3_player_task(void *arg)
                 vTaskDelay(pdMS_TO_TICKS(200));
                 continue;
             }
-            uint32_t probed_ms = mp3_estimate_duration_ms(s_mp3.file_path);
-            if (probed_ms > 0) {
-                s_mp3.duration_ms = probed_ms;
-                mp3_request_ui_refresh();
+            if (s_mp3.is_wav) {
+                wav_mode = true;
+                wav_sample_rate = 16000;
+                wav_nchans = 1;
+                /* Parse RIFF/WAVE header: find fmt and data chunks */
+                uint8_t riff[12];
+                if (fread(riff, 1, 12, fp) == 12 &&
+                    memcmp(riff, "RIFF", 4) == 0 && memcmp(riff + 8, "WAVE", 4) == 0) {
+                    uint8_t chdr[8];
+                    while (fread(chdr, 1, 8, fp) == 8) {
+                        uint32_t csz; memcpy(&csz, chdr + 4, 4);
+                        if (memcmp(chdr, "fmt ", 4) == 0 && csz >= 16) {
+                            uint8_t fmt[16];
+                            if (fread(fmt, 1, 16, fp) == 16) {
+                                uint32_t sr; memcpy(&sr, fmt + 4, 4);
+                                uint16_t ch; memcpy(&ch, fmt + 2, 2);
+                                wav_sample_rate = sr;
+                                wav_nchans = (int)ch;
+                                if (csz > 16) fseek(fp, (long)(csz - 16), SEEK_CUR);
+                            } else break;
+                        } else if (memcmp(chdr, "data", 4) == 0) {
+                            break; /* fp now positioned at start of PCM data */
+                        } else {
+                            fseek(fp, (long)csz, SEEK_CUR);
+                        }
+                    }
+                }
+            } else {
+                wav_mode = false;
+                uint32_t probed_ms = mp3_estimate_duration_ms(s_mp3.file_path);
+                if (probed_ms > 0) {
+                    s_mp3.duration_ms = probed_ms;
+                    mp3_request_ui_refresh();
+                }
             }
         }
 
-        int32_t seek_target_ms = s_mp3.radio ? -1 : s_mp3_seek_target_ms;
+        int32_t seek_target_ms = (s_mp3.radio || wav_mode) ? -1 : s_mp3_seek_target_ms;
+        if (wav_mode && s_mp3_seek_target_ms >= 0) s_mp3_seek_target_ms = -1;
         if (seek_target_ms >= 0) {
             s_mp3_seek_target_ms = -1;
             if (fp) {
@@ -4109,6 +4151,73 @@ static void mp3_player_task(void *arg)
                      (unsigned long)s_mp3.position_ms,
                      (unsigned long)s_mp3.duration_ms);
             mp3_request_ui_refresh();
+            continue;
+        }
+
+        /* WAV file decode path: read raw PCM directly, bypass MP3 pipeline */
+        if (wav_mode) {
+            size_t wav_buf_bytes = (size_t)(1152 * 2) * sizeof(short);
+            size_t n = fread(pcm, 1, wav_buf_bytes, fp);
+            if (n < sizeof(short)) {
+                /* EOF */
+                s_mp3.paused = true;
+                s_mp3.position_ms = s_mp3.duration_ms;
+                mp3_request_ui_refresh();
+                vTaskDelay(pdMS_TO_TICKS(100));
+                continue;
+            }
+            int wav_samps = (int)(n / sizeof(short));  /* total samples across channels */
+            uint32_t mono_samps = (uint32_t)(wav_samps / (wav_nchans > 0 ? wav_nchans : 1));
+            uint32_t frame_ms = (wav_sample_rate > 0)
+                ? (uint32_t)(((uint64_t)mono_samps * 1000ULL) / (uint64_t)wav_sample_rate)
+                : 0;
+            if (frame_ms == 0) frame_ms = 1;
+#if CONFIG_HARDWARE_CORE2
+#if CONFIG_BT_ENABLED && CONFIG_BT_A2DP_ENABLE
+            if (s_bt.connected) {
+                while (bt_pcm_fill_bytes() >= BT_PCM_TARGET_FILL_BYTES &&
+                       s_mp3.active && !s_mp3.paused && s_bt.connected) {
+                    vTaskDelay(pdMS_TO_TICKS(8));
+                }
+                bt_pcm_write_resampled_44k(pcm, (size_t)wav_samps, wav_nchans,
+                                           (int)wav_sample_rate,
+                                           s_mp3.muted ? 0 : s_mp3.volume);
+                speaker_path_ready = false;
+                speaker_last_rate  = 0;
+            } else if (!s_bt_hold_local_speaker && !s_bt.connecting &&
+                       !s_bt.discovering && !s_bt_pending_reconnect) {
+#endif
+                if (core2_audio_init() == ESP_OK) {
+                    if (speaker_last_rate != wav_sample_rate) {
+                        core2_audio_set_sample_rate(wav_sample_rate);
+                        speaker_last_rate = wav_sample_rate;
+                    }
+                    core2_audio_write_pcm(pcm, (size_t)wav_samps, wav_nchans,
+                                         s_mp3.muted ? 0 : s_mp3.volume);
+                }
+#if CONFIG_BT_ENABLED && CONFIG_BT_A2DP_ENABLE
+            }
+#endif
+#if CONFIG_CORE2_HW
+            if (s_mp3.visualizer && s_mp3.active && !s_mp3.paused) {
+                viz_feed(pcm, wav_samps, wav_nchans, (int)wav_sample_rate);
+            }
+#endif
+            if (s_mp3.active && !s_mp3.paused && opened_token == s_mp3.play_token) {
+                if (s_mp3.position_ms + frame_ms >= s_mp3.duration_ms) {
+                    s_mp3.position_ms = s_mp3.duration_ms;
+                    s_mp3.paused = true;
+                    mp3_request_ui_refresh();
+                } else {
+                    s_mp3.position_ms += frame_ms;
+                }
+                TickType_t now = xTaskGetTickCount();
+                if ((now - s_mp3_last_ui_tick) >= pdMS_TO_TICKS(3000)) {
+                    s_mp3_last_ui_tick = now;
+                    mp3_request_ui_refresh();
+                }
+            }
+#endif /* CONFIG_HARDWARE_CORE2 */
             continue;
         }
 
@@ -5214,6 +5323,8 @@ static bool pf_touch_handler(int x, int y, screen_gesture_t gesture)
                 strncpy(s_pending_jpeg_file_path, file_path, sizeof(s_pending_jpeg_file_path) - 1);
                 s_pending_jpeg_file_path[sizeof(s_pending_jpeg_file_path) - 1] = '\0';
                 s_pending_jpeg_file = true;
+            } else if (s_file_list_types[idx] == PF_FILE_WAV) {
+                wav_start_file(s_file_list_folder_path, s_file_list_names[idx]);
             }
         }
         return true;
@@ -5392,6 +5503,78 @@ static bool pf_touch_handler(int x, int y, screen_gesture_t gesture)
     return handled;
 }
 
+/* ── WAV file helpers ────────────────────────────────────────────────────── */
+
+static uint32_t wav_estimate_duration_ms(const char *file_path)
+{
+    FILE *fp = fopen(file_path, "rb");
+    if (!fp) return 0;
+
+    uint8_t hdr[44];
+    if (fread(hdr, 1, 44, fp) < 44) { fclose(fp); return 0; }
+    fclose(fp);
+
+    if (hdr[0] != 'R' || hdr[1] != 'I' || hdr[2] != 'F' || hdr[3] != 'F') return 0;
+    if (hdr[8] != 'W' || hdr[9] != 'A' || hdr[10] != 'V' || hdr[11] != 'E') return 0;
+
+    uint32_t sample_rate = (uint32_t)hdr[24] | ((uint32_t)hdr[25] << 8)
+                         | ((uint32_t)hdr[26] << 16) | ((uint32_t)hdr[27] << 24);
+    uint16_t channels    = (uint16_t)hdr[22] | ((uint16_t)hdr[23] << 8);
+    uint16_t bits        = (uint16_t)hdr[34] | ((uint16_t)hdr[35] << 8);
+    uint32_t data_size   = (uint32_t)hdr[40] | ((uint32_t)hdr[41] << 8)
+                         | ((uint32_t)hdr[42] << 16) | ((uint32_t)hdr[43] << 24);
+
+    if (sample_rate == 0 || channels == 0 || bits == 0) return 0;
+    uint32_t bytes_per_sec = sample_rate * channels * (bits / 8);
+    if (bytes_per_sec == 0) return 0;
+    return (uint32_t)(((uint64_t)data_size * 1000ULL) / bytes_per_sec);
+}
+
+static bool wav_start_file(const char *folder_path, const char *file_name)
+{
+    int path_n = snprintf(s_mp3.file_path, sizeof(s_mp3.file_path),
+                          "%s/%s", folder_path, file_name);
+    if (path_n <= 0 || path_n >= (int)sizeof(s_mp3.file_path)) return false;
+
+    s_mp3.active     = true;
+    s_mp3.paused     = false;
+    s_mp3.radio      = false;
+    s_mp3.is_wav     = true;
+    s_mp3.folder_idx = -1;
+    s_mp3.track_idx  = -1;
+    s_mp3.position_ms = 0;
+    s_mp3.duration_ms = wav_estimate_duration_ms(s_mp3.file_path);
+    if (s_mp3.duration_ms == 0) s_mp3.duration_ms = 60000; /* fallback */
+    s_mp3.last_tick  = xTaskGetTickCount();
+    s_mp3.play_token++;
+    s_mp3_resume_on_bt_reconnect = false;
+#if CONFIG_BT_ENABLED && CONFIG_BT_A2DP_ENABLE
+    s_bt_resample_phase_q16 = 0;
+    s_bt_a2dp_sample_rate = BT_A2DP_TARGET_SAMPLE_RATE;
+    if (s_bt.connected) {
+        bt_pcm_clear();
+        s_bt_media_prime_pending = true;
+        s_bt_media_prime_target_bytes = BT_PCM_START_PRIME_BYTES;
+        s_bt_media_prime_deadline = xTaskGetTickCount() +
+                                    pdMS_TO_TICKS(BT_PCM_START_PRIME_TIMEOUT_MS);
+    } else {
+        s_bt_media_prime_pending = false;
+        s_bt_media_prime_deadline = 0;
+        s_bt_media_prime_target_bytes = BT_PCM_START_PRIME_BYTES;
+    }
+#endif
+    strncpy(s_mp3.folder_name, "voice-notes", sizeof(s_mp3.folder_name) - 1);
+    s_mp3.folder_name[sizeof(s_mp3.folder_name) - 1] = '\0';
+    strncpy(s_mp3.file_name, file_name, sizeof(s_mp3.file_name) - 1);
+    s_mp3.file_name[sizeof(s_mp3.file_name) - 1] = '\0';
+
+    ESP_LOGI(TAG, "wav: playing '%s'", s_mp3.file_path);
+
+    s_mp3_ui_override_allowed = true;
+    mp3_request_ui_refresh();
+    return true;
+}
+
 static bool mp3_start_track(int folder_idx, int track_idx, bool keep_position)
 {
     if (folder_idx < 0 || (size_t)folder_idx >= s_mp3_folder_count) return false;
@@ -5411,6 +5594,7 @@ static bool mp3_start_track(int folder_idx, int track_idx, bool keep_position)
 
     s_mp3.active = true;
     s_mp3.paused = false;
+    s_mp3.is_wav = false;
     s_mp3_resume_on_bt_reconnect = false;
     s_mp3.folder_idx = folder_idx;
     s_mp3.track_idx = resolved_idx;
@@ -10235,6 +10419,9 @@ static void pf_run_dir_scan(bool is_files, const char *folder, const char *run_i
                 } else if (is_jpeg_file_name(e->d_name)) {
                     s_file_list_types[s_file_list_count]  = PF_FILE_JPEG;
                     s_file_list_subidx[s_file_list_count] = jpeg_idx++;
+                } else if (is_wav_file_name(e->d_name)) {
+                    s_file_list_types[s_file_list_count]  = PF_FILE_WAV;
+                    s_file_list_subidx[s_file_list_count] = -1;
                 } else {
                     s_file_list_types[s_file_list_count]  = PF_FILE_OTHER;
                     s_file_list_subidx[s_file_list_count] = -1;
