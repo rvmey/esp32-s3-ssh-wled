@@ -730,6 +730,7 @@ static char           s_file_list_folder_path[MP3_MAX_PATH_LEN];
 static char           s_file_list_names[PF_FILE_LIST_MAX][MP3_MAX_FILE_LEN];
 static pf_file_type_t s_file_list_types[PF_FILE_LIST_MAX];
 static int            s_file_list_subidx[PF_FILE_LIST_MAX];
+static int            s_file_list_rows[PF_FILE_LIST_MAX]; /* display rows per entry (1 or 2) */
 static int            s_file_list_count = 0;
 
 /* Set while the SIP-address picker (from the "call" command with no
@@ -5021,10 +5022,10 @@ static void pf_list_restore_scale(void)
     }
 }
 
-/* Max characters per line at the font-scale-2 list display, so callers can
- * truncate names before appending them to the list text. A name longer than
- * this would wrap to a 2nd display line, throwing off the folder/file list
- * tap handlers' one-line-per-entry row math. */
+/* Max characters per line at the font-scale-2 list display.  File-list names
+ * are allowed to wrap to a 2nd row; the tap handler uses s_file_list_rows[]
+ * for cumulative row math.  Folder and SIP names are still truncated to one
+ * row to keep their simpler tap handlers correct. */
 static int pf_list_max_cols(void)
 {
     bool landscape = true;
@@ -5295,16 +5296,26 @@ static bool pf_touch_handler(int x, int y, screen_gesture_t gesture)
     }
     if (s_file_list_display_active && gesture == SCREEN_GESTURE_TAP) {
         /* The file list was drawn at font scale 2 (32px rows), with the
-         * "<folder>:" header on row 0 and file names on the rows below. */
+         * "<folder>:" header on row 0 and file names on the rows below.
+         * Each file entry may occupy 1 or 2 rows (tracked in s_file_list_rows). */
         bool landscape = true;
         screen_get_landscape(&landscape);
         int lcd_h_val = landscape ? 240 : 320;
         int ch = 32;
-        int total_lines = 1 + s_file_list_count;
-        int start_y = (lcd_h_val - total_lines * ch) / 2;
+        int total_rows = 1; /* header row */
+        for (int i = 0; i < s_file_list_count; i++) total_rows += s_file_list_rows[i];
+        int start_y = (lcd_h_val - total_rows * ch) / 2;
         if (start_y < 0) start_y = 0;
         int row = (y - start_y) / ch;
-        int idx = row - 1;
+        /* Map display row → entry index using cumulative row sums */
+        int idx = -1;
+        if (row >= 1) {
+            int cum = 1; /* skip header row */
+            for (int i = 0; i < s_file_list_count; i++) {
+                if (row < cum + s_file_list_rows[i]) { idx = i; break; }
+                cum += s_file_list_rows[i];
+            }
+        }
         if (idx >= 0 && idx < s_file_list_count) {
             s_file_list_display_active = false;
             pf_list_restore_scale();
@@ -10407,7 +10418,7 @@ static void pf_run_dir_scan(bool is_files, const char *folder, const char *run_i
     }
 #endif
 
-    char msg[256];
+    char msg[768];
     int  msg_len;
     if (is_files) {
 #if CONFIG_CORE2_HW
@@ -10441,7 +10452,10 @@ static void pf_run_dir_scan(bool is_files, const char *folder, const char *run_i
         int nlen = (int)strlen(e->d_name);
         int disp_len = nlen;
 #if CONFIG_CORE2_HW
-        if (disp_len > max_cols) disp_len = max_cols;
+        /* Folders and SIP entries: cap at one row to keep their tap handlers correct.
+         * File entries: allow up to two rows so the full name (including extension) wraps. */
+        int max_disp = is_files ? 2 * max_cols : max_cols;
+        if (disp_len > max_disp) disp_len = max_disp;
 #endif
         int  ja_need   = (jfirst ? 0 : 1) + 4 + nlen;  /* [,]\"name\" */
         bool msg_fits  = (msg_len + 1 + disp_len < (int)sizeof(msg) - 1);
@@ -10483,6 +10497,10 @@ static void pf_run_dir_scan(bool is_files, const char *folder, const char *run_i
                     s_file_list_types[s_file_list_count]  = PF_FILE_OTHER;
                     s_file_list_subidx[s_file_list_count] = -1;
                 }
+                int rows = (disp_len + max_cols - 1) / max_cols;
+                if (rows < 1) rows = 1;
+                if (rows > 2) rows = 2;
+                s_file_list_rows[s_file_list_count] = rows;
                 s_file_list_count++;
             }
 #endif
