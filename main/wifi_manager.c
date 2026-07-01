@@ -63,6 +63,23 @@ static volatile bool      s_abort_requested  = false;
 
 /* -------------------------------------------------------------------------- */
 
+/* Stays registered for the lifetime of the app; handles mid-session drops. */
+static void persistent_reconnect_handler(void *arg, esp_event_base_t event_base,
+                                         int32_t event_id, void *event_data)
+{
+    if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
+        /* s_wifi_event_group is non-NULL only during the initial connect flow,
+         * where the per-attempt event_handler already manages retries.
+         * Outside that flow (mid-session drop), we own the reconnect. */
+        if (!s_wifi_event_group && s_wifi_started) {
+            wifi_event_sta_disconnected_t *info =
+                (wifi_event_sta_disconnected_t *)event_data;
+            ESP_LOGW(TAG, "WiFi dropped (reason %d) — reconnecting", info->reason);
+            esp_wifi_connect();
+        }
+    }
+}
+
 static void event_handler(void *arg, esp_event_base_t event_base,
                           int32_t event_id, void *event_data)
 {
@@ -120,6 +137,10 @@ static void wifi_stack_init(void)
 
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&cfg));
+
+    ESP_ERROR_CHECK(esp_event_handler_register(
+        WIFI_EVENT, WIFI_EVENT_STA_DISCONNECTED,
+        &persistent_reconnect_handler, NULL));
 
     s_stack_initialized = true;
 }
