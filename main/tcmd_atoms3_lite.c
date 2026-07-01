@@ -1274,6 +1274,27 @@ static const char s_prov_html[] =
     "<input name='bookmark2' type='url' placeholder='https://...'>"
     "<p style='color:#64748b;font-size:.8rem;margin:.25rem 0 0'>"
     "Called on long press (&ge; 2 s).</p>"
+    "<hr>"
+    "<p style='color:#94a3b8;font-size:.85rem;margin:.5rem 0'>"
+    "Core2 Remote Trigger (optional) &mdash; trigger commands on a Core2 "
+    "picture frame. Local HTTP is tried first; cloud is the fallback.</p>"
+    "<label>Core2 IP (blank = auto-discover)</label>"
+    "<input name='core2_ip' placeholder='192.168.1.42'>"
+    "<label>Core2 Computer Name (cloud fallback)</label>"
+    "<input name='core2_name' placeholder='My Picture Frame'>"
+    "<hr style='border-color:#1e2130'>"
+    "<label>Single-Click Command &amp; Params</label>"
+    "<input name='cmd1' placeholder='speak'>"
+    "<input name='par1' placeholder='Hello world'>"
+    "<label>Double-Click Command &amp; Params</label>"
+    "<input name='cmd2' placeholder='color'>"
+    "<input name='par2' placeholder='red'>"
+    "<label>Triple-Click Command &amp; Params</label>"
+    "<input name='cmd3' placeholder='play'>"
+    "<input name='par3'>"
+    "<label>Long-Press Command &amp; Params</label>"
+    "<input name='cmd4' placeholder='sleep'>"
+    "<input name='par4'>"
     "<button type='submit'>Save &amp; Connect</button>"
     "</form></div></body></html>";
 
@@ -1293,7 +1314,7 @@ static esp_err_t prov_get_handler(httpd_req_t *req)
 
 static esp_err_t prov_save_handler(httpd_req_t *req)
 {
-    char body[2048] = {0};
+    char body[4096] = {0};
     int  len = httpd_req_recv(req, body, sizeof(body) - 1);
     if (len <= 0) { httpd_resp_send_500(req); return ESP_FAIL; }
     body[len] = '\0';
@@ -1305,6 +1326,11 @@ static esp_err_t prov_save_handler(httpd_req_t *req)
     char bookmark2[BOOKMARK_MAX] = {0};
     char bookmark3[BOOKMARK_MAX] = {0};
     char bookmark4[BOOKMARK_MAX] = {0};
+    char ip[CORE2_IP_MAX]      = {0}, name[CORE2_NAME_MAX] = {0};
+    char cmd1[CMD_NAME_MAX]    = {0}, par1[CMD_PARAMS_MAX] = {0};
+    char cmd2[CMD_NAME_MAX]    = {0}, par2[CMD_PARAMS_MAX] = {0};
+    char cmd3[CMD_NAME_MAX]    = {0}, par3[CMD_PARAMS_MAX] = {0};
+    char cmd4[CMD_NAME_MAX]    = {0}, par4[CMD_PARAMS_MAX] = {0};
 
     form_get_field(body, "ssid",      ssid,      sizeof(ssid));
     form_get_field(body, "pass",      pass,      sizeof(pass));
@@ -1316,6 +1342,16 @@ static esp_err_t prov_save_handler(httpd_req_t *req)
     form_get_field(body, "bookmark2", bookmark2, sizeof(bookmark2));
     form_get_field(body, "bookmark3", bookmark3, sizeof(bookmark3));
     form_get_field(body, "bookmark4", bookmark4, sizeof(bookmark4));
+    form_get_field(body, "core2_ip",   ip,   sizeof(ip));
+    form_get_field(body, "core2_name", name, sizeof(name));
+    form_get_field(body, "cmd1", cmd1, sizeof(cmd1));
+    form_get_field(body, "par1", par1, sizeof(par1));
+    form_get_field(body, "cmd2", cmd2, sizeof(cmd2));
+    form_get_field(body, "par2", par2, sizeof(par2));
+    form_get_field(body, "cmd3", cmd3, sizeof(cmd3));
+    form_get_field(body, "par3", par3, sizeof(par3));
+    form_get_field(body, "cmd4", cmd4, sizeof(cmd4));
+    form_get_field(body, "par4", par4, sizeof(par4));
 
     httpd_resp_set_type(req, "text/html");
     httpd_resp_send(req, s_prov_saved_html, HTTPD_RESP_USE_STRLEN);
@@ -1327,6 +1363,16 @@ static esp_err_t prov_save_handler(httpd_req_t *req)
     if (bookmark2[0]) nvs_write_str(NVS_KEY_BOOKMARK2, bookmark2);
     if (bookmark3[0]) nvs_write_str(NVS_KEY_BOOKMARK3, bookmark3);
     if (bookmark4[0]) nvs_write_str(NVS_KEY_BOOKMARK4, bookmark4);
+    if (ip[0])   nvs_write_str(NVS_KEY_CORE2_IP,   ip);
+    if (name[0]) nvs_write_str(NVS_KEY_CORE2_NAME, name);
+    if (cmd1[0]) nvs_write_str(NVS_KEY_CMD1, cmd1);
+    if (par1[0]) nvs_write_str(NVS_KEY_PAR1, par1);
+    if (cmd2[0]) nvs_write_str(NVS_KEY_CMD2, cmd2);
+    if (par2[0]) nvs_write_str(NVS_KEY_PAR2, par2);
+    if (cmd3[0]) nvs_write_str(NVS_KEY_CMD3, cmd3);
+    if (par3[0]) nvs_write_str(NVS_KEY_PAR3, par3);
+    if (cmd4[0]) nvs_write_str(NVS_KEY_CMD4, cmd4);
+    if (par4[0]) nvs_write_str(NVS_KEY_PAR4, par4);
 
     s_prov_done = true;
     return ESP_OK;
