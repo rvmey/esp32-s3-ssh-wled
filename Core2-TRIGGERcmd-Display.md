@@ -341,6 +341,51 @@ If you prefer Go, use sd-backup-server/main.go
 
 ---
 
+## Local HTTP API
+
+The Core2 exposes a small HTTP API on port 80 that lets other devices on the same network send commands without going through the TRIGGERcmd cloud.
+
+### `POST /trigger`
+
+Send any TRIGGERcmd command directly to the Core2:
+
+```
+POST http://<core2-ip>/trigger
+Content-Type: application/json
+
+{"trigger": "speak", "params": "Hello from AtomS3"}
+```
+
+| JSON field | Required | Description |
+|------------|----------|-------------|
+| `trigger` | yes | Command name (same names as TRIGGERcmd) |
+| `params` | no | Optional parameters string |
+
+Response on success: `{"status":"queued"}` (HTTP 200). The command is queued and executed on the main task within the next loop tick (typically < 50 ms).
+
+The command runs through the same dispatch path as touch-screen and TRIGGERcmd-received commands, so all commands are supported identically.
+
+### UDP auto-discovery (port 5380)
+
+The Core2 listens for UDP broadcast packets on **port 5380** so that other devices can discover its IP address automatically.
+
+**Discovery flow:**
+
+1. Sender broadcasts `TCMD_DISCOVER` to `255.255.255.255:5380`.
+2. Core2 replies with `TCMD_CORE2 <ip>` (e.g. `TCMD_CORE2 192.168.1.42`) to the sender's address.
+
+This is used by the **AtomS3 Lite** to find the Core2 at boot — no manual IP configuration needed. The listener starts automatically after Wi-Fi connects and uses a 2 KB FreeRTOS task.
+
+### Integration with AtomS3 Lite
+
+The [AtomS3 Lite](AtomS3-Lite-TRIGGERcmd-RGB-LED.md) variant uses this API to trigger Core2 commands from its physical button:
+
+- Any of the four button actions (single/double/triple click, long press) can be configured with a Core2 command name and optional parameters.
+- The AtomS3 Lite discovers the Core2 via UDP broadcast at boot, then POSTs to `/trigger` on each button press.
+- If the local POST fails, it re-discovers and retries once, then falls back to the TRIGGERcmd cloud API.
+
+---
+
 ## Building this variant
 
 ```powershell
