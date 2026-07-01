@@ -924,7 +924,7 @@ static esp_err_t cfg_get_handler(httpd_req_t *req)
         "<input name='core2_name' value='");
     send_escaped(req, s_core2_name);
     httpd_resp_sendstr_chunk(req,
-        "' placeholder='My Picture Frame'>"
+        "' placeholder='TCMDCORE2-(MAC)'>"
         "<hr style='border-color:#1e2130'>"
         "<label>Single-Click Command</label>"
         "<input name='cmd1' value='");
@@ -1281,7 +1281,7 @@ static const char s_prov_html[] =
     "<label>Core2 IP (blank = auto-discover)</label>"
     "<input name='core2_ip' placeholder='192.168.1.42'>"
     "<label>Core2 Computer Name (cloud fallback)</label>"
-    "<input name='core2_name' placeholder='My Picture Frame'>"
+    "<input name='core2_name' placeholder='TCMDCORE2-(MAC)'>"
     "<hr style='border-color:#1e2130'>"
     "<label>Single-Click Command &amp; Params</label>"
     "<input name='cmd1' placeholder='speak'>"
