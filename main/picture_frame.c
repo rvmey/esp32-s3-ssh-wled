@@ -10978,6 +10978,98 @@ static void sync_time_before_tls(void)
     ESP_LOGW(TAG, "SNTP: time not synced before timeout; current=%lld", (long long)time(NULL));
 }
 
+/* ── Computer lookup helpers ─────────────────────────────────────────────── */
+
+/* Scan a JSON array (from GET /api/computer/list) for an object whose "name"
+ * field equals target_name, then return its "id" field.  Handles both quoted
+ * ("id":"x") and bare-integer ("id":123) id values.  Returns true on success. */
+static bool json_find_id_for_name(const char *json, const char *target_name,
+                                   char *out_id, size_t out_sz)
+{
+    const char *p = json;
+    while ((p = strchr(p, '{')) != NULL) {
+        /* find the closing '}' of this object, depth-aware, skipping strings */
+        int depth = 0;
+        const char *q = p;
+        const char *end = NULL;
+        while (*q) {
+            if (*q == '"') {
+                q++;
+                while (*q && *q != '"') { if (*q == '\\') q++; q++; }
+            } else if (*q == '{') {
+                depth++;
+            } else if (*q == '}') {
+                if (--depth == 0) { end = q; break; }
+            }
+            q++;
+        }
+        if (!end) break;
+
+        size_t obj_len = (size_t)(end - p + 1);
+        char *obj = malloc(obj_len + 1);
+        if (!obj) { p = end + 1; continue; }
+        memcpy(obj, p, obj_len);
+        obj[obj_len] = '\0';
+
+        char name_val[64] = {0};
+        bool found = false;
+        if (json_extract_str(obj, "name", name_val, sizeof(name_val))
+            && strcmp(name_val, target_name) == 0) {
+            found = json_extract_str(obj, "id", out_id, out_sz);
+            if (!found) {
+                /* bare integer id: "id":12345 */
+                const char *ip = strstr(obj, "\"id\"");
+                if (ip) {
+                    ip += 4;
+                    while (*ip == ' ' || *ip == ':') ip++;
+                    size_t n = 0;
+                    while (ip[n] >= '0' && ip[n] <= '9' && n < out_sz - 1) n++;
+                    if (n > 0) { memcpy(out_id, ip, n); out_id[n] = '\0'; found = true; }
+                }
+            }
+        }
+        free(obj);
+        if (found) return true;
+        p = end + 1;
+    }
+    return false;
+}
+
+/* Fetch GET /api/computer/list and look for a computer named computer_name.
+ * If found, stores the id in s_computer_id and NVS and returns true.
+ * Used at boot when NVS has no computer_id (e.g. after a firmware reflash)
+ * so the device re-uses the existing cloud computer instead of creating a
+ * duplicate. */
+static bool pf_lookup_computer_id(const char *computer_name)
+{
+    char url[192];
+    snprintf(url, sizeof(url), "%s/api/computer/list", TCMD_BASE_URL);
+
+    char *body = NULL;
+    int len = https_get_auth(url, s_hw_token, &body);
+    if (len <= 0 || !body) {
+        ESP_LOGW(TAG, "computer/list fetch failed (len=%d)", len);
+        if (body) free(body);
+        return false;
+    }
+
+    char cid[COMPUTER_ID_MAX_LEN] = {0};
+    bool found = json_find_id_for_name(body, computer_name, cid, sizeof(cid));
+    free(body);
+
+    if (!found || !cid[0]) {
+        ESP_LOGI(TAG, "computer '%s' not found in list — will create", computer_name);
+        return false;
+    }
+
+    strncpy(s_computer_id, cid, sizeof(s_computer_id) - 1);
+    s_computer_id[sizeof(s_computer_id) - 1] = '\0';
+    esp_err_t we = nvs_write_str(NVS_KEY_COMPID, s_computer_id);
+    ESP_LOGI(TAG, "Reusing existing computer_id: %s (nvs write=%s)",
+             s_computer_id, esp_err_to_name(we));
+    return true;
+}
+
 /* ── Connection step: Socket.IO + subscribeToFunRoom ────────────────────── */
 
 #if CONFIG_HARDWARE_CYD
@@ -11563,6 +11655,9 @@ void picture_frame_run(void)
     /* ── NVS: read hw_token and computer_id ─────────────────────────────── */
     bool have_token   = nvs_read_str(NVS_KEY_TOKEN,  s_hw_token,   sizeof(s_hw_token));
     bool have_comp_id = nvs_read_str(NVS_KEY_COMPID, s_computer_id, sizeof(s_computer_id));
+    /* Set true when we found and reused an existing cloud computer instead of
+     * creating a new one — suppresses the duplicate-creating WS command sync. */
+    bool computer_found_not_created = false;
 #if CONFIG_CORE2_HW
     nvs_read_str(NVS_KEY_VOICE_CONV, s_voice_conv_id, sizeof(s_voice_conv_id));
 #endif
@@ -11718,47 +11813,74 @@ void picture_frame_run(void)
         char computer_name[COMPUTER_NAME_LEN];
         pf_build_computer_name(computer_name, sizeof(computer_name));
 
-        ESP_LOGI(TAG, "Creating computer: %s", computer_name);
-        pf_status_draw("Creating computer...");
+        /* Check if a computer with this name already exists (e.g. after a
+         * firmware reflash that erased NVS).  Re-use it rather than creating
+         * a duplicate that the user would have to delete manually. */
+        if (pf_lookup_computer_id(computer_name)) {
+            computer_found_not_created = true;
+            char msg[64];
+            snprintf(msg, sizeof(msg), "Ready!\n%s", computer_name);
+            screen_draw_text(msg);
+            vTaskDelay(pdMS_TO_TICKS(500));
+        } else {
+            ESP_LOGI(TAG, "Creating computer: %s", computer_name);
+            pf_status_draw("Creating computer...");
 
-        char save_url[192];
-        snprintf(save_url, sizeof(save_url), "%s/api/computer/save", TCMD_BASE_URL);
+            char save_url[192];
+            snprintf(save_url, sizeof(save_url), "%s/api/computer/save", TCMD_BASE_URL);
 
-        /* Body: name=TCMDCORE2-AABBCCDDEEFF&voice=core+2 */
-        char form[64];
-        snprintf(form, sizeof(form), "name=%s&voice=core+2", computer_name);
+            /* Body: name=TCMDCORE2-AABBCCDDEEFF&voice=core+2 */
+            char form[64];
+            snprintf(form, sizeof(form), "name=%s&voice=core+2", computer_name);
 
-        char *resp = NULL;
-        int status = https_post_form(save_url, s_hw_token, form, &resp);
-        if (status >= 200 && status < 300 && resp) {
-            char cid[COMPUTER_ID_MAX_LEN] = {0};
-            if (json_extract_nested(resp, "data", "id", cid, sizeof(cid)) && cid[0]) {
-                strncpy(s_computer_id, cid, sizeof(s_computer_id) - 1);
-                nvs_write_str(NVS_KEY_COMPID, s_computer_id);
-                ESP_LOGI(TAG, "computer_id stored: %s", s_computer_id);
+            char *resp = NULL;
+            int status = https_post_form(save_url, s_hw_token, form, &resp);
+            if (status >= 200 && status < 300 && resp) {
+                char cid[COMPUTER_ID_MAX_LEN] = {0};
+                if (json_extract_nested(resp, "data", "id", cid, sizeof(cid)) && cid[0]) {
+                    strncpy(s_computer_id, cid, sizeof(s_computer_id) - 1);
+                    nvs_write_str(NVS_KEY_COMPID, s_computer_id);
+                    ESP_LOGI(TAG, "computer_id stored: %s", s_computer_id);
 
-                char msg[64];
-                snprintf(msg, sizeof(msg), "Ready!\n%s", computer_name);
-                screen_draw_text(msg);
+                    char msg[64];
+                    snprintf(msg, sizeof(msg), "Ready!\n%s", computer_name);
+                    screen_draw_text(msg);
+                } else {
+                    ESP_LOGE(TAG, "computer/save: could not parse data.id from: %s", resp);
+                    free(resp);
+                    screen_draw_text("Provision failed\nRetrying in 10s");
+                    vTaskDelay(pdMS_TO_TICKS(10000));
+                    esp_restart();
+                }
             } else {
-                ESP_LOGE(TAG, "computer/save: could not parse data.id from: %s", resp);
-                free(resp);
+                ESP_LOGE(TAG, "computer/save → HTTP %d", status);
+                if (resp) free(resp);
                 screen_draw_text("Provision failed\nRetrying in 10s");
                 vTaskDelay(pdMS_TO_TICKS(10000));
                 esp_restart();
             }
-        } else {
-            ESP_LOGE(TAG, "computer/save → HTTP %d", status);
             if (resp) free(resp);
-            screen_draw_text("Provision failed\nRetrying in 10s");
-            vTaskDelay(pdMS_TO_TICKS(10000));
-            esp_restart();
-        }
-        if (resp) free(resp);
 
-        vTaskDelay(pdMS_TO_TICKS(1500));
+            vTaskDelay(pdMS_TO_TICKS(1500));
+        }
     }
 #endif /* !CONFIG_HARDWARE_CYD */
+
+#if CONFIG_HARDWARE_CYD
+    /* CYD creates the computer over the websocket (cyd_create_computer_over_ws,
+     * called inside connect_and_subscribe).  But if firmware was reflashed and
+     * the cloud computer already exists, do a one-shot HTTPS lookup NOW — before
+     * the websocket connects — so only one TLS context is open at a time.  If
+     * found, s_computer_id is populated and cyd_create_computer_over_ws will
+     * short-circuit, avoiding a duplicate computer. */
+    if (!have_comp_id) {
+        char computer_name[COMPUTER_NAME_LEN];
+        pf_build_computer_name(computer_name, sizeof(computer_name));
+        if (pf_lookup_computer_id(computer_name)) {
+            computer_found_not_created = true;
+        }
+    }
+#endif /* CONFIG_HARDWARE_CYD */
 
 #if CONFIG_CORE2_HW
     /* Log and configure AXP192 power rails for SK6812 LED bar.
@@ -11825,10 +11947,11 @@ void picture_frame_run(void)
              * successfully" with a new id), and the WS path can't fetch+diff
              * the existing command list, so sync ONLY right after the computer
              * is freshly created (a new computer has no commands yet).
-             * have_comp_id is the value read from NVS at boot, so
-             * !have_comp_id == "created this boot". On a normal reboot the
-             * commands are already registered. */
-            if (!have_comp_id) {
+             * have_comp_id is the value read from NVS at boot; computer_found_not_created
+             * is set when a reflash+NVS-erase was recovered by reusing an existing cloud
+             * computer via GET /api/computer/list.  Either way the computer already has
+             * its commands, so skip the duplicate-creating WS sync. */
+            if (!have_comp_id && !computer_found_not_created) {
                 pf_status_draw("Syncing commands...");
                 sync_all_commands_ws();
             }
