@@ -11053,6 +11053,8 @@ static bool pf_lookup_computer_id(const char *computer_name)
         return false;
     }
 
+    ESP_LOGI(TAG, "computer/list response (%d bytes): %.300s", len, body);
+
     char cid[COMPUTER_ID_MAX_LEN] = {0};
     bool found = json_find_id_for_name(body, computer_name, cid, sizeof(cid));
     free(body);
