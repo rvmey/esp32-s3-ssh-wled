@@ -11053,10 +11053,18 @@ static bool pf_lookup_computer_id(const char *computer_name)
         return false;
     }
 
-    ESP_LOGI(TAG, "computer/list response (%d bytes): %.300s", len, body);
+    /* TRIGGERcmd returns {"records":[{...},{...}]} — find the inner array so
+     * json_find_id_for_name sees individual computer objects, not the wrapper. */
+    const char *search_start = body;
+    const char *rec = strstr(body, "\"records\"");
+    if (rec) {
+        rec += 9;  /* skip past "records" */
+        while (*rec == ' ' || *rec == ':') rec++;
+        if (*rec == '[') search_start = rec;
+    }
 
     char cid[COMPUTER_ID_MAX_LEN] = {0};
-    bool found = json_find_id_for_name(body, computer_name, cid, sizeof(cid));
+    bool found = json_find_id_for_name(search_start, computer_name, cid, sizeof(cid));
     free(body);
 
     if (!found || !cid[0]) {
