@@ -683,7 +683,7 @@ static bool trigger_core2(const char *cmd, const char *params)
         esp_http_client_cleanup(client);
 
         if (status >= 200 && status < 300) {
-            ESP_LOGI(TAG, "Core2 local trigger '%s' -> HTTP %d", cmd, status);
+            ESP_LOGI(TAG, "Core2 local trigger '%s' params='%s' -> HTTP %d", cmd, params ? params : "", status);
             atoms3_led_set(0, 64, 0);
             vTaskDelay(pdMS_TO_TICKS(500));
             return true;
@@ -721,7 +721,7 @@ static bool trigger_core2(const char *cmd, const char *params)
             esp_http_client_cleanup(client);
 
             if (status >= 200 && status < 300) {
-                ESP_LOGI(TAG, "Core2 cloud trigger '%s' -> HTTP %d", cmd, status);
+                ESP_LOGI(TAG, "Core2 cloud trigger '%s' params='%s' -> HTTP %d", cmd, params ? params : "", status);
                 atoms3_led_set(0, 64, 0);
                 vTaskDelay(pdMS_TO_TICKS(500));
                 return true;

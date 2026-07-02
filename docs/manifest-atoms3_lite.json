@@ -1,6 +1,6 @@
 {
   "name": "TRIGGERcmd AtomS3 Lite (M5Stack AtomS3 Lite)",
-  "version": "2.0.581",
+  "version": "2.0.582",
   "new_install_improv_wifi": false,
   "builds": [
     {
