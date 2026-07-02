@@ -1314,9 +1314,10 @@ static esp_err_t prov_get_handler(httpd_req_t *req)
 
 static esp_err_t prov_save_handler(httpd_req_t *req)
 {
-    char body[4096] = {0};
-    int  len = httpd_req_recv(req, body, sizeof(body) - 1);
-    if (len <= 0) { httpd_resp_send_500(req); return ESP_FAIL; }
+    char *body = malloc(4096);
+    if (!body) { httpd_resp_send_500(req); return ESP_FAIL; }
+    int  len = httpd_req_recv(req, body, 4095);
+    if (len <= 0) { free(body); httpd_resp_send_500(req); return ESP_FAIL; }
     body[len] = '\0';
 
     char ssid[64]  = {0}, pass[64]  = {0};
@@ -1352,6 +1353,8 @@ static esp_err_t prov_save_handler(httpd_req_t *req)
     form_get_field(body, "par3", par3, sizeof(par3));
     form_get_field(body, "cmd4", cmd4, sizeof(cmd4));
     form_get_field(body, "par4", par4, sizeof(par4));
+
+    free(body);
 
     httpd_resp_set_type(req, "text/html");
     httpd_resp_send(req, s_prov_saved_html, HTTPD_RESP_USE_STRLEN);
@@ -1407,7 +1410,7 @@ static void run_softap_provisioning(void)
     ESP_ERROR_CHECK(esp_wifi_start());
 
     httpd_config_t http_cfg = HTTPD_DEFAULT_CONFIG();
-    http_cfg.stack_size       = 8192;
+    http_cfg.stack_size       = 12288;
     http_cfg.max_open_sockets = 4;
     http_cfg.lru_purge_enable = true;
     httpd_handle_t server = NULL;
