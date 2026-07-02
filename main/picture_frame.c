@@ -5987,8 +5987,15 @@ static bool core2_tts_speak(const char *text)
         memcpy(p, suffix, sizeof(suffix)); /* includes NUL */
     }
 
-    /* Suspend mp3 task and pause I2S while making HTTP call */
-    if (s_mp3.active && !s_mp3.paused) s_mp3.paused = true;
+    /* Suspend mp3 task and pause I2S while making HTTP call.
+     * Wait one scheduler tick after setting paused so the mp3 task can finish
+     * any in-flight SPI DMA read before we suspend it.  Suspending mid-fread
+     * leaves a DMA bounce buffer pinned; repeated TTS calls then exhaust the
+     * internal DMA heap and crash the SPI master. */
+    if (s_mp3.active && !s_mp3.paused) {
+        s_mp3.paused = true;
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
     if (s_mp3_task) vTaskSuspend(s_mp3_task);
     core2_audio_pause();
 
@@ -6013,8 +6020,8 @@ static bool core2_tts_speak(const char *text)
             .method            = HTTP_METHOD_POST,
             .timeout_ms        = CORE2_TTS_TIMEOUT_MS,
             .crt_bundle_attach = esp_crt_bundle_attach,
-            .buffer_size       = 4096,
-            .buffer_size_tx    = 4096,
+            .buffer_size       = 512,
+            .buffer_size_tx    = 512,
             .keep_alive_enable = false,
         };
         esp_http_client_handle_t client = esp_http_client_init(&cfg);
