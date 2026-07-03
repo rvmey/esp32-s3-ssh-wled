@@ -7586,16 +7586,19 @@ static bool pf_post_chunk(const char *url, const char *relpath,
     int total_len = hdr_len + (int)len + footer_len;
     char content_type[] = "multipart/form-data; boundary=" PF_BACKUP_BOUNDARY;
 
-    /* Each chunk opens its own TCP connection (we must close it before the next
-     * SD read), so rapid connect/close churn occasionally hits a transient
-     * "Connection already in progress" / server stall.  Retry a few times with a
-     * growing delay so one blip doesn't fail the whole (possibly large) file. */
+    /* Field-observed throughput on this link can be as low as ~450 B/s (cause
+     * unknown — not BT coexistence, confirmed no BT device paired; looks like
+     * WiFi RF/AP-side congestion). At that rate an 18 KB chunk legitimately
+     * takes ~40 s, and the server DOES receive it correctly — it's just slow,
+     * not stuck. A short timeout here doesn't recover from that; it just
+     * aborts an in-flight transfer and restarts it from byte 0, doubling the
+     * wasted airtime. So: fewer attempts, each given much longer to finish. */
     bool ok = false;
-    for (int attempt = 1; attempt <= 4 && !ok; attempt++) {
+    for (int attempt = 1; attempt <= 2 && !ok; attempt++) {
         esp_http_client_config_t cfg = {
             .url               = url,
             .method            = HTTP_METHOD_POST,
-            .timeout_ms        = 20000,
+            .timeout_ms        = 90000,
             /* Keep the HTTP buffers small: they come from internal RAM. */
             .buffer_size       = 1024,
             .buffer_size_tx    = 1024,
@@ -7620,7 +7623,7 @@ static bool pf_post_chunk(const char *url, const char *relpath,
                      (long long)((esp_timer_get_time() - t0) / 1000),
                      esp_err_to_name(open_err));
             esp_http_client_cleanup(client);
-            if (attempt < 4) vTaskDelay(pdMS_TO_TICKS(500 * attempt));
+            if (attempt < 2) vTaskDelay(pdMS_TO_TICKS(500 * attempt));
             continue;
         }
 
@@ -7650,9 +7653,9 @@ static bool pf_post_chunk(const char *url, const char *relpath,
         }
         esp_http_client_close(client);
         esp_http_client_cleanup(client);
-        if (!ok && attempt < 4) vTaskDelay(pdMS_TO_TICKS(500 * attempt));
+        if (!ok && attempt < 2) vTaskDelay(pdMS_TO_TICKS(500 * attempt));
     }
-    if (!ok) ESP_LOGE(TAG, "backup: %s@%ld gave up after 4 attempts", relpath, offset);
+    if (!ok) ESP_LOGE(TAG, "backup: %s@%ld gave up after 2 attempts", relpath, offset);
     free(part_hdr);
     return ok;
 }
@@ -7871,6 +7874,13 @@ static void pf_backup_sd(const char *run_id)
     char probe_url[256];
     pf_make_probe_url(url, probe_url, sizeof(probe_url));
 
+    {
+        wifi_ap_record_t ap_info;
+        if (esp_wifi_sta_get_ap_info(&ap_info) == ESP_OK) {
+            ESP_LOGI(TAG, "backup: WiFi rssi=%d channel=%u",
+                     ap_info.rssi, ap_info.primary);
+        }
+    }
     ESP_LOGI(TAG, "backup: starting → %s (probe %s, chunk %u KB)",
              url, probe_url, (unsigned)(chunk_cap / 1024));
     screen_draw_text("Backing up...");
