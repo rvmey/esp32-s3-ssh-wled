@@ -8,6 +8,12 @@ CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
 # WebSocket receive buffer (must hold a full Socket.IO frame + overhead)
 CONFIG_WS_BUFFER_SIZE=8192
 
+# Sockets: sdkconfig.defaults sets 8 (sized for the SSH variants), but Core2's
+# steady state already holds ~7 (Socket.IO TLS, SIP TLS, httpd listen + up to
+# 3 connections, UDP discover) — the backup command then fails every
+# esp_http_client connect with "Failed to create socket".  16 leaves headroom.
+CONFIG_LWIP_MAX_SOCKETS=16
+
 # QSPI PSRAM (8 MB PSRAM on Core2, classic ESP32 — NOT OPI/octal)
 CONFIG_SPIRAM=y
 CONFIG_SPIRAM_USE_MALLOC=y

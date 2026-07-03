@@ -7473,13 +7473,48 @@ static void pf_make_probe_url(const char *backup_url, char *out, size_t out_sz)
     snprintf(out, out_sz, "%.*s/probe", (int)(path_start - backup_url), backup_url);
 }
 
+/* Percent-encode a string for use as a URL query value.  Everything except
+ * RFC 3986 unreserved characters and '/' is %XX-escaped ('/' stays readable
+ * and is safe inside a query value).  FAT long names arrive as UTF-8; each
+ * byte is escaped individually, which decodes back to the same UTF-8. */
+static void pf_url_encode(const char *in, char *out, size_t out_sz)
+{
+    static const char hex[] = "0123456789ABCDEF";
+    size_t o = 0;
+    for (const unsigned char *p = (const unsigned char *)in;
+         *p && o + 4 < out_sz; p++) {
+        if (isalnum(*p) || strchr("-_.~/", *p)) {
+            out[o++] = (char)*p;
+        } else {
+            out[o++] = '%';
+            out[o++] = hex[*p >> 4];
+            out[o++] = hex[*p & 0x0F];
+        }
+    }
+    out[o] = '\0';
+}
+
 /* Check whether the server already has a complete copy of the file.
  * GET <probe_url>?path=<relpath>&total=<total> → 200 "exists" means skip.
  * Any other response (404, timeout, error) means proceed with upload. */
 static bool pf_probe_file(const char *probe_url, const char *relpath, long total)
 {
-    char url[512];
-    snprintf(url, sizeof(url), "%s?path=%s&total=%ld", probe_url, relpath, total);
+    /* relpath must be percent-encoded: FAT names contain spaces and other
+     * URL-reserved bytes ("System Volume Information/…") that http_parser
+     * rejects raw.  Buffers come from PSRAM so the worst-case 3x expansion
+     * doesn't eat the 8 KB task stack. */
+    size_t enc_sz = 3 * strlen(relpath) + 1;
+    size_t url_sz = strlen(probe_url) + enc_sz + 32;
+    char *enc = heap_caps_malloc(enc_sz, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!enc) enc = malloc(enc_sz);
+    char *url = heap_caps_malloc(url_sz, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!url) url = malloc(url_sz);
+    if (!enc || !url) {          /* treat as "not on server" → just upload */
+        free(enc); free(url);
+        return false;
+    }
+    pf_url_encode(relpath, enc, enc_sz);
+    snprintf(url, url_sz, "%s?path=%s&total=%ld", probe_url, enc, total);
 
     esp_http_client_config_t cfg = {
         .url               = url,
@@ -7493,7 +7528,7 @@ static bool pf_probe_file(const char *probe_url, const char *relpath, long total
         cfg.crt_bundle_attach = esp_crt_bundle_attach;
 
     esp_http_client_handle_t client = esp_http_client_init(&cfg);
-    if (!client) return false;
+    if (!client) { free(enc); free(url); return false; }
 
     bool exists = false;
     if (esp_http_client_open(client, 0) == ESP_OK) {
@@ -7506,6 +7541,8 @@ static bool pf_probe_file(const char *probe_url, const char *relpath, long total
         esp_http_client_close(client);
     }
     esp_http_client_cleanup(client);
+    free(enc);
+    free(url);
     return exists;
 }
 
@@ -7697,6 +7734,8 @@ static void pf_backup_dir(const char *dirpath, const char *relbase,
     while ((e = readdir(d)) != NULL) {
         if (e->d_name[0] == '.') continue;                    /* . .. and dotfiles */
         if (strcmp(e->d_name, "tmp_tts.mp3") == 0) continue;  /* transient TTS file */
+        if (strcmp(e->d_name, "System Volume Information") == 0 ||
+            strcmp(e->d_name, "$RECYCLE.BIN") == 0) continue; /* Windows metadata */
 
         snprintf(child, path_buf_sz, "%s/%s", dirpath, e->d_name);
         if (relbase[0])
