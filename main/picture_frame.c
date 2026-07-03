@@ -3799,6 +3799,8 @@ static void mp3_player_task(void *arg)
     HMP3Decoder dec = MP3InitDecoder();
     if (!dec) {
         ESP_LOGE(TAG, "mp3: MP3InitDecoder failed");
+        s_mp3_task = NULL;   /* else suspend/resume would use a dead handle
+                              * and mp3_ensure_task would never retry */
         vTaskDelete(NULL);
         return;
     }
@@ -4607,7 +4609,18 @@ static void mp3_ensure_task(void)
 #if CONFIG_CORE2_HW
     (void)core2_audio_init();
 #endif
-    xTaskCreate(mp3_player_task, "mp3_play", 6144, NULL, 5, &s_mp3_task);
+    /* Stack stays in internal RAM: this task decodes MP3 and feeds I2S in real
+     * time, and a PSRAM stack risks underruns on the classic ESP32.  Creation
+     * can fail under internal-RAM pressure, so at least say so — s_mp3_task
+     * stays NULL and the next playback command retries. */
+    if (xTaskCreate(mp3_player_task, "mp3_play", 6144, NULL, 5, &s_mp3_task)
+            != pdPASS) {
+        s_mp3_task = NULL;
+        ESP_LOGE(TAG, "mp3: failed to create player task — internal free=%u largest=%u",
+                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+                 (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
+        screen_draw_text("Playback failed\n(no memory)");
+    }
 }
 
 static void mp3_format_time(uint32_t ms, char *out, size_t out_sz)
@@ -7799,7 +7812,9 @@ static void pf_backup_task(void *arg)
     pf_backup_sd(run_id);
 
     s_backup_running = false;
-    vTaskDelete(NULL);
+    /* Created with xTaskCreateWithCaps — plain vTaskDelete would leave the
+     * heap-allocated TCB + stack unfreed (they look static to the idle task). */
+    vTaskDeleteWithCaps(NULL);
 }
 
 /*
@@ -10383,6 +10398,10 @@ static void pf_run_dir_scan(bool is_files, const char *folder, const char *run_i
     if (!json_arr) {
         ESP_LOGE(TAG, "dir scan: no memory for result buffer");
         screen_draw_text("Out of memory");
+        /* Still ack the run — the websocket callback suppressed the generic
+         * run/save expecting us to post it, so bailing silently would leave
+         * the run stuck in the TRIGGERcmd runs list forever. */
+        pf_dir_post_result(run_id, "Out of memory");
         return;
     }
 
@@ -11509,7 +11528,7 @@ static void udp_discover_task(void *arg)
     int sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     if (sock < 0) {
         ESP_LOGE(TAG, "udp discover: socket() failed");
-        vTaskDelete(NULL);
+        vTaskDeleteWithCaps(NULL);   /* WithCaps task — see pf_backup_task */
         return;
     }
 
@@ -11521,7 +11540,7 @@ static void udp_discover_task(void *arg)
     if (bind(sock, (struct sockaddr *)&bind_addr, sizeof(bind_addr)) < 0) {
         ESP_LOGE(TAG, "udp discover: bind() failed");
         close(sock);
-        vTaskDelete(NULL);
+        vTaskDeleteWithCaps(NULL);   /* WithCaps task — see pf_backup_task */
         return;
     }
 
@@ -12388,10 +12407,17 @@ void picture_frame_run(void)
                     /* Stack in PSRAM, not internal DMA RAM — same rationale as
                      * start_udp_discover_listener(): internal DMA RAM is a shared
                      * resource with SD SPI bounce buffers, and this task can be
-                     * kicked off during other DMA-heavy activity. */
+                     * kicked off during other DMA-heavy activity.  Fall back to
+                     * internal RAM on boards without PSRAM (CYD sets
+                     * SPIRAM_IGNORE_NOTFOUND, so the SPIRAM heap may not exist).
+                     * Both attempts use WithCaps so the task always exits via
+                     * vTaskDeleteWithCaps. */
                     if (xTaskCreateWithCaps(pf_backup_task, "pf_backup", 8192, NULL,
                                             4, NULL,
-                                            MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS) {
+                                            MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS &&
+                        xTaskCreateWithCaps(pf_backup_task, "pf_backup", 8192, NULL,
+                                            4, NULL,
+                                            MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) != pdPASS) {
                         s_backup_running = false;
                         ESP_LOGE(TAG, "backup: failed to create task");
                         screen_draw_text("Backup failed\n(no memory)");
