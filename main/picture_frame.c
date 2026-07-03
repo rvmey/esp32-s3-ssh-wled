@@ -7819,6 +7819,46 @@ static void pf_backup_sd(const char *run_id)
              url, probe_url, (unsigned)(chunk_cap / 1024));
     screen_draw_text("Backing up...");
 
+    /* Fail fast if the server isn't answering HTTP.  A hung receiver accepts
+     * TCP but never responds; without this check every file then burns 4
+     * upload attempts x 20 s timeouts, and the long-lived half-open sockets
+     * overlap SD reads — the exact internal-DMA-RAM contention this design
+     * avoids ("wifi:m f null" + sdmmc_read_sectors ENOMEM in the field). */
+    {
+        esp_http_client_config_t cfg = {
+            .url               = probe_url,      /* no params → any HTTP status is fine */
+            .method            = HTTP_METHOD_GET,
+            .timeout_ms        = 5000,
+            .buffer_size       = 512,
+            .buffer_size_tx    = 512,
+            .keep_alive_enable = false,
+        };
+        if (strncmp(probe_url, "https://", 8) == 0)
+            cfg.crt_bundle_attach = esp_crt_bundle_attach;
+        bool alive = false;
+        esp_http_client_handle_t hc = esp_http_client_init(&cfg);
+        if (hc) {
+            if (esp_http_client_open(hc, 0) == ESP_OK &&
+                esp_http_client_fetch_headers(hc) >= 0) {
+                alive = true;   /* got an HTTP status line — server is serving */
+                esp_http_client_close(hc);
+            }
+            esp_http_client_cleanup(hc);
+        }
+        if (!alive) {
+            ESP_LOGE(TAG, "backup: server not responding at %s (internal free=%u largest=%u)",
+                     probe_url,
+                     (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+                     (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
+            free(chunk);
+            screen_draw_text("Backup failed\nServer not\nresponding");
+            char res[120];
+            snprintf(res, sizeof(res), "Backup failed: server not responding at %.70s", url);
+            pf_report_ai_result(res, run_id);
+            return;
+        }
+    }
+
     int fail = 0, uploaded = 0, skipped = 0;
     pf_backup_dir(MP3_ROOT_PATH, "", url, probe_url,
                   &uploaded, &skipped, &fail, chunk, chunk_cap);
