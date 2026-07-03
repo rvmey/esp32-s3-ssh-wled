@@ -12385,11 +12385,22 @@ void picture_frame_run(void)
                     ESP_LOGW(TAG, "backup: already running, ignoring re-dispatch");
                 } else {
                     s_backup_running = true;
-                    if (xTaskCreate(pf_backup_task, "pf_backup", 8192, NULL,
-                                    4, NULL) != pdPASS) {
+                    /* Stack in PSRAM, not internal DMA RAM — same rationale as
+                     * start_udp_discover_listener(): internal DMA RAM is a shared
+                     * resource with SD SPI bounce buffers, and this task can be
+                     * kicked off during other DMA-heavy activity. */
+                    if (xTaskCreateWithCaps(pf_backup_task, "pf_backup", 8192, NULL,
+                                            4, NULL,
+                                            MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS) {
                         s_backup_running = false;
                         ESP_LOGE(TAG, "backup: failed to create task");
                         screen_draw_text("Backup failed\n(no memory)");
+                        /* Ack TRIGGERcmd so the run doesn't hang forever in the
+                         * "running" state — pf_backup_task normally does this via
+                         * pf_report_ai_result() at the end of pf_backup_sd(), but
+                         * it never got to run. */
+                        pf_report_ai_result("Backup failed: could not start task",
+                                            s_pending_backup_run_id);
                     }
                 }
             }
