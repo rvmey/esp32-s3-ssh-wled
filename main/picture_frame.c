@@ -7531,7 +7531,9 @@ static bool pf_probe_file(const char *probe_url, const char *relpath, long total
     if (!client) { free(enc); free(url); return false; }
 
     bool exists = false;
-    if (esp_http_client_open(client, 0) == ESP_OK) {
+    int64_t t0 = esp_timer_get_time();
+    esp_err_t open_err = esp_http_client_open(client, 0);
+    if (open_err == ESP_OK) {
         esp_http_client_fetch_headers(client);
         if (esp_http_client_get_status_code(client) == 200) {
             char body[16] = {0};
@@ -7539,6 +7541,10 @@ static bool pf_probe_file(const char *probe_url, const char *relpath, long total
             exists = (strncmp(body, "exists", 6) == 0);
         }
         esp_http_client_close(client);
+    } else {
+        ESP_LOGW(TAG, "backup: probe %s failed after %lld ms (%s)",
+                 relpath, (long long)((esp_timer_get_time() - t0) / 1000),
+                 esp_err_to_name(open_err));
     }
     esp_http_client_cleanup(client);
     free(enc);
@@ -7599,10 +7605,20 @@ static bool pf_post_chunk(const char *url, const char *relpath,
             cfg.crt_bundle_attach = esp_crt_bundle_attach;
 
         esp_http_client_handle_t client = esp_http_client_init(&cfg);
-        if (!client) break;
+        if (!client) {
+            ESP_LOGW(TAG, "backup: %s@%ld attempt %d: client init failed",
+                     relpath, offset, attempt);
+            break;
+        }
         esp_http_client_set_header(client, "Content-Type", content_type);
 
-        if (esp_http_client_open(client, total_len) != ESP_OK) {
+        int64_t t0 = esp_timer_get_time();
+        esp_err_t open_err = esp_http_client_open(client, total_len);
+        if (open_err != ESP_OK) {
+            ESP_LOGW(TAG, "backup: %s@%ld attempt %d: open failed after %lld ms (%s)",
+                     relpath, offset, attempt,
+                     (long long)((esp_timer_get_time() - t0) / 1000),
+                     esp_err_to_name(open_err));
             esp_http_client_cleanup(client);
             if (attempt < 4) vTaskDelay(pdMS_TO_TICKS(500 * attempt));
             continue;
@@ -7619,17 +7635,24 @@ static bool pf_post_chunk(const char *url, const char *relpath,
         }
         if (write_ok)
             write_ok = (esp_http_client_write(client, FOOTER, footer_len) == footer_len);
+        if (!write_ok)
+            ESP_LOGW(TAG, "backup: %s@%ld attempt %d: write failed after %lld ms",
+                     relpath, offset, attempt,
+                     (long long)((esp_timer_get_time() - t0) / 1000));
 
         if (write_ok) {
             esp_http_client_fetch_headers(client);
             int status = esp_http_client_get_status_code(client);
             ok = (status >= 200 && status < 300);
-            if (!ok) ESP_LOGW(TAG, "backup: %s@%ld HTTP %d", relpath, offset, status);
+            if (!ok) ESP_LOGW(TAG, "backup: %s@%ld attempt %d: HTTP %d after %lld ms",
+                               relpath, offset, attempt, status,
+                               (long long)((esp_timer_get_time() - t0) / 1000));
         }
         esp_http_client_close(client);
         esp_http_client_cleanup(client);
         if (!ok && attempt < 4) vTaskDelay(pdMS_TO_TICKS(500 * attempt));
     }
+    if (!ok) ESP_LOGE(TAG, "backup: %s@%ld gave up after 4 attempts", relpath, offset);
     free(part_hdr);
     return ok;
 }
@@ -7657,6 +7680,8 @@ static bool pf_upload_file(const char *fullpath, const char *relpath,
         *out_skipped = true;
         return true;
     }
+
+    ESP_LOGI(TAG, "backup: uploading %s (%ld bytes)", relpath, fsize);
 
     FILE *fp = fopen(fullpath, "rb");
     if (!fp) return false;
