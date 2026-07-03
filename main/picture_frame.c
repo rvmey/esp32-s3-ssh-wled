@@ -7767,6 +7767,10 @@ static void pf_backup_dir(const char *dirpath, const char *relbase,
     closedir(d);
 }
 
+#if CONFIG_CORE2_HW
+static void pf_sip_start_from_nvs(void);   /* defined below; re-registers from NVS */
+#endif
+
 /* Back up the entire SD card to the server in backup_url (secrets_config.txt).
  * Runs on its own task (see pf_backup_task) so the main loop stays free to
  * service Socket.IO.  Reports the outcome back to TRIGGERcmd via
@@ -7785,6 +7789,33 @@ static void pf_backup_sd(const char *run_id)
         return;
     }
 
+#if CONFIG_CORE2_HW
+    /* A registered SIP client holds a persistent TLS connection that leaves
+     * this BT+WiFi classic ESP32 with only a few KB of contiguous internal
+     * RAM (observed: free=6823 largest=3072 right after registration) —
+     * not enough headroom for backup's HTTP connections, which then fail
+     * intermittently with "Failed to create socket" and starve the SD-SPI
+     * driver too ("not enough mem"). Refuse outright if a call is actually
+     * in progress (can't safely hang up mid-call); otherwise pause SIP for
+     * the duration of the backup and re-register from NVS afterward. */
+    if (sip_in_call()) {
+        screen_draw_text("Backup failed\nSIP call active");
+        pf_report_ai_result("Backup failed: SIP call in progress", run_id);
+        return;
+    }
+    bool sip_was_registered = sip_is_registered();
+    if (sip_was_registered) {
+        ESP_LOGI(TAG, "backup: pausing SIP client to free internal RAM "
+                 "(before: free=%u largest=%u)",
+                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+                 (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
+        sip_client_stop();
+        ESP_LOGI(TAG, "backup: SIP paused (after: free=%u largest=%u)",
+                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+                 (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
+    }
+#endif
+
     /* One reusable PSRAM buffer holds each upload chunk; files larger than this
      * are sent as several in-order chunk POSTs.  Allocated once for the whole
      * run (not per file) to avoid repeated large allocs/fragmentation.  Try
@@ -7802,7 +7833,7 @@ static void pf_backup_sd(const char *run_id)
     if (!chunk) {
         screen_draw_text("Backup failed\n(no memory)");
         pf_report_ai_result("Backup failed: no memory for buffer", run_id);
-        return;
+        goto backup_done;
     }
 
     /* Ack the run immediately so TRIGGERcmd marks the command as run and does
@@ -7855,7 +7886,7 @@ static void pf_backup_sd(const char *run_id)
             char res[120];
             snprintf(res, sizeof(res), "Backup failed: server not responding at %.70s", url);
             pf_report_ai_result(res, run_id);
-            return;
+            goto backup_done;
         }
     }
 
@@ -7878,6 +7909,15 @@ static void pf_backup_sd(const char *run_id)
              "{\"uploaded\":%d,\"skipped\":%d,\"failed\":%d}", uploaded, skipped, fail);
     pf_report_ai_result(result, run_id);
     ESP_LOGI(TAG, "backup: %d uploaded, %d skipped, %d failed", uploaded, skipped, fail);
+
+backup_done:
+#if CONFIG_CORE2_HW
+    if (sip_was_registered) {
+        ESP_LOGI(TAG, "backup: resuming SIP client");
+        pf_sip_start_from_nvs();
+    }
+#endif
+    return;
 }
 
 /* Dedicated task that runs one backup then exits.  s_backup_running guards
