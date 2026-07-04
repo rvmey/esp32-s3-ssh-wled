@@ -7586,19 +7586,22 @@ static bool pf_post_chunk(const char *url, const char *relpath,
     int total_len = hdr_len + (int)len + footer_len;
     char content_type[] = "multipart/form-data; boundary=" PF_BACKUP_BOUNDARY;
 
-    /* Field-observed throughput on this link can be as low as ~450 B/s (cause
-     * unknown — not BT coexistence, confirmed no BT device paired; looks like
-     * WiFi RF/AP-side congestion). At that rate an 18 KB chunk legitimately
-     * takes ~40 s, and the server DOES receive it correctly — it's just slow,
-     * not stuck. A short timeout here doesn't recover from that; it just
-     * aborts an in-flight transfer and restarts it from byte 0, doubling the
-     * wasted airtime. So: fewer attempts, each given much longer to finish. */
+    /* Field data (v2.0.592, server on Ethernet): each new TCP connection is a
+     * lottery — either it runs at 50-100 KB/s to completion, or it's
+     * blackholed from the first segments (stuck at ~8 KB accepted, 90 s of
+     * retransmissions never land ONE segment) and never recovers.  The same
+     * file retried 500 ms after a 90 s wedge completed in 229 ms.  Looks like
+     * per-flow path selection in the mesh AP.  Strategy: fail fast, retry
+     * more — a healthy connection never blocks a single 4 KB write for more
+     * than ~1 s (the 5.6 KB sndbuf drains fast even at 13 KB/s), so 15 s of
+     * zero progress means the flow is doomed; abandon it and draw a new
+     * 5-tuple. */
     bool ok = false;
-    for (int attempt = 1; attempt <= 2 && !ok; attempt++) {
+    for (int attempt = 1; attempt <= 6 && !ok; attempt++) {
         esp_http_client_config_t cfg = {
             .url               = url,
             .method            = HTTP_METHOD_POST,
-            .timeout_ms        = 90000,
+            .timeout_ms        = 15000,
             /* Keep the HTTP buffers small: they come from internal RAM. */
             .buffer_size       = 1024,
             .buffer_size_tx    = 1024,
@@ -7623,7 +7626,7 @@ static bool pf_post_chunk(const char *url, const char *relpath,
                      (long long)((esp_timer_get_time() - t0) / 1000),
                      esp_err_to_name(open_err));
             esp_http_client_cleanup(client);
-            if (attempt < 2) vTaskDelay(pdMS_TO_TICKS(500 * attempt));
+            if (attempt < 6) vTaskDelay(pdMS_TO_TICKS(500 * attempt));
             continue;
         }
 
@@ -7664,9 +7667,9 @@ static bool pf_post_chunk(const char *url, const char *relpath,
         }
         esp_http_client_close(client);
         esp_http_client_cleanup(client);
-        if (!ok && attempt < 2) vTaskDelay(pdMS_TO_TICKS(500 * attempt));
+        if (!ok && attempt < 6) vTaskDelay(pdMS_TO_TICKS(500 * attempt));
     }
-    if (!ok) ESP_LOGE(TAG, "backup: %s@%ld gave up after 2 attempts", relpath, offset);
+    if (!ok) ESP_LOGE(TAG, "backup: %s@%ld gave up after 6 attempts", relpath, offset);
     free(part_hdr);
     return ok;
 }
