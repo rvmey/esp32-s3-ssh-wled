@@ -14,6 +14,13 @@ CONFIG_WS_BUFFER_SIZE=8192
 # esp_http_client connect with "Failed to create socket".  16 leaves headroom.
 CONFIG_LWIP_MAX_SOCKETS=16
 
+# Disable AMPDU TX aggregation: bulk uploads to a Google/Nest WiFi AP stalled
+# (small packets fine, full-MSS bulk TX dropped — ~4 KB/s with 90 s dead
+# stalls at RSSI -66).  ESP32-classic AMPDU TX + these APs is a known bad
+# combination; disabling trades peak throughput we never reach for frames
+# that actually get ACKed.
+# CONFIG_ESP_WIFI_AMPDU_TX_ENABLED is not set
+
 # QSPI PSRAM (8 MB PSRAM on Core2, classic ESP32 — NOT OPI/octal)
 CONFIG_SPIRAM=y
 CONFIG_SPIRAM_USE_MALLOC=y

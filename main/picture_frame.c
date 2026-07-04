@@ -7639,9 +7639,14 @@ static bool pf_post_chunk(const char *url, const char *relpath,
         if (write_ok)
             write_ok = (esp_http_client_write(client, FOOTER, footer_len) == footer_len);
         if (!write_ok)
-            ESP_LOGW(TAG, "backup: %s@%ld attempt %d: write failed after %lld ms",
+            /* off = body bytes the stack accepted before stalling: 0 means the
+             * connection never moved data (first-segment blackhole); mid-body
+             * means bulk loss partway through. */
+            ESP_LOGW(TAG, "backup: %s@%ld attempt %d: write failed after %lld ms "
+                     "(%u/%u body bytes accepted)",
                      relpath, offset, attempt,
-                     (long long)((esp_timer_get_time() - t0) / 1000));
+                     (long long)((esp_timer_get_time() - t0) / 1000),
+                     (unsigned)off, (unsigned)len);
 
         if (write_ok) {
             esp_http_client_fetch_headers(client);
@@ -7650,6 +7655,12 @@ static bool pf_post_chunk(const char *url, const char *relpath,
             if (!ok) ESP_LOGW(TAG, "backup: %s@%ld attempt %d: HTTP %d after %lld ms",
                                relpath, offset, attempt, status,
                                (long long)((esp_timer_get_time() - t0) / 1000));
+            else {
+                long long ms = (esp_timer_get_time() - t0) / 1000;
+                ESP_LOGI(TAG, "backup: %s@%ld: %u bytes in %lld ms (%lld KB/s)",
+                         relpath, offset, (unsigned)len, ms,
+                         ms > 0 ? (long long)len / ms : 0);
+            }
         }
         esp_http_client_close(client);
         esp_http_client_cleanup(client);
