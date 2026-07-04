@@ -201,6 +201,17 @@ esp_err_t wifi_connect_with_credentials(const char *ssid, const char *password)
 
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_cfg));
+    /* Force 20 MHz channel width, never 40 MHz HT40. Field-diagnosed on Core2:
+     * bulk TCP uploads to a Nest WiFi AP (single wireless hop, no mesh
+     * backhaul involved) were bimodal — brand-new connections either ran at
+     * 90-100 KB/s or were permanently dead after their first ~8 KB, while tiny
+     * packets (probes, WS pings) never failed regardless. That small-frames-OK/
+     * bulk-bursts-die-or-fly signature matches known ESP32-classic instability
+     * against 40 MHz-bonded 2.4 GHz APs (Nest/Google WiFi auto-enables 40 MHz
+     * "Auto" channel width). Ruled out first: server OS/software (Windows+Go,
+     * Docker+Linux — same result), conntrack/middlebox, RSSI, BT coexistence,
+     * AMPDU TX (already disabled, no change), retry timing. */
+    ESP_ERROR_CHECK(esp_wifi_set_bandwidth(WIFI_IF_STA, WIFI_BW20));
     ESP_ERROR_CHECK(esp_wifi_start());
     /* A2DP + TLS handshake is sensitive to Wi-Fi modem sleep latency. */
     esp_err_t ps_err = esp_wifi_set_ps(WIFI_PS_NONE);
