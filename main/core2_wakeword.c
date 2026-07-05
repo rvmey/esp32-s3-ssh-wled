@@ -195,12 +195,22 @@ esp_err_t core2_wakeword_init(void)
     }
 
     /* Stack in PSRAM, internal fallback — same rationale as pf_backup_task.
-     * The task never exits, so the WithCaps teardown rule never applies. */
-    if (xTaskCreateWithCaps(ww_task, "core2_ww", WW_TASK_STACK, NULL,
-                            WW_TASK_PRIO, &s_task,
+     * The task never exits, so the WithCaps teardown rule never applies.
+     * Pinned to core 0: every other consumer of I2S/GPIO0 (main task, mp3
+     * task, SIP media pump) runs there ("main_task: Started on CPU0" at
+     * boot), and xTaskCreateWithCaps defaults to tskNO_AFFINITY — on
+     * hardware this let the task land on core 1, and the mic's I2S channel
+     * would come up "enabled" (create/init/enable all report ESP_OK, "PDM RX
+     * ready" logs) but every subsequent read failed instantly, and disable()
+     * later reported "the channel has not been enabled yet" — consistent
+     * with the I2S driver/GPIO-matrix state not being safely shared across
+     * cores here. Confirmed the crash before the v2.0.597 fix was also on
+     * core 1. */
+    if (xTaskCreatePinnedToCoreWithCaps(ww_task, "core2_ww", WW_TASK_STACK, NULL,
+                            WW_TASK_PRIO, &s_task, 0,
                             MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS &&
-        xTaskCreateWithCaps(ww_task, "core2_ww", WW_TASK_STACK, NULL,
-                            WW_TASK_PRIO, &s_task,
+        xTaskCreatePinnedToCoreWithCaps(ww_task, "core2_ww", WW_TASK_STACK, NULL,
+                            WW_TASK_PRIO, &s_task, 0,
                             MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) != pdPASS) {
         ESP_LOGE(TAG, "failed to create task");
         free(s_buf);
