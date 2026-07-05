@@ -66,7 +66,13 @@ static bool ww_arm(void)
         core2_audio_acquire_dma();
         return false;
     }
-    s_wn->clean(s_wn_data);   /* fresh detector state for the new stream */
+    /* NOT calling s_wn->clean(s_wn_data) here: on this prebuilt wn9_hiesp
+     * binary it crashes (LoadProhibited in dl_convq_queue_bzero) when called
+     * before the model's internal conv-queue has been allocated by a first
+     * detect() call — which never happens on a freshly created detector, i.e.
+     * exactly this re-arm path. A few stale sliding-window frames from the
+     * previous listening session at the very start of a new one are harmless
+     * (core2_mic_stream_start() already flushes stale I2S DMA frames). */
     s_armed = true;
     ESP_LOGI(TAG, "armed (listening for wake word)");
     return true;
