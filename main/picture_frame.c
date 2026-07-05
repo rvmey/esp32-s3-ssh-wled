@@ -70,6 +70,9 @@
 #include "core2_audio.h"
 #include "core2_mic.h"
 #include "core2_adc_mic.h"
+#if !CONFIG_HARDWARE_CYD
+#include "core2_wakeword.h"
+#endif
 #include "mpu6886.h"
 #include "freertos/queue.h"
 #include "sip_client.h"
@@ -631,6 +634,7 @@ static void draw_pair_qr_screen(const char *pair_code)
 #define NVS_KEY_OPENAI  "stt_key"   /* shared OpenAI key (also used by askpic) */
 #define NVS_KEY_AI_TTS  "ai_tts"
 #define NVS_KEY_MIC_SRC "mic_src"  /* 0 = built-in PDM (default), 1 = Grove ADC */
+#define NVS_KEY_WAKEWORD "wakeword" /* 1 = "Hi, ESP" wake word enabled (default) */
 #define NVS_KEY_CLOCK_MODE "clock_mode" /* 0=off, 1=digital, 2=analog */
 #define NVS_KEY_BOOT_SHOW  "boot_show"  /* 1=clock-digital, 2=clock-analog, 3=music, 4=jpeg, 5=text */
 #define NVS_KEY_CAMURL     "cam_url"
@@ -812,6 +816,13 @@ static bool          s_ai_tts_enabled = true;
 /* Microphone source: false = built-in PDM (SPM1423), true = Grove ADC (MAX4466).
  * Overridden from NVS at boot, toggled by the "micsrc" command. */
 static bool          s_mic_src_grove  = false;
+/* True for the ENTIRE voice query/note flow (record + STT + chat HTTP), not
+ * just until the pending flag is consumed — the wake-word gate needs to know
+ * the mic/speaker are spoken for during the multi-second HTTP phase too. */
+static volatile bool s_voice_flow_active = false;
+/* True while core2_tts_speak() runs (speaker paused for the HTTP fetch, then
+ * handed to the mp3 task, which s_mp3.active covers from there on). */
+static volatile bool s_tts_active        = false;
 #endif
 
 /* Pending AVRCP actions — set by bt_avrc_tg_cb, consumed by the main loop */
@@ -907,9 +918,13 @@ static int  s_sd_wifi_count = 0;
 #if CONFIG_CORE2_HW
 static char s_sd_openai_key[256] = {0};
 #endif
-static mp3_folder_t  s_mp3_folders[MP3_MAX_FOLDERS] __attribute__((unused));
+/* Folder indexes live in PSRAM (heap), not static DRAM: 2 x ~10 KB of .bss
+ * pushed dram0_0_seg over the edge once esp-sr's dl_lib joined the image.
+ * Allocated once in picture_frame_run() before any use; internal-RAM fallback
+ * for the no-PSRAM CYD, where this matches the old .bss footprint. */
+static mp3_folder_t  *s_mp3_folders __attribute__((unused)) = NULL;
 static size_t        s_mp3_folder_count __attribute__((unused)) = 0;
-static jpeg_folder_t s_jpeg_folders[MP3_MAX_FOLDERS] __attribute__((unused));
+static jpeg_folder_t *s_jpeg_folders __attribute__((unused)) = NULL;
 static size_t        s_jpeg_folder_count __attribute__((unused)) = 0;
 static mp3_state_t   s_mp3 = {
     .active = false,
@@ -4205,6 +4220,9 @@ static void mp3_player_task(void *arg)
             } else if (!s_bt_hold_local_speaker && !s_bt.connecting &&
                        !s_bt.discovering && !s_bt_pending_reconnect) {
 #endif
+#if CONFIG_CORE2_HW
+                core2_wakeword_yield();   /* see MP3 path — GPIO 0 handoff */
+#endif
                 if (core2_audio_init() == ESP_OK) {
                     if (speaker_last_rate != wav_sample_rate) {
                         core2_audio_set_sample_rate(wav_sample_rate);
@@ -4424,6 +4442,11 @@ static void mp3_player_task(void *arg)
             speaker_last_rate = 0;
             vTaskDelay(pdMS_TO_TICKS(8));
         } else {
+#if CONFIG_CORE2_HW
+            /* Music just (re)started while the wake-word task holds the mic
+             * (and GPIO 0): make it let go before re-creating the speaker. */
+            core2_wakeword_yield();
+#endif
             esp_err_t speaker_err = core2_audio_init();
             if (speaker_err != ESP_OK) {
                 ESP_LOGW(TAG, "bt: speaker init deferred: %s", esp_err_to_name(speaker_err));
@@ -5991,6 +6014,12 @@ static bool core2_stt_transcribe(const uint8_t *wav, size_t wav_len,
 static bool core2_tts_speak(const char *text)
 {
     if (!text || !text[0]) return false;
+#if !CONFIG_HARDWARE_CYD
+    /* Keep the wake-word task off the mic/speaker for the whole TTS fetch;
+     * once playback starts, s_mp3.active covers it. Cleared at tts_done. */
+    s_tts_active = true;
+    core2_wakeword_yield();
+#endif
 
     /* Build JSON body with text escaped for embedding in a JSON string */
     size_t text_len = strlen(text);
@@ -6115,6 +6144,9 @@ tts_done:
     free(mp3_buf);
     core2_audio_resume();
     if (s_mp3_task) vTaskResume(s_mp3_task);
+#if !CONFIG_HARDWARE_CYD
+    s_tts_active = false;
+#endif
     return ok;
 }
 
@@ -6171,6 +6203,13 @@ static int core2_https_post_json(const char *url, const char *token,
 static void do_core2_voice_query(void)
 {
     ESP_LOGI(TAG, "Voice query: starting");
+#if !CONFIG_HARDWARE_CYD
+    /* Closes the wake-word gate for the whole flow (record + STT + chat HTTP),
+     * then makes sure the wake-word task has released the mic before we init
+     * it ourselves below. Cleared at voice_done. */
+    s_voice_flow_active = true;
+    core2_wakeword_yield();
+#endif
     pf_clock_stop();
     if (s_mp3_saved_font_scale >= 0) {
         screen_set_font_scale_silent(s_mp3_saved_font_scale);
@@ -6306,6 +6345,9 @@ voice_done:
     core2_audio_init();   /* re-create the speaker (DMA + writer task) deinit'd above */
     if (s_mp3_task) vTaskResume(s_mp3_task);
     s_pending_vibrate = true;
+#if !CONFIG_HARDWARE_CYD
+    s_voice_flow_active = false;
+#endif
 }
 
 /* ── AXP192 PEK (power key) short-press detection ───────────────────────── */
@@ -6349,6 +6391,10 @@ static void core2_poll_pwr_key(void)
 static void do_core2_voice_note(void)
 {
     ESP_LOGI(TAG, "Voice note: recording (tap to stop, 30 s max)");
+#if !CONFIG_HARDWARE_CYD
+    s_voice_flow_active = true;    /* cleared at note_done */
+    core2_wakeword_yield();
+#endif
     pf_clock_stop();
     if (s_mp3_saved_font_scale >= 0) {
         screen_set_font_scale_silent(s_mp3_saved_font_scale);
@@ -6476,6 +6522,9 @@ note_done:
     if (wav) free(wav);
     core2_audio_init();
     if (s_mp3_task) vTaskResume(s_mp3_task);
+#if !CONFIG_HARDWARE_CYD
+    s_voice_flow_active = false;
+#endif
 }
 #endif /* CONFIG_CORE2_HW */
 
@@ -8418,6 +8467,7 @@ static const pf_cmd_t s_pf_cmds[] = {
 #if CONFIG_CORE2_HW
     { "aitts",     "aitts",     "true",  "Toggle whether AI answers from 'askpic' are spoken aloud via TTS. Default on. Pass 'on'/'off' or omit to toggle.", "\xF0\x9F\x97\xA3\xEF\xB8\x8F" /* 🗣️ */, NULL },
     { "micsrc",    "micsrc",    "true",  "Switch the microphone source between the built-in PDM mic ('pdm') and the external Grove analog mic ('grove'). Omit to toggle.", "\xF0\x9F\x8E\x99\xEF\xB8\x8F" /* 🎙️ */, NULL },
+    { "wakeword",  "wakeword",  "true",  "Toggle whether the device listens for the 'Hi, ESP' wake word to start a voice query hands-free (uses the built-in mic while idle; pauses automatically during music, TTS, and calls). Default on. Pass 'on'/'off' or omit to toggle.", "\xF0\x9F\x91\x82" /* 👂 */, NULL },
     { "clock",     "clock",     "true",  "Show a live clock on the display. Pass 'digital' or 'analog' to choose the style (default 'digital'). Stays on screen until another command runs. Example: 'analog'", "\xF0\x9F\x95\x90" /* 🕐 */, NULL },
     { "timezone",  "timezone",  "true",  "Set the clock timezone. Examples: 'eastern', 'central', 'mountain', 'pacific', 'alaska', 'hawaii', 'utc', 'london', 'europe', or a raw POSIX TZ string. Default: eastern.", "\xF0\x9F\x8C\x90" /* 🌐 */, NULL },
 #endif
@@ -9219,6 +9269,32 @@ static void pf_sip_media_stop(void);
 static void pf_sip_restore_screen(void);
 static void pf_sip_resume_music(void);
 
+#if !CONFIG_HARDWARE_CYD
+/* ── Wake-word coupling (core2_wakeword.c calls these) ───────────────────────
+ * The wake-word task may only hold the mic (and thus the speaker's GPIO 0 /
+ * DMA) while NOBODY else needs audio. Everything here is intent — flags set
+ * before the first PCM write of each activity — because core2_audio_write_pcm
+ * silently drops data while the TX channel is released, so ring-fill alone
+ * can never be a reliable gate. */
+bool pf_wakeword_gate_open(void)
+{
+    if (s_sipui != SIPUI_NONE || sip_in_call()) return false;   /* ring/call */
+    if (s_mp3.active && !s_mp3.paused) return false;            /* music/TTS playback */
+    if (s_tts_active || s_pending_speak) return false;          /* TTS fetch queued/running */
+    if (s_voice_flow_active || s_voice_note_recording) return false;
+    if (s_pending_voice_query || s_pending_voice_note) return false;
+    if (core2_audio_is_busy()) return false;                    /* ring still draining */
+    return true;
+}
+
+/* Same convergence point the PWR key, AVRC long-press, and "listen" command
+ * use — the main loop consumes the flag and runs do_core2_voice_query(). */
+void pf_signal_voice_query(void)
+{
+    s_pending_voice_query = true;
+}
+#endif /* !CONFIG_HARDWARE_CYD */
+
 /* One 20 ms media iteration, called repeatedly from the main loop while a call
  * is up (no dedicated task — see s_media_* note above). Talking: mic → RTP TX,
  * speaker paused. Listening: RTP RX → speaker + comfort silence TX (keeps the
@@ -9427,6 +9503,7 @@ static void pf_sip_resume_music(void)
  * current sample rate so the pitch is correct whether or not music was local. */
 static void pf_sip_ring_beep(void)
 {
+    core2_wakeword_yield();   /* s_sipui==INCOMING already closed the gate */
     if (core2_audio_init() != ESP_OK) return;
     uint32_t sr = core2_audio_get_sample_rate();
     if (sr == 0) sr = 44100;
@@ -9467,6 +9544,9 @@ static void pf_sip_ring_tick(void)
 static void pf_sip_media_start(const sip_event_info_t *ev)
 {
     s_sip_active = *ev;
+    /* The wake-word task must be fully off the mic before the call's own
+     * GPIO 0 talk/listen handoff starts. */
+    core2_wakeword_yield();
     /* Suspend the MP3 player so it doesn't fight for the speaker / CPU. */
     pf_sip_pause_music();
     if (s_mp3_task) vTaskSuspend(s_mp3_task);
@@ -10333,6 +10413,22 @@ static void pf_event_handler(const char *event_name,
         }
         nvs_write_u8(NVS_KEY_MIC_SRC, s_mic_src_grove ? 1 : 0);
         ESP_LOGI(TAG, "Mic source: %s", s_mic_src_grove ? "grove (ADC)" : "pdm (built-in)");
+
+    } else if (strcmp(s_trigger, "wakeword") == 0) {
+        char mode[16] = {0};
+        strncpy(mode, s_params, sizeof(mode) - 1);
+        for (size_t i = 0; mode[i]; i++) mode[i] = (char)tolower((unsigned char)mode[i]);
+        bool ww_on;
+        if (strcmp(mode, "on") == 0) {
+            ww_on = true;
+        } else if (strcmp(mode, "off") == 0) {
+            ww_on = false;
+        } else {
+            ww_on = !core2_wakeword_get_enabled();
+        }
+        core2_wakeword_set_enabled(ww_on);
+        nvs_write_u8(NVS_KEY_WAKEWORD, ww_on ? 1 : 0);
+        ESP_LOGI(TAG, "Wake word: %s", ww_on ? "on" : "off");
 #endif
 
 #if CONFIG_CORE2_HW
@@ -11759,6 +11855,21 @@ static void start_udp_discover_listener(void)
 
 void picture_frame_run(void)
 {
+    /* Folder indexes: PSRAM first, internal fallback (see declaration note). */
+    s_mp3_folders = heap_caps_calloc(MP3_MAX_FOLDERS, sizeof(mp3_folder_t),
+                                     MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!s_mp3_folders) {
+        s_mp3_folders = calloc(MP3_MAX_FOLDERS, sizeof(mp3_folder_t));
+    }
+    s_jpeg_folders = heap_caps_calloc(MP3_MAX_FOLDERS, sizeof(jpeg_folder_t),
+                                      MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!s_jpeg_folders) {
+        s_jpeg_folders = calloc(MP3_MAX_FOLDERS, sizeof(jpeg_folder_t));
+    }
+    if (!s_mp3_folders || !s_jpeg_folders) {
+        ESP_LOGE(TAG, "folder index alloc failed");   /* effectively fatal */
+    }
+
     /* Initialise display first — screen_init() creates s_draw_mutex which all
      * screen_draw_*() helpers require.  Must happen before any screen call. */
     screen_init();
@@ -11925,6 +12036,12 @@ void picture_frame_run(void)
         uint8_t mic_src = 0;
         nvs_read_u8(NVS_KEY_MIC_SRC, &mic_src);
         s_mic_src_grove = (mic_src != 0);
+        uint8_t wakeword = 1;   /* default enabled if the key isn't in NVS */
+        nvs_read_u8(NVS_KEY_WAKEWORD, &wakeword);
+        core2_wakeword_set_enabled(wakeword != 0);
+        if (core2_wakeword_init() != ESP_OK) {
+            ESP_LOGW(TAG, "wake word unavailable (model/task init failed)");
+        }
         {
             char tz[sizeof(s_timezone)] = {0};
             if (nvs_read_str(NVS_KEY_TIMEZONE, tz, sizeof(tz)) && tz[0])

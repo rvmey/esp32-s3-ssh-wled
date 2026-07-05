@@ -9,6 +9,58 @@ dependencies:
       registry_url: https://components.espressif.com/
       type: service
     version: 1.0.3
+  espressif/cjson:
+    component_hash: e788323270d90738662d66fffa910bfe1fba019bba087f01557e70c40485b469
+    dependencies:
+    - name: idf
+      require: private
+      version: '>=5.0'
+    source:
+      registry_url: https://components.espressif.com
+      type: service
+    version: 1.7.19~2
+  espressif/dl_fft:
+    component_hash: 2f319e72f3ab6f673c83849d6a14b68c21165d4dce24e12af7c13714ba35a6e0
+    dependencies:
+    - name: idf
+      require: private
+      version: '>=5.0'
+    source:
+      registry_url: https://components.espressif.com
+      type: service
+    version: 0.5.0
+  espressif/esp-dsp:
+    component_hash: 12e44db246517a627bc0fe2b255b8335410c0215c98bfba2df5a8e3edea839ef
+    dependencies:
+    - name: idf
+      require: private
+      version: '>=4.2'
+    source:
+      registry_url: https://components.espressif.com
+      type: service
+    version: 1.8.0
+  espressif/esp-sr:
+    component_hash: aa58d6a13a49600314a50a27240ccbd17e407f608216a3086d4868e0da2e8053
+    dependencies:
+    - name: espressif/cjson
+      registry_url: https://components.espressif.com
+      require: private
+      version: ^1.7.19
+    - name: espressif/dl_fft
+      registry_url: https://components.espressif.com
+      require: private
+      version: '>=0.2.0'
+    - name: espressif/esp-dsp
+      registry_url: https://components.espressif.com
+      require: private
+      version: 1.8.0
+    - name: idf
+      require: private
+      version: '>=5.0'
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    version: 2.4.6
   espressif/esp32-camera:
     component_hash: bc9c8a6b51df777a014fa295825b3de5069bc0300c317acff20c97cf4a10ac7d
     dependencies:
@@ -34,7 +86,7 @@ dependencies:
       type: service
     version: 1.3.1
   espressif/esp_websocket_client:
-    component_hash: c5a067a9fddea370c478017e66fac302f4b79c3d4027e9bdd42a019786cceb92
+    component_hash: 3fb288702517ef4d75bf933a115f1056ee0c2540d964f9e1d856e0bb67e1dfeb
     dependencies:
     - name: idf
       require: private
@@ -42,7 +94,7 @@ dependencies:
     source:
       registry_url: https://components.espressif.com/
       type: service
-    version: 1.6.1
+    version: 1.7.0
   espressif/led_strip:
     component_hash: 28621486f77229aaf81c71f5e15d6fbf36c2949cf11094e07090593e659e7639
     dependencies:
@@ -73,6 +125,7 @@ dependencies:
     version: 5.8.2~1
 direct_dependencies:
 - chmorgan/esp-libhelix-mp3
+- espressif/esp-sr
 - espressif/esp32-camera
 - espressif/esp_jpeg
 - espressif/esp_websocket_client
@@ -80,6 +133,6 @@ direct_dependencies:
 - idf
 - wolfssl/wolfssh
 - wolfssl/wolfssl
-manifest_hash: e11bfc9420511d9efc4ca451f3b09e2f4396cca4cd70ca7d3271d123e70719b1
+manifest_hash: 1a5d14717725fa6e9a8da8eeffe6c10da100fe553ee99536ced7289cc0a05881
 target: esp32
 version: 3.0.0

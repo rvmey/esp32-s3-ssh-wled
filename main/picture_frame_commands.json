@@ -319,6 +319,22 @@
   "icon": "🎙️"
  },
  {
+  "trigger": "wakeword",
+  "command": "wakeword",
+  "voice": "wakeword",
+  "allowParams": "true",
+  "mcpToolDescription": "Toggle whether the user's Core2 device listens for the 'Hi, ESP' wake word to start a voice query hands-free (uses the built-in mic while idle; pauses automatically during music, TTS, and calls). Default is on. Pass 'on', 'off', or omit to toggle.",
+  "icon": "👂"
+ },
+ {
+  "trigger": "listen",
+  "command": "listen",
+  "voice": "listen",
+  "allowParams": "false",
+  "mcpToolDescription": "Start listening for a voice command on the user's Core2 device (records for 4 seconds then processes as an AI prompt).",
+  "icon": "🎤"
+ },
+ {
   "trigger": "record",
   "command": "record",
   "voice": "record",
