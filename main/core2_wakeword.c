@@ -29,6 +29,7 @@ static const char *TAG = "core2_ww";
 #define WW_ARM_FAIL_BACKOFF_MS 5000
 #define WW_TASK_STACK          12288
 #define WW_TASK_PRIO           4      /* below mp3 (5) and i2s writer (6) */
+#define WW_READ_STEP           320    /* matches SIP_RTP_FRAME_SAMPLES*2 — see read loop comment */
 
 static const esp_wn_iface_t *s_wn = NULL;
 static model_iface_data_t   *s_wn_data = NULL;
@@ -115,8 +116,16 @@ static void ww_task(void *arg)
             }
         }
 
-        /* read_frame blocks ≤60 ms and may return a partial chunk. */
-        size_t n = core2_mic_read_frame(s_buf + fill, (size_t)s_chunk - fill);
+        /* read_frame blocks ≤60 ms and may return a partial chunk. Cap each
+         * request at WW_READ_STEP (the same size the proven SIP RTP path
+         * uses, SIP_RTP_FRAME_SAMPLES*2) rather than requesting the model's
+         * full 512-sample chunk in one call — requesting exactly one whole
+         * DMA descriptor (also 512 frames, see core2_mic.c's DMA_BUF_SAMPLES)
+         * made every read return 0 bytes instantly instead of blocking,
+         * confirmed on hardware. Accumulates into s_buf via `fill` either way. */
+        size_t remaining = (size_t)s_chunk - fill;
+        size_t read_req = remaining < WW_READ_STEP ? remaining : WW_READ_STEP;
+        size_t n = core2_mic_read_frame(s_buf + fill, read_req);
         if (n == 0) {
             if (++zero_reads > 50) {   /* mic stream died — reset the handoff */
                 ESP_LOGW(TAG, "mic stream stalled, re-arming");

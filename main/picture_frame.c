@@ -4799,6 +4799,7 @@ typedef enum {
     PF_MENU_MUTE, PF_MENU_SHUFFLE, PF_MENU_REPEAT_TRACK, PF_MENU_REPEAT_PLAYLIST,
     PF_MENU_VISUALIZER, PF_MENU_VIZ_NEXT, PF_MENU_VIZ_PREV,
     PF_MENU_LEDCOLOR, PF_MENU_SLEEP_TIMER, PF_MENU_SLEEP_ON_POWER, PF_MENU_AI_SPEECH,
+    PF_MENU_WAKEWORD,
     PF_MENU_CLOCK, PF_MENU_CAMERA, PF_MENU_CALL,
     PF_MENU_ITEM_COUNT
 } pf_menu_item_id_t;
@@ -4905,6 +4906,9 @@ static void pf_menu_item_label(int idx, char *out, size_t out_sz)
         case PF_MENU_AI_SPEECH:
             snprintf(out, out_sz, "AI Speech: %s", s_ai_tts_enabled ? "On" : "Off");
             break;
+        case PF_MENU_WAKEWORD:
+            snprintf(out, out_sz, "Wake Word: %s", core2_wakeword_get_enabled() ? "On" : "Off");
+            break;
         case PF_MENU_CLOCK:
             snprintf(out, out_sz, "Clock: %s",
                      s_clock_mode == PF_CLOCK_ANALOG ? "Analog" :
@@ -5004,6 +5008,7 @@ static bool pf_menu_execute_item(int idx)
             return false;
         case PF_MENU_SLEEP_ON_POWER:  pf_menu_dispatch("sleeponpower", "");  return false;
         case PF_MENU_AI_SPEECH:       pf_menu_dispatch("aitts", "");         return false;
+        case PF_MENU_WAKEWORD:        pf_menu_dispatch("wakeword", "");      return false;
         case PF_MENU_CLOCK:           pf_menu_dispatch("clock", "");         return true;
         case PF_MENU_CAMERA:
             if (s_camera_live) {
