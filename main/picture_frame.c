@@ -796,6 +796,16 @@ static char          s_pending_backup_run_id[33]  __attribute__((unused)) = {0};
 static volatile bool s_pending_backup             __attribute__((unused)) = false;
 static volatile bool s_backup_running             __attribute__((unused)) = false;
 #if CONFIG_CORE2_HW
+/* Set by pf_backup_task (PSRAM-stack task) when it paused SIP for the
+ * upload; consumed by the main loop (internal-RAM stack) to re-register.
+ * pf_sip_start_from_nvs() calls nvs_read_str(), which touches the flash
+ * driver — flash ops disable the cache (which also disables PSRAM access,
+ * same MMU path), and ESP-IDF asserts if the calling task's stack is in
+ * PSRAM (esp_task_stack_is_sane_cache_disabled). Must NOT run on
+ * pf_backup_task directly; that crashed the device in the field. */
+static volatile bool s_pending_sip_resume         __attribute__((unused)) = false;
+#endif
+#if CONFIG_CORE2_HW
 /* Whether "askpic" answers are also spoken aloud via TTS. Default on,
  * overridden from NVS at boot, toggled by the "aitts" command. */
 static bool          s_ai_tts_enabled = true;
@@ -7809,10 +7819,6 @@ static void pf_backup_dir(const char *dirpath, const char *relbase,
     closedir(d);
 }
 
-#if CONFIG_CORE2_HW
-static void pf_sip_start_from_nvs(void);   /* defined below; re-registers from NVS */
-#endif
-
 /* Back up the entire SD card to the server in backup_url (secrets_config.txt).
  * Runs on its own task (see pf_backup_task) so the main loop stays free to
  * service Socket.IO.  Reports the outcome back to TRIGGERcmd via
@@ -7962,8 +7968,9 @@ static void pf_backup_sd(const char *run_id)
 backup_done:
 #if CONFIG_CORE2_HW
     if (sip_was_registered) {
-        ESP_LOGI(TAG, "backup: resuming SIP client");
-        pf_sip_start_from_nvs();
+        /* Deferred to the main loop — see s_pending_sip_resume comment.
+         * pf_backup_task's stack is in PSRAM; NVS reads must not run here. */
+        s_pending_sip_resume = true;
     }
 #endif
     return;
@@ -12598,6 +12605,17 @@ void picture_frame_run(void)
                     }
                 }
             }
+
+#if CONFIG_CORE2_HW
+            if (s_pending_sip_resume) {
+                s_pending_sip_resume = false;
+                /* Runs on the main task's internal-RAM stack — pf_sip_start_from_nvs()
+                 * touches NVS/flash, which pf_backup_task's PSRAM stack cannot do
+                 * safely (see s_pending_sip_resume declaration comment). */
+                ESP_LOGI(TAG, "backup: resuming SIP client");
+                pf_sip_start_from_nvs();
+            }
+#endif
 
 #if CONFIG_CORE2_HW
             {
