@@ -310,6 +310,17 @@ esp_err_t socketio_connect(const char          *uri,
          * big single payload — such as a full SD directory listing for the
          * "files" command — go out in one frame instead of many fragments. */
         .buffer_size         = 4096,
+        /* Default (4KB) overflowed: pf_event_handler runs synchronously on
+         * this task for every incoming command and is one large function
+         * with many branches (each command's dispatch + string/JSON parsing
+         * locals) — confirmed on hardware ("A stack overflow in task
+         * websocket_task has been detected" while dispatching a command).
+         * This task's stack always comes from internal RAM regardless of
+         * PSRAM (esp_websocket_client uses plain xTaskCreatePinnedToCore),
+         * but Core2's internal heap has headroom for it; CYD keeps the
+         * library default below since its internal heap is already tight
+         * (see the buffer_size comment above). */
+        .task_stack          = 8192,
 #else
         .buffer_size         = 1024,
 #endif
