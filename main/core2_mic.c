@@ -286,7 +286,9 @@ esp_err_t core2_mic_stream_start(void)
         ESP_LOGI(TAG, "stream_start: flush[%d] err=%s got=%u", i, esp_err_to_name(ferr), (unsigned)flushed);
     }
     s_stream_dsp_init = false;
-    s_read_frame_log_budget = 300;   /* covers the whole arm-to-stall window */
+    s_read_frame_log_budget = 20;   /* sanity-check window; root cause was
+                                      * DMA-heap fragmentation from too-frequent
+                                      * teardown/recreate, not the reads themselves */
     return ESP_OK;
 }
 
