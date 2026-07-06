@@ -194,7 +194,17 @@ esp_err_t core2_wakeword_init(void)
         ESP_LOGE(TAG, "no wakenet iface for %s", name);
         return ESP_FAIL;
     }
+    /* One-time (boot only) measurement: how much internal RAM does the
+     * closed-source WakeNet create() call actually cost? SIP client startup
+     * has been failing with ESP_ERR_NO_MEM even before the first arm cycle,
+     * so this permanent footprint — not just the arm/disarm churn — may be
+     * the dominant contributor. */
+    size_t internal_before = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
     s_wn_data = s_wn->create(name, DET_MODE_90);
+    size_t internal_after = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+    ESP_LOGW(TAG, "wakenet create() internal RAM cost: %d bytes (before=%u after=%u)",
+             (int)internal_before - (int)internal_after,
+             (unsigned)internal_before, (unsigned)internal_after);
     if (!s_wn_data) {
         ESP_LOGE(TAG, "wakenet create failed for %s", name);
         return ESP_FAIL;
