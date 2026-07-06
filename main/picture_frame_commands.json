@@ -357,6 +357,14 @@
   "icon": "📻"
  },
  {
+  "trigger": "podcast",
+  "command": "podcast",
+  "allowParams": "true",
+  "voiceReply": "{{result}}",
+  "mcpToolDescription": "Play a podcast on the user's Core2 device. Parameter: a feed name or number from podcasts.txt on the SD card, or a raw RSS feed URL, optionally followed by an episode number (1 = newest). No parameter lists the configured feeds. 'resume' continues the last episode from its saved position. 'off' stops playback and saves the position. Examples: 'myfeed', 'myfeed 3', 'https://feeds.example.com/show.rss', 'resume', 'off'",
+  "icon": "🎙️"
+ },
+ {
   "trigger": "call",
   "command": "call",
   "voice": "call",

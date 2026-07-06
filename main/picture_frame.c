@@ -636,6 +636,13 @@ static void draw_pair_qr_screen(const char *pair_code)
 #define NVS_KEY_BOOT_SHOW  "boot_show"  /* 1=clock-digital, 2=clock-analog, 3=music, 4=jpeg, 5=text */
 #define NVS_KEY_CAMURL     "cam_url"
 #define NVS_KEY_TIMEZONE   "tz"         /* POSIX TZ string, default "EST5EDT,M3.2.0,M11.1.0" */
+/* Podcast resume bookkeeping — written from the main loop only (see podcast_save_resume). */
+#define NVS_KEY_POD_URL    "pod_url"    /* episode audio URL */
+#define NVS_KEY_POD_POS    "pod_pos"    /* position_ms, decimal string */
+#define NVS_KEY_POD_FEED   "pod_feed"   /* feed display name */
+#define NVS_KEY_POD_TITLE  "pod_title"  /* episode title */
+#define NVS_KEY_POD_IDX    "pod_idx"    /* episode index within feed, u8 */
+#define NVS_KEY_POD_BPS    "pod_bps"    /* avg_bitrate (bits/sec), decimal string */
 
 #define HW_TOKEN_MAX_LEN    513   /* 512 payload + NUL */
 #define COMPUTER_ID_MAX_LEN  33   /* 32 payload + NUL  */
@@ -796,6 +803,16 @@ static volatile bool s_pending_askgpt             __attribute__((unused)) = fals
 static char          s_pending_backup_run_id[33]  __attribute__((unused)) = {0};
 static volatile bool s_pending_backup             __attribute__((unused)) = false;
 static volatile bool s_backup_running             __attribute__((unused)) = false;
+
+#if CONFIG_CORE2_HW
+/* Pending "podcast" command — set by the WS event task, consumed by the main
+ * loop (podcast_run_pending). RSS fetch + parse can take several seconds, so
+ * it must not run on the websocket callback (same reasoning as the SD
+ * directory scan above). */
+static char          s_pending_podcast_param[256]  = {0};
+static char          s_pending_podcast_run_id[33]  = {0};
+static volatile bool s_pending_podcast             = false;
+#endif
 #if CONFIG_CORE2_HW
 /* Set by pf_backup_task (PSRAM-stack task) when it paused SIP for the
  * upload; consumed by the main loop (internal-RAM stack) to re-register.
@@ -953,6 +970,64 @@ static char *s_radio_meta_buf = NULL;  /* PSRAM, 4096 bytes — ICY metadata rea
 static esp_http_client_handle_t s_radio_http __attribute__((unused)) = NULL;
 static int  s_radio_icy_metaint   = 0;
 static int  s_radio_icy_remaining = 0;
+
+/* ── Podcast player state ────────────────────────────────────────────────
+ * Podcast playback reuses the internet-radio streaming path above
+ * (s_mp3.radio == true) plus this overlay: HTTP Range requests for seek and
+ * resume, byte-position tracking, EOF = end-of-episode instead of radio's
+ * reconnect-forever, and NVS resume persistence. Core2 only (needs PSRAM for
+ * the feed XML buffer and a second TLS context alongside the websocket). */
+#if CONFIG_CORE2_HW
+#define PODCAST_FEEDS_PATH      MP3_ROOT_PATH "/podcasts.txt"
+#define PODCAST_MAX_FEEDS       16
+#define PODCAST_MAX_EPISODES    50
+#define PODCAST_NAME_LEN        48
+#define PODCAST_URL_LEN         512
+#define PODCAST_TITLE_LEN       96
+#define PODCAST_FEED_XML_CAP    (512 * 1024)  /* PSRAM cap for RSS body */
+#define PODCAST_SEEK_STEP_MS    30000U
+
+typedef struct {
+    char name[PODCAST_NAME_LEN];
+    char url[PODCAST_URL_LEN];
+} podcast_feed_t;
+
+typedef struct {
+    char     title[PODCAST_TITLE_LEN];
+    char     url[PODCAST_URL_LEN];
+    uint32_t duration_ms;   /* from <itunes:duration>; 0 = unknown */
+} podcast_episode_t;
+
+typedef struct {
+    bool     active;          /* podcast mode is driving the radio stream */
+    int      episode_idx;     /* 0 = newest */
+    int      episode_count;
+    char     feed_name[PODCAST_NAME_LEN];
+    char     feed_url[PODCAST_URL_LEN];
+    /* Original (pre-redirect) episode URL, stable across the stream's life —
+     * s_radio_url gets overwritten in place with the resolved redirect target,
+     * so resume-matching must compare against this instead. */
+    char     episode_url[PODCAST_URL_LEN];
+    /* stream/Range state, written by the decode task */
+    int64_t  content_length;         /* total bytes for this episode; -1 unknown */
+    volatile int64_t  byte_pos;      /* next absolute byte to request/read */
+    volatile int64_t  seek_to_byte;  /* -1 = none; decode task reopens at this offset */
+    volatile uint32_t seek_to_ms;    /* position_ms to show after the seek completes */
+    uint32_t avg_bitrate;            /* EMA of MP3FrameInfo.bitrate, bits/sec */
+    bool     range_supported;        /* saw HTTP 206 on the current episode */
+    volatile bool ended;             /* natural EOF reached; consumed by main loop */
+    int      reconnect_fails;        /* bounded retry when content_length is unknown */
+    /* resume bookkeeping — read/written by the main loop only */
+    uint32_t   last_saved_ms;
+    TickType_t next_save_tick;
+} podcast_state_t;
+
+static podcast_state_t s_podcast = { .seek_to_byte = -1, .content_length = -1 };
+static podcast_feed_t     *s_podcast_feeds       = NULL;  /* PSRAM, alloc on first use */
+static int                 s_podcast_feed_count  = 0;
+static podcast_episode_t  *s_podcast_eps          = NULL; /* PSRAM, PODCAST_MAX_EPISODES entries */
+#define PODCAST_SAVE_PERIOD_MS  30000U
+#endif /* CONFIG_CORE2_HW */
 
 /* ── On-screen clock — live digital/analog clock view ───────────────────
  * "clock digital" or "clock analog" takes over the display with a
@@ -1822,6 +1897,11 @@ static esp_err_t nvs_erase_key_local(const char *key);
 static inline void mp3_request_ui_refresh(void);
 static bool pf_touch_handler(int x, int y, screen_gesture_t gesture);
 static void pf_event_handler(const char *event_name, const char *payload_json, void *ctx);
+/* Forward decls so the podcast section (placed near the radio-streaming code,
+ * ahead of these definitions) can call them. */
+static void mp3_ensure_task(void);
+static bool mount_sd_card_if_needed(void);
+static void pf_dir_post_result(const char *run_id, const char *result_text);
 #if CONFIG_CORE2_HW
 static esp_err_t core2_axp_read_reg(uint8_t reg, uint8_t *out);
 static void pf_menu_open(void);
@@ -3352,7 +3432,7 @@ static bool trigger_reserved(const char *trigger)
         "jpeg", "save", "play", "pause", "stop", "next", "previous", "forward", "reverse", "volumeup",
         "volumedown", "volumelevel", "shuffle", "repeattrack", "repeatplaylist",
         "pair", "btstatus", "btdisconnect", "btforget", "reboot",
-        "mute"
+        "mute", "radio", "podcast"
     };
     for (size_t i = 0; i < sizeof(reserved) / sizeof(reserved[0]); i++) {
         if (strcasecmp(trigger, reserved[i]) == 0) return true;
@@ -3644,6 +3724,16 @@ static esp_err_t radio_http_event(esp_http_client_event_t *evt)
                 strncpy(loc, evt->header_value, 511);
                 loc[511] = '\0';
             }
+#if CONFIG_CORE2_HW
+        } else if (strcasecmp(evt->header_key, "content-range") == 0 && s_podcast.active) {
+            /* "Content-Range: bytes <start>-<end>/<total>" — recover total length
+             * on a 206 response so podcast EOF/seek math has a byte ceiling. */
+            const char *slash = strrchr(evt->header_value, '/');
+            if (slash && slash[1] && strcmp(slash + 1, "*") != 0) {
+                int64_t total = atoll(slash + 1);
+                if (total > 0) s_podcast.content_length = total;
+            }
+#endif
         }
     }
     return ESP_OK;
@@ -3695,9 +3785,17 @@ static bool radio_open_stream(void)
     s_radio_icy_metaint = 0;
     s_radio_icy_remaining = 0;
 
+#if CONFIG_CORE2_HW
+    bool pod = s_podcast.active;
+    int64_t want_pos = pod ? s_podcast.byte_pos : 0;
+    if (pod) s_podcast.range_supported = false;
+#endif
+
     /* Overwrite s_radio_url with any redirect URL so the buffer doubles as the
-     * working effective-URL — avoids a 512-byte stack allocation in this task. */
-    for (int redir = 0; redir < 5; redir++) {
+     * working effective-URL — avoids a 512-byte stack allocation in this task.
+     * Podcast CDNs (podtrac/megaphone-style trackers) commonly chain several
+     * hops, so the bound is higher than plain radio streams need. */
+    for (int redir = 0; redir < 8; redir++) {
         char loc_buf[512] = {0};
         esp_http_client_config_t cfg = {
             .url           = s_radio_url,
@@ -3711,7 +3809,18 @@ static bool radio_open_stream(void)
         s_radio_http = esp_http_client_init(&cfg);
         if (!s_radio_http) return false;
 
-        esp_http_client_set_header(s_radio_http, "Icy-MetaData", "1");
+#if CONFIG_CORE2_HW
+        if (pod) {
+            if (want_pos > 0) {
+                char range_hdr[40];
+                snprintf(range_hdr, sizeof(range_hdr), "bytes=%lld-", (long long)want_pos);
+                esp_http_client_set_header(s_radio_http, "Range", range_hdr);
+            }
+        } else
+#endif
+        {
+            esp_http_client_set_header(s_radio_http, "Icy-MetaData", "1");
+        }
         esp_http_client_set_header(s_radio_http, "User-Agent", "ESP32/1.0");
 
         esp_err_t err = esp_http_client_open(s_radio_http, 0);
@@ -3721,7 +3830,7 @@ static bool radio_open_stream(void)
             return false;
         }
 
-        esp_http_client_fetch_headers(s_radio_http);
+        int64_t cl = esp_http_client_fetch_headers(s_radio_http);
         int status = esp_http_client_get_status_code(s_radio_http);
 
         if (status >= 300 && status < 400) {
@@ -3735,6 +3844,25 @@ static bool radio_open_stream(void)
             continue;
         }
 
+#if CONFIG_CORE2_HW
+        if (pod && status == 206) {
+            s_podcast.range_supported = true;
+            if (s_podcast.content_length <= 0 && cl > 0) {
+                s_podcast.content_length = cl + want_pos;
+            }
+        } else if (pod && status == 200) {
+            if (want_pos > 0) {
+                /* Server ignored the Range request — never read-and-discard
+                 * tens of MB to catch up; fall back to the start instead. */
+                ESP_LOGW(TAG, "podcast: server ignored Range, restarting at 0");
+                s_podcast.byte_pos = 0;
+                s_mp3.position_ms = 0;
+            }
+            if (s_podcast.content_length <= 0 && cl > 0) {
+                s_podcast.content_length = cl;
+            }
+        } else
+#endif
         if (status != 200) {
             ESP_LOGE(TAG, "radio: HTTP %d", status);
             radio_close_stream();
@@ -3802,8 +3930,831 @@ static int radio_refill(unsigned char *buf, int max_bytes)
         total += n;
         if (s_radio_icy_metaint > 0) s_radio_icy_remaining -= n;
     }
+#if CONFIG_CORE2_HW
+    if (s_podcast.active) {
+        s_podcast.byte_pos += total;
+        if (total > 0) s_podcast.reconnect_fails = 0;
+    }
+#endif
     return total;
 }
+
+/* ── Podcast player ───────────────────────────────────────────────────────
+ * Podcasts stream over the internet-radio path above (s_mp3.radio == true)
+ * with an overlay: /sdcard/podcasts.txt names feeds, RSS is fetched and
+ * hand-scanned (no XML library in this build) for episode enclosures, and
+ * HTTP Range requests drive seek/resume. See podcast_state_t above. */
+#if CONFIG_CORE2_HW
+
+static const char *pf_strcasestr(const char *hay, const char *needle)
+{
+    size_t nlen = strlen(needle);
+    if (nlen == 0) return hay;
+    for (const char *p = hay; *p; p++) {
+        if (strncasecmp(p, needle, nlen) == 0) return p;
+    }
+    return NULL;
+}
+
+/* Replace characters that would break a "result":"..." JSON string embed
+ * (mirrors the newline-stripping done for dir-scan error text). */
+static void podcast_json_sanitize(const char *in, char *out, size_t out_sz)
+{
+    if (!out_sz) return;
+    size_t oi = 0;
+    for (const char *p = in; *p && oi < out_sz - 1; p++) {
+        char c = *p;
+        if (c == '"') c = '\'';
+        else if (c == '\\') c = '/';
+        else if (c == '\n' || c == '\r' || c == '\t') c = ' ';
+        out[oi++] = c;
+    }
+    out[oi] = '\0';
+}
+
+/* ── Phase 1: /sdcard/podcasts.txt feed list ────────────────────────────── */
+
+static bool podcast_load_feeds(void)
+{
+    if (!mount_sd_card_if_needed()) return false;
+    if (!s_podcast_feeds) {
+        s_podcast_feeds = heap_caps_malloc(sizeof(podcast_feed_t) * PODCAST_MAX_FEEDS,
+                                           MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (!s_podcast_feeds) s_podcast_feeds = malloc(sizeof(podcast_feed_t) * PODCAST_MAX_FEEDS);
+        if (!s_podcast_feeds) return false;
+    }
+
+    FILE *f = fopen(PODCAST_FEEDS_PATH, "r");
+    if (!f) return false;
+
+    s_podcast_feed_count = 0;
+    int auto_idx = 0;
+    char line[600];
+    while (s_podcast_feed_count < PODCAST_MAX_FEEDS && fgets(line, sizeof(line), f)) {
+        size_t n = strlen(line);
+        while (n > 0 && (line[n - 1] == '\n' || line[n - 1] == '\r' ||
+                         line[n - 1] == ' '  || line[n - 1] == '\t'))
+            line[--n] = '\0';
+        char *p = line;
+        while (*p == ' ' || *p == '\t') p++;
+        if (*p == '\0' || *p == '#') continue;
+
+        podcast_feed_t *feed = &s_podcast_feeds[s_podcast_feed_count];
+        char *comma = strchr(p, ',');
+        if (comma) {
+            size_t name_len = (size_t)(comma - p);
+            if (name_len >= sizeof(feed->name)) name_len = sizeof(feed->name) - 1;
+            memcpy(feed->name, p, name_len);
+            feed->name[name_len] = '\0';
+            const char *url = comma + 1;
+            while (*url == ' ' || *url == '\t') url++;
+            strncpy(feed->url, url, sizeof(feed->url) - 1);
+            feed->url[sizeof(feed->url) - 1] = '\0';
+        } else {
+            snprintf(feed->name, sizeof(feed->name), "feed%d", ++auto_idx);
+            strncpy(feed->url, p, sizeof(feed->url) - 1);
+            feed->url[sizeof(feed->url) - 1] = '\0';
+        }
+        if (feed->url[0]) s_podcast_feed_count++;
+    }
+    fclose(f);
+    return true;
+}
+
+static int podcast_find_feed(const char *arg)
+{
+    if (!arg || !arg[0] || s_podcast_feed_count <= 0) return -1;
+
+    bool all_digits = true;
+    for (const char *p = arg; *p; p++) {
+        if (!isdigit((unsigned char)*p)) { all_digits = false; break; }
+    }
+    if (all_digits) {
+        int n = atoi(arg);
+        return (n >= 1 && n <= s_podcast_feed_count) ? (n - 1) : -1;
+    }
+    for (int i = 0; i < s_podcast_feed_count; i++) {
+        if (strcasecmp(s_podcast_feeds[i].name, arg) == 0) return i;
+    }
+    return -1;
+}
+
+/* ── Phase 2: RSS fetch + parse (runs on the main task only) ────────────── */
+
+static esp_err_t podcast_fetch_http_event(esp_http_client_event_t *evt)
+{
+    if (evt->event_id == HTTP_EVENT_ON_HEADER &&
+        strcasecmp(evt->header_key, "location") == 0) {
+        char *loc = (char *)evt->user_data;
+        if (loc) { strncpy(loc, evt->header_value, 511); loc[511] = '\0'; }
+    }
+    return ESP_OK;
+}
+
+/* Download the RSS/XML document for a feed URL into a PSRAM buffer, following
+ * redirects (podcast trackers like podtrac/megaphone commonly chain several
+ * hops). Stops early once enough <item> blocks are buffered — RSS feeds list
+ * newest-first, so truncating the tail only drops older episodes, which is
+ * why a hard cap is safe even for multi-megabyte feeds. Caller frees. */
+static char *podcast_fetch_feed(const char *url, size_t *out_len)
+{
+    if (out_len) *out_len = 0;
+
+    char effective_url[512];
+    strncpy(effective_url, url, sizeof(effective_url) - 1);
+    effective_url[sizeof(effective_url) - 1] = '\0';
+
+    esp_http_client_handle_t client = NULL;
+
+    for (int redir = 0; redir < 10; redir++) {
+        char loc_buf[512] = {0};
+        esp_http_client_config_t cfg = {
+            .url           = effective_url,
+            .method        = HTTP_METHOD_GET,
+            .timeout_ms    = 15000,
+            .event_handler = podcast_fetch_http_event,
+            .user_data     = loc_buf,
+        };
+
+        client = esp_http_client_init(&cfg);
+        if (!client) {
+            ESP_LOGE(TAG, "podcast: http_client_init failed");
+            return NULL;
+        }
+
+        esp_err_t ret = esp_http_client_open(client, 0);
+        if (ret != ESP_OK) {
+            ESP_LOGE(TAG, "podcast: HTTP open failed: %s", esp_err_to_name(ret));
+            esp_http_client_cleanup(client);
+            return NULL;
+        }
+
+        esp_http_client_fetch_headers(client);
+        int status = esp_http_client_get_status_code(client);
+
+        if (status >= 300 && status < 400) {
+            esp_http_client_close(client);
+            esp_http_client_cleanup(client);
+            client = NULL;
+            if (!loc_buf[0]) break;
+            if (strncmp(loc_buf, "http://", 7) == 0 || strncmp(loc_buf, "https://", 8) == 0) {
+                strncpy(effective_url, loc_buf, sizeof(effective_url) - 1);
+                effective_url[sizeof(effective_url) - 1] = '\0';
+            } else {
+                char origin[256] = {0};
+                const char *p = strstr(effective_url, "://");
+                if (p) {
+                    p += 3;
+                    const char *slash = strchr(p, '/');
+                    size_t origin_len = slash ? (size_t)(slash - effective_url) : strlen(effective_url);
+                    if (origin_len < sizeof(origin)) memcpy(origin, effective_url, origin_len);
+                }
+                int path_max = (int)(sizeof(effective_url) - strlen(origin) - 2);
+                if (path_max < 0) path_max = 0;
+                snprintf(effective_url, sizeof(effective_url), "%s%s%.*s",
+                         origin, (loc_buf[0] == '/') ? "" : "/", path_max, loc_buf);
+            }
+            ESP_LOGI(TAG, "podcast: feed redirect %d -> %s", status, effective_url);
+            continue;
+        }
+
+        if (status < 200 || status >= 300) {
+            ESP_LOGE(TAG, "podcast: feed HTTP %d for %s", status, effective_url);
+            esp_http_client_close(client);
+            esp_http_client_cleanup(client);
+            return NULL;
+        }
+        break;
+    }
+
+    if (!client) {
+        ESP_LOGE(TAG, "podcast: too many feed redirects");
+        return NULL;
+    }
+
+    size_t cap = 64 * 1024;
+    char *buf = heap_caps_malloc(cap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!buf) buf = malloc(cap);
+    if (!buf) {
+        ESP_LOGE(TAG, "podcast: no memory for feed buffer");
+        esp_http_client_close(client);
+        esp_http_client_cleanup(client);
+        return NULL;
+    }
+
+    size_t total = 0;
+    size_t scan_pos = 0;
+    int item_count = 0;
+    while (total + 1 < PODCAST_FEED_XML_CAP) {
+        if (total + 4096 >= cap) {
+            size_t new_cap = cap + 65536;
+            if (new_cap > PODCAST_FEED_XML_CAP) new_cap = PODCAST_FEED_XML_CAP;
+            if (new_cap <= cap) break;
+            char *grown = heap_caps_malloc(new_cap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+            if (!grown) grown = malloc(new_cap);
+            if (!grown) break; /* keep what we already downloaded */
+            memcpy(grown, buf, total);
+            free(buf);
+            buf = grown;
+            cap = new_cap;
+        }
+        int n = esp_http_client_read(client, buf + total, (int)(cap - total - 1));
+        if (n <= 0) break;
+        total += (size_t)n;
+        buf[total] = '\0';
+
+        if (item_count < PODCAST_MAX_EPISODES) {
+            size_t from = (scan_pos > 7) ? scan_pos - 7 : 0;
+            const char *p = buf + from;
+            while ((p = strstr(p, "</item>")) != NULL) { item_count++; p += 7; }
+            scan_pos = total;
+            if (item_count >= PODCAST_MAX_EPISODES) break;
+        }
+    }
+    esp_http_client_close(client);
+    esp_http_client_cleanup(client);
+
+    if (total == 0) {
+        free(buf);
+        ESP_LOGE(TAG, "podcast: empty feed response");
+        return NULL;
+    }
+    buf[total] = '\0';
+    if (out_len) *out_len = total;
+    ESP_LOGI(TAG, "podcast: fetched feed, %u bytes", (unsigned)total);
+    return buf;
+}
+
+/* Copy [start,end) into out, trimming whitespace, unwrapping a CDATA
+ * section if present, and decoding a handful of common XML entities. */
+static void podcast_extract_text(const char *start, const char *end, char *out, size_t out_sz)
+{
+    if (!out_sz) return;
+    out[0] = '\0';
+    if (!start || !end || end <= start) return;
+
+    const char *s = start, *e = end;
+    while (s < e && isspace((unsigned char)*s)) s++;
+    while (e > s && isspace((unsigned char)*(e - 1))) e--;
+
+    if ((size_t)(e - s) >= 9 && strncmp(s, "<![CDATA[", 9) == 0) {
+        s += 9;
+        for (const char *q = s; q + 3 <= e; q++) {
+            if (q[0] == ']' && q[1] == ']' && q[2] == '>') { e = q; break; }
+        }
+    }
+
+    static const struct { const char *ent; char ch; } k_entities[] = {
+        { "&amp;", '&' }, { "&lt;", '<' }, { "&gt;", '>' },
+        { "&quot;", '"' }, { "&apos;", '\'' }, { "&#39;", '\'' },
+    };
+
+    size_t di = 0;
+    for (const char *p = s; p < e && di < out_sz - 1; ) {
+        if (*p == '&') {
+            bool matched = false;
+            for (size_t i = 0; i < sizeof(k_entities) / sizeof(k_entities[0]); i++) {
+                size_t elen = strlen(k_entities[i].ent);
+                if ((size_t)(e - p) >= elen && strncmp(p, k_entities[i].ent, elen) == 0) {
+                    out[di++] = k_entities[i].ch;
+                    p += elen;
+                    matched = true;
+                    break;
+                }
+            }
+            if (matched) continue;
+            if ((size_t)(e - p) >= 7 && strncmp(p, "&#8217;", 7) == 0) {
+                out[di++] = '\'';
+                p += 7;
+                continue;
+            }
+        }
+        out[di++] = *p++;
+    }
+    out[di] = '\0';
+}
+
+/* Find attr="value" or attr='value' inside [tag_start,tag_end). */
+static bool podcast_attr_value(const char *tag_start, const char *tag_end,
+                                const char *attr, char *out, size_t out_sz)
+{
+    if (!out_sz) return false;
+    out[0] = '\0';
+    size_t attr_len = strlen(attr);
+
+    for (const char *p = tag_start; p + attr_len < tag_end; p++) {
+        if (p > tag_start) {
+            char prev = *(p - 1);
+            if (isalnum((unsigned char)prev) || prev == '_' || prev == ':' || prev == '-') continue;
+        }
+        if (strncasecmp(p, attr, attr_len) != 0) continue;
+
+        const char *q = p + attr_len;
+        while (q < tag_end && isspace((unsigned char)*q)) q++;
+        if (q >= tag_end || *q != '=') continue;
+        q++;
+        while (q < tag_end && isspace((unsigned char)*q)) q++;
+        if (q >= tag_end) continue;
+        char quote = *q;
+        if (quote != '"' && quote != '\'') continue;
+        q++;
+        const char *vstart = q;
+        while (q < tag_end && *q != quote) q++;
+        if (q >= tag_end) continue;
+
+        size_t vlen = (size_t)(q - vstart);
+        if (vlen >= out_sz) vlen = out_sz - 1;
+        memcpy(out, vstart, vlen);
+        out[vlen] = '\0';
+        return true;
+    }
+    return false;
+}
+
+/* Parse "SS", "MM:SS", or "HH:MM:SS" (itunes:duration) into milliseconds. */
+static uint32_t podcast_parse_duration(const char *s)
+{
+    if (!s || !s[0]) return 0;
+    char buf[32];
+    strncpy(buf, s, sizeof(buf) - 1);
+    buf[sizeof(buf) - 1] = '\0';
+
+    int parts[3] = { 0, 0, 0 };
+    int n = 0;
+    char *tok = strtok(buf, ":");
+    while (tok && n < 3) { parts[n++] = atoi(tok); tok = strtok(NULL, ":"); }
+
+    uint32_t seconds = 0;
+    if (n == 1) seconds = (uint32_t)parts[0];
+    else if (n == 2) seconds = (uint32_t)(parts[0] * 60 + parts[1]);
+    else if (n == 3) seconds = (uint32_t)(parts[0] * 3600 + parts[1] * 60 + parts[2]);
+    return seconds * 1000U;
+}
+
+/* Hand-rolled RSS scanner (no XML library in this build). Fills s_podcast_eps
+ * (allocating it on first use) and returns the episode count. channel_title
+ * receives the feed's own <title>, used as the display name for raw-URL
+ * feeds that aren't in podcasts.txt. */
+static int podcast_parse_feed(char *xml, size_t len, char *channel_title, size_t channel_title_sz)
+{
+    (void)len;
+    if (!s_podcast_eps) {
+        s_podcast_eps = heap_caps_malloc(sizeof(podcast_episode_t) * PODCAST_MAX_EPISODES,
+                                          MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (!s_podcast_eps) s_podcast_eps = malloc(sizeof(podcast_episode_t) * PODCAST_MAX_EPISODES);
+        if (!s_podcast_eps) return 0;
+    }
+
+    const char *first_item = strstr(xml, "<item");
+
+    if (channel_title && channel_title_sz) {
+        channel_title[0] = '\0';
+        const char *ct = strstr(xml, "<title");
+        if (ct && (!first_item || ct < first_item)) {
+            const char *gt = strchr(ct, '>');
+            if (gt) {
+                gt++;
+                const char *close = strstr(gt, "</title>");
+                if (close) podcast_extract_text(gt, close, channel_title, channel_title_sz);
+            }
+        }
+    }
+
+    int count = 0;
+    const char *cursor = xml;
+    while (count < PODCAST_MAX_EPISODES) {
+        const char *item_start = strstr(cursor, "<item");
+        if (!item_start) break;
+        const char *item_body_start = strchr(item_start, '>');
+        if (!item_body_start) break;
+        item_body_start++;
+        const char *item_end = strstr(item_body_start, "</item>");
+        if (!item_end) break;
+
+        podcast_episode_t *ep = &s_podcast_eps[count];
+        ep->title[0] = '\0';
+        ep->url[0] = '\0';
+        ep->duration_ms = 0;
+
+        const char *t = strstr(item_body_start, "<title");
+        if (t && t < item_end) {
+            const char *gt = strchr(t, '>');
+            if (gt && gt < item_end) {
+                gt++;
+                const char *close = strstr(gt, "</title>");
+                if (close && close <= item_end) {
+                    podcast_extract_text(gt, close, ep->title, sizeof(ep->title));
+                }
+            }
+        }
+
+        {
+            char cand_url[PODCAST_URL_LEN];
+            char cand_type[32];
+            bool found_audio = false;
+            const char *p = item_body_start;
+            while (p < item_end) {
+                const char *enc = strstr(p, "<enclosure");
+                if (!enc || enc >= item_end) break;
+                const char *tag_end = strchr(enc, '>');
+                if (!tag_end || tag_end > item_end) break;
+                if (podcast_attr_value(enc, tag_end, "url", cand_url, sizeof(cand_url))) {
+                    bool is_audio = podcast_attr_value(enc, tag_end, "type", cand_type, sizeof(cand_type)) &&
+                                    pf_strcasestr(cand_type, "audio");
+                    if (is_audio || !ep->url[0]) {
+                        strncpy(ep->url, cand_url, sizeof(ep->url) - 1);
+                        ep->url[sizeof(ep->url) - 1] = '\0';
+                    }
+                    if (is_audio) { found_audio = true; break; }
+                }
+                p = tag_end + 1;
+            }
+            (void)found_audio;
+        }
+
+        {
+            const char *d = strstr(item_body_start, "duration>");
+            if (d && d < item_end) {
+                const char *gt = d + 8; /* the '>' of "...duration>" */
+                if (*gt == '>') {
+                    const char *val_start = gt + 1;
+                    const char *val_end = strchr(val_start, '<');
+                    if (val_end && val_end <= item_end) {
+                        char durbuf[32];
+                        size_t vlen = (size_t)(val_end - val_start);
+                        if (vlen >= sizeof(durbuf)) vlen = sizeof(durbuf) - 1;
+                        memcpy(durbuf, val_start, vlen);
+                        durbuf[vlen] = '\0';
+                        char *ds = durbuf;
+                        while (*ds == ' ' || *ds == '\t') ds++;
+                        ep->duration_ms = podcast_parse_duration(ds);
+                    }
+                }
+            }
+        }
+
+        if (ep->url[0]) count++;
+        cursor = item_end + 7;
+    }
+    return count;
+}
+
+/* ── Seek/resume support ─────────────────────────────────────────────────── */
+
+static bool podcast_queue_seek_relative(int32_t delta_ms, const char *reason)
+{
+    if (!s_podcast.active || !s_mp3.active) return false;
+    if (!s_podcast.range_supported) {
+        ESP_LOGW(TAG, "podcast: %s ignored (seek not supported by this server)",
+                 reason ? reason : "seek");
+        screen_draw_text("Seek not supported\nby this server");
+        return false;
+    }
+
+    int64_t target_ms = (int64_t)s_mp3.position_ms + (int64_t)delta_ms;
+    if (target_ms < 0) target_ms = 0;
+    if (s_mp3.duration_ms > 0 && target_ms >= s_mp3.duration_ms) {
+        target_ms = (int64_t)s_mp3.duration_ms - 1;
+        if (target_ms < 0) target_ms = 0;
+    }
+
+    uint32_t bytes_per_ms = s_podcast.avg_bitrate ? (s_podcast.avg_bitrate / 8000U) : 16U; /* 128kbps fallback */
+    if (bytes_per_ms == 0) bytes_per_ms = 1;
+    int64_t target_byte = target_ms * (int64_t)bytes_per_ms;
+    if (s_podcast.content_length > 0 && target_byte >= s_podcast.content_length) {
+        target_byte = s_podcast.content_length - 1;
+    }
+    if (target_byte < 0) target_byte = 0;
+
+    s_podcast.seek_to_ms = (uint32_t)target_ms;
+    s_podcast.seek_to_byte = target_byte;
+    ESP_LOGI(TAG, "podcast: %s queued -> byte %lld (%lu ms)",
+             reason ? reason : "seek", (long long)target_byte, (unsigned long)target_ms);
+    return true;
+}
+
+static void podcast_save_resume(void)
+{
+    if (!s_podcast.active) return;
+    nvs_write_str(NVS_KEY_POD_URL, s_podcast.episode_url);
+    char posbuf[16];
+    uint32_t save_ms = (s_mp3.position_ms > 5000) ? (s_mp3.position_ms - 5000) : 0;
+    snprintf(posbuf, sizeof(posbuf), "%lu", (unsigned long)save_ms);
+    nvs_write_str(NVS_KEY_POD_POS, posbuf);
+    nvs_write_str(NVS_KEY_POD_FEED, s_podcast.feed_name);
+    nvs_write_str(NVS_KEY_POD_TITLE, s_radio_title ? s_radio_title : "");
+    nvs_write_u8(NVS_KEY_POD_IDX, (uint8_t)((s_podcast.episode_idx >= 0 && s_podcast.episode_idx < 255)
+                                             ? s_podcast.episode_idx : 0));
+    char bpsbuf[16];
+    snprintf(bpsbuf, sizeof(bpsbuf), "%lu", (unsigned long)s_podcast.avg_bitrate);
+    nvs_write_str(NVS_KEY_POD_BPS, bpsbuf);
+    s_podcast.last_saved_ms = s_mp3.position_ms;
+    ESP_LOGI(TAG, "podcast: resume saved at %lu ms", (unsigned long)save_ms);
+}
+
+static void podcast_clear_resume(void)
+{
+    nvs_erase_key_local(NVS_KEY_POD_URL);
+    nvs_erase_key_local(NVS_KEY_POD_POS);
+    nvs_erase_key_local(NVS_KEY_POD_FEED);
+    nvs_erase_key_local(NVS_KEY_POD_TITLE);
+    nvs_erase_key_local(NVS_KEY_POD_IDX);
+    nvs_erase_key_local(NVS_KEY_POD_BPS);
+}
+
+/* ── Start / stop ─────────────────────────────────────────────────────────
+ * Mirrors the "radio" command's start/stop blocks (podcasts ride the same
+ * streaming path), plus the podcast overlay state reset. */
+static bool podcast_start_episode(int idx, uint32_t resume_ms)
+{
+    if (idx < 0 || idx >= s_podcast.episode_count || !s_podcast_eps) return false;
+    podcast_episode_t *ep = &s_podcast_eps[idx];
+    if (!ep->url[0]) return false;
+
+    if (!radio_alloc_state()) {
+        ESP_LOGE(TAG, "podcast: failed to allocate radio buffers");
+        screen_draw_text("Podcast: out of\nmemory");
+        return false;
+    }
+
+    s_mp3.active = false;
+    vTaskDelay(pdMS_TO_TICKS(50));
+
+    strncpy(s_radio_url, ep->url, 511);
+    s_radio_url[511] = '\0';
+    strncpy(s_radio_title, ep->title, 127);
+    s_radio_title[127] = '\0';
+    strncpy(s_radio_station, s_podcast.feed_name, 127);
+    s_radio_station[127] = '\0';
+
+    strncpy(s_podcast.episode_url, ep->url, sizeof(s_podcast.episode_url) - 1);
+    s_podcast.episode_url[sizeof(s_podcast.episode_url) - 1] = '\0';
+
+    s_podcast.active           = true;
+    s_podcast.episode_idx      = idx;
+    s_podcast.content_length   = -1;
+    s_podcast.seek_to_byte     = -1;
+    s_podcast.seek_to_ms       = 0;
+    s_podcast.range_supported  = false;
+    s_podcast.ended            = false;
+    s_podcast.reconnect_fails  = 0;
+
+    s_podcast.byte_pos = 0;
+    if (resume_ms > 0 && s_podcast.avg_bitrate > 0) {
+        uint32_t bytes_per_ms = s_podcast.avg_bitrate / 8000U;
+        if (bytes_per_ms == 0) bytes_per_ms = 1;
+        s_podcast.byte_pos = (int64_t)resume_ms * (int64_t)bytes_per_ms;
+    } else {
+        s_podcast.avg_bitrate = 0;
+    }
+    s_podcast.last_saved_ms  = resume_ms;
+    s_podcast.next_save_tick = xTaskGetTickCount() + pdMS_TO_TICKS(PODCAST_SAVE_PERIOD_MS);
+
+    s_mp3.radio  = true;
+    s_mp3.active = true;
+    s_mp3.paused = false;
+    s_mp3_resume_on_bt_reconnect = false;
+    s_mp3.duration_ms = ep->duration_ms;
+    s_mp3.position_ms = resume_ms;
+    s_mp3.play_token++;
+    s_mp3.folder_name[0] = '\0';
+    s_mp3.file_name[0]   = '\0';
+    s_mp3.file_path[0]   = '\0';
+#if CONFIG_BT_ENABLED && CONFIG_BT_A2DP_ENABLE
+    s_bt_resample_phase_q16 = 0;
+    s_bt_a2dp_sample_rate = BT_A2DP_TARGET_SAMPLE_RATE;
+    if (s_bt.connected) {
+        bt_pcm_clear();
+        s_bt_media_prime_pending = true;
+        s_bt_media_prime_target_bytes = BT_PCM_START_PRIME_BYTES;
+        s_bt_media_prime_deadline = xTaskGetTickCount() +
+                                    pdMS_TO_TICKS(BT_PCM_START_PRIME_TIMEOUT_MS);
+    }
+#endif
+    mp3_ensure_task();
+    ESP_LOGI(TAG, "podcast: playing '%s' ep %d/%d: %s",
+             s_podcast.feed_name, idx + 1, s_podcast.episode_count, ep->title);
+    mp3_request_ui_refresh();
+    return true;
+}
+
+static void podcast_stop(bool save_resume)
+{
+    if (!s_podcast.active) return;
+    if (save_resume && !s_podcast.ended) podcast_save_resume();
+
+    s_mp3.active = false;
+    s_mp3.radio  = false;
+    s_mp3_resume_on_bt_reconnect = false;
+#if CONFIG_BT_ENABLED && CONFIG_BT_A2DP_ENABLE
+    s_bt_media_prime_pending = false;
+    s_bt_media_prime_deadline = 0;
+    s_bt_media_prime_target_bytes = BT_PCM_START_PRIME_BYTES;
+    bt_media_stop_if_needed();
+#endif
+    radio_free_state();
+    s_podcast.active = false;
+    ESP_LOGI(TAG, "podcast: stopped");
+}
+
+/* ── Phase 3: deferred "podcast" command worker (runs on the MAIN task) ──── */
+
+static void podcast_run_pending(const char *params, const char *run_id)
+{
+    char arg[256];
+    strncpy(arg, params ? params : "", sizeof(arg) - 1);
+    arg[sizeof(arg) - 1] = '\0';
+    char *p = arg;
+    while (*p == ' ') p++;
+    size_t alen = strlen(p);
+    while (alen > 0 && p[alen - 1] == ' ') p[--alen] = '\0';
+
+    if (!p[0]) {
+        if (!podcast_load_feeds() || s_podcast_feed_count == 0) {
+            screen_draw_text("No podcasts.txt\non SD card");
+            pf_dir_post_result(run_id, "No podcasts.txt on SD card, or it is empty");
+            return;
+        }
+        char msg[600];
+        int mlen = snprintf(msg, sizeof(msg), "Podcasts:");
+        char res[600];
+        int rlen = snprintf(res, sizeof(res), "Feeds:");
+        for (int i = 0; i < s_podcast_feed_count; i++) {
+            char safe_name[PODCAST_NAME_LEN];
+            podcast_json_sanitize(s_podcast_feeds[i].name, safe_name, sizeof(safe_name));
+            mlen += snprintf(msg + mlen, (size_t)(mlen < (int)sizeof(msg) ? sizeof(msg) - (size_t)mlen : 0),
+                              "\n%d. %s", i + 1, safe_name);
+            rlen += snprintf(res + rlen, (size_t)(rlen < (int)sizeof(res) ? sizeof(res) - (size_t)rlen : 0),
+                              " %d.%s", i + 1, safe_name);
+        }
+        screen_draw_text(msg);
+        pf_dir_post_result(run_id, res);
+        return;
+    }
+
+    if (strcasecmp(p, "off") == 0 || strcasecmp(p, "stop") == 0) {
+        if (s_podcast.active) {
+            podcast_stop(true);
+            screen_draw_text("Podcast stopped\n(resume saved)");
+            pf_dir_post_result(run_id, "Podcast stopped");
+        } else {
+            pf_dir_post_result(run_id, "No podcast playing");
+        }
+        return;
+    }
+
+    if (strcasecmp(p, "resume") == 0) {
+        char url[PODCAST_URL_LEN] = {0};
+        if (!nvs_read_str(NVS_KEY_POD_URL, url, sizeof(url)) || !url[0]) {
+            pf_dir_post_result(run_id, "Nothing to resume");
+            return;
+        }
+        char feed[PODCAST_NAME_LEN] = {0}, title[PODCAST_TITLE_LEN] = {0};
+        char posbuf[16] = {0}, bpsbuf[16] = {0};
+        uint8_t idx_u8 = 0;
+        nvs_read_str(NVS_KEY_POD_FEED, feed, sizeof(feed));
+        nvs_read_str(NVS_KEY_POD_TITLE, title, sizeof(title));
+        nvs_read_str(NVS_KEY_POD_POS, posbuf, sizeof(posbuf));
+        nvs_read_str(NVS_KEY_POD_BPS, bpsbuf, sizeof(bpsbuf));
+        nvs_read_u8(NVS_KEY_POD_IDX, &idx_u8);
+        uint32_t resume_ms = (uint32_t)strtoul(posbuf, NULL, 10);
+
+        if (!s_podcast_eps) {
+            s_podcast_eps = heap_caps_malloc(sizeof(podcast_episode_t) * PODCAST_MAX_EPISODES,
+                                              MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+            if (!s_podcast_eps) s_podcast_eps = malloc(sizeof(podcast_episode_t) * PODCAST_MAX_EPISODES);
+        }
+        if (!s_podcast_eps) {
+            pf_dir_post_result(run_id, "Out of memory");
+            return;
+        }
+        strncpy(s_podcast_eps[0].url, url, sizeof(s_podcast_eps[0].url) - 1);
+        s_podcast_eps[0].url[sizeof(s_podcast_eps[0].url) - 1] = '\0';
+        strncpy(s_podcast_eps[0].title, title, sizeof(s_podcast_eps[0].title) - 1);
+        s_podcast_eps[0].title[sizeof(s_podcast_eps[0].title) - 1] = '\0';
+        s_podcast_eps[0].duration_ms = 0;
+        s_podcast.episode_count = 1;
+        strncpy(s_podcast.feed_name, feed[0] ? feed : "podcast", sizeof(s_podcast.feed_name) - 1);
+        s_podcast.feed_name[sizeof(s_podcast.feed_name) - 1] = '\0';
+        s_podcast.avg_bitrate = (uint32_t)strtoul(bpsbuf, NULL, 10);
+
+        if (!podcast_start_episode(0, resume_ms)) {
+            pf_dir_post_result(run_id, "Resume failed");
+            return;
+        }
+        s_podcast.episode_idx = (int)idx_u8; /* cosmetic: preserve original episode number */
+
+        char safe_title[PODCAST_TITLE_LEN];
+        podcast_json_sanitize(title[0] ? title : "episode", safe_title, sizeof(safe_title));
+        char res[160];
+        snprintf(res, sizeof(res), "Resuming: %s", safe_title);
+        pf_dir_post_result(run_id, res);
+        return;
+    }
+
+    /* Remaining forms: "<url|name|number> [episode#]" */
+    char first[256] = {0};
+    char rest[64] = {0};
+    const char *sp = strchr(p, ' ');
+    if (sp) {
+        size_t flen = (size_t)(sp - p);
+        if (flen >= sizeof(first)) flen = sizeof(first) - 1;
+        memcpy(first, p, flen);
+        first[flen] = '\0';
+        const char *r = sp + 1;
+        while (*r == ' ') r++;
+        strncpy(rest, r, sizeof(rest) - 1);
+    } else {
+        strncpy(first, p, sizeof(first) - 1);
+    }
+
+    int want_episode = 1; /* 1-based, default = newest */
+    if (rest[0]) {
+        int n = atoi(rest);
+        if (n >= 1) want_episode = n;
+    }
+
+    bool is_url = (strncmp(first, "http://", 7) == 0 || strncmp(first, "https://", 8) == 0);
+    char feed_url[PODCAST_URL_LEN] = {0};
+    char feed_name[PODCAST_NAME_LEN] = {0};
+
+    if (is_url) {
+        strncpy(feed_url, first, sizeof(feed_url) - 1);
+    } else {
+        if (!podcast_load_feeds()) {
+            pf_dir_post_result(run_id, "No podcasts.txt on SD card");
+            return;
+        }
+        int fidx = podcast_find_feed(first);
+        if (fidx < 0) {
+            char safe_first[64];
+            podcast_json_sanitize(first, safe_first, sizeof(safe_first));
+            char res[96];
+            snprintf(res, sizeof(res), "Feed '%s' not found", safe_first);
+            pf_dir_post_result(run_id, res);
+            return;
+        }
+        strncpy(feed_url, s_podcast_feeds[fidx].url, sizeof(feed_url) - 1);
+        strncpy(feed_name, s_podcast_feeds[fidx].name, sizeof(feed_name) - 1);
+    }
+
+    screen_draw_text("Fetching feed...");
+    size_t xml_len = 0;
+    char *xml = podcast_fetch_feed(feed_url, &xml_len);
+    if (!xml) {
+        screen_draw_text("Podcast feed\nfetch failed");
+        pf_dir_post_result(run_id, "Feed fetch failed");
+        return;
+    }
+
+    char channel_title[PODCAST_NAME_LEN] = {0};
+    int count = podcast_parse_feed(xml, xml_len, channel_title, sizeof(channel_title));
+    free(xml);
+    if (count <= 0) {
+        screen_draw_text("No episodes found\nin feed");
+        pf_dir_post_result(run_id, "No episodes found in feed");
+        return;
+    }
+    s_podcast.episode_count = count;
+    if (!feed_name[0]) {
+        strncpy(feed_name, channel_title[0] ? channel_title : "podcast", sizeof(feed_name) - 1);
+    }
+    strncpy(s_podcast.feed_name, feed_name, sizeof(s_podcast.feed_name) - 1);
+    s_podcast.feed_name[sizeof(s_podcast.feed_name) - 1] = '\0';
+    strncpy(s_podcast.feed_url, feed_url, sizeof(s_podcast.feed_url) - 1);
+    s_podcast.feed_url[sizeof(s_podcast.feed_url) - 1] = '\0';
+
+    if (want_episode > count) want_episode = count;
+    int idx = want_episode - 1;
+
+    /* Auto-resume if this is the same episode we left off on. */
+    uint32_t resume_ms = 0;
+    char saved_url[PODCAST_URL_LEN] = {0};
+    if (nvs_read_str(NVS_KEY_POD_URL, saved_url, sizeof(saved_url)) &&
+        strcmp(saved_url, s_podcast_eps[idx].url) == 0) {
+        char posbuf[16] = {0}, bpsbuf[16] = {0};
+        nvs_read_str(NVS_KEY_POD_POS, posbuf, sizeof(posbuf));
+        nvs_read_str(NVS_KEY_POD_BPS, bpsbuf, sizeof(bpsbuf));
+        resume_ms = (uint32_t)strtoul(posbuf, NULL, 10);
+        s_podcast.avg_bitrate = (uint32_t)strtoul(bpsbuf, NULL, 10);
+    } else {
+        s_podcast.avg_bitrate = 0;
+    }
+
+    if (!podcast_start_episode(idx, resume_ms)) {
+        pf_dir_post_result(run_id, "Unable to start episode");
+        return;
+    }
+
+    char safe_title[PODCAST_TITLE_LEN];
+    podcast_json_sanitize(s_podcast_eps[idx].title[0] ? s_podcast_eps[idx].title : "episode",
+                           safe_title, sizeof(safe_title));
+    char res[160];
+    snprintf(res, sizeof(res), "Playing: %s", safe_title);
+    pf_dir_post_result(run_id, res);
+}
+
+#endif /* CONFIG_CORE2_HW */
 
 static void mp3_player_task(void *arg) __attribute__((unused));
 static void mp3_player_task(void *arg)
@@ -4079,6 +5030,47 @@ static void mp3_player_task(void *arg)
             }
         }
 
+#if CONFIG_CORE2_HW
+        /* Podcast seek/resume-jump: reopen the HTTP stream at a new byte offset
+         * instead of the SD-file seek-by-decoding-forward loop below (radio
+         * streams can't be fseek'd). The loop-top block a few lines up already
+         * calls radio_open_stream() whenever s_radio_http is NULL, and that
+         * function sends "Range: bytes=<byte_pos>-", so closing the stream
+         * here is enough to make the reopen land at the new offset. */
+        if (s_mp3.radio && s_podcast.active && s_podcast.seek_to_byte >= 0) {
+            int64_t target_byte = s_podcast.seek_to_byte;
+            uint32_t target_ms = s_podcast.seek_to_ms;
+            s_podcast.seek_to_byte = -1;
+
+            radio_close_stream();
+            s_podcast.byte_pos = target_byte;
+            s_mp3.position_ms = target_ms;
+            bytes_left = 0;
+            read_ptr = inbuf;
+            MP3FreeDecoder(dec);
+            dec = MP3InitDecoder();
+            if (!dec) {
+                ESP_LOGE(TAG, "podcast: decoder reset failed while seeking");
+                s_mp3.paused = true;
+                mp3_request_ui_refresh();
+                vTaskDelay(pdMS_TO_TICKS(100));
+                continue;
+            }
+#if CONFIG_BT_ENABLED && CONFIG_BT_A2DP_ENABLE
+            bt_pcm_clear();
+            s_bt_media_prime_pending = false;
+            s_bt_media_prime_deadline = 0;
+            s_bt_media_prime_target_bytes = BT_PCM_START_PRIME_BYTES;
+#endif
+            speaker_path_ready = false;
+            speaker_last_rate = 0;
+            ESP_LOGI(TAG, "podcast: seek applied -> byte %lld (%lu ms)",
+                     (long long)target_byte, (unsigned long)target_ms);
+            mp3_request_ui_refresh();
+            continue;
+        }
+#endif
+
         int32_t seek_target_ms = (s_mp3.radio || wav_mode) ? -1 : s_mp3_seek_target_ms;
         if (wav_mode && s_mp3_seek_target_ms >= 0) s_mp3_seek_target_ms = -1;
         if (seek_target_ms >= 0) {
@@ -4282,6 +5274,26 @@ static void mp3_player_task(void *arg)
 
         if (bytes_left <= 4) {
             if (s_mp3.radio) {
+#if CONFIG_CORE2_HW
+                if (s_podcast.active) {
+                    bool pod_eof = s_podcast.content_length > 0 &&
+                                   s_podcast.byte_pos >= s_podcast.content_length - 128; /* ID3v1 slack */
+                    if (!pod_eof && s_podcast.content_length <= 0 &&
+                        ++s_podcast.reconnect_fails >= 3) {
+                        pod_eof = true; /* chunked/unknown-length feed: bounded retry, not forever */
+                    }
+                    if (pod_eof) {
+                        ESP_LOGI(TAG, "podcast: end of episode reached");
+                        s_podcast.ended = true;
+                        if (s_mp3.duration_ms) s_mp3.position_ms = s_mp3.duration_ms;
+                        s_mp3.paused = true;
+                        radio_close_stream();
+                        mp3_request_ui_refresh();
+                        vTaskDelay(pdMS_TO_TICKS(200));
+                        continue;
+                    }
+                }
+#endif
                 ESP_LOGW(TAG, "radio: stream underrun, reconnecting in 2s");
                 radio_close_stream();
                 vTaskDelay(pdMS_TO_TICKS(2000));
@@ -4331,6 +5343,18 @@ static void mp3_player_task(void *arg)
         if (fi.outputSamps <= 0 || fi.samprate <= 0 || fi.nChans <= 0) {
             continue;
         }
+
+#if CONFIG_CORE2_HW
+        if (s_podcast.active && fi.bitrate > 0) {
+            s_podcast.avg_bitrate = s_podcast.avg_bitrate
+                ? (uint32_t)(((uint64_t)s_podcast.avg_bitrate * 7 + (uint32_t)fi.bitrate) / 8)
+                : (uint32_t)fi.bitrate;
+            if (s_mp3.duration_ms == 0 && s_podcast.content_length > 0 && s_podcast.avg_bitrate > 0) {
+                s_mp3.duration_ms = (uint32_t)((uint64_t)s_podcast.content_length * 8000ULL /
+                                               s_podcast.avg_bitrate);
+            }
+        }
+#endif
 
         tel_decoded_frames++;
         tel_decode_us_total += decode_us;
@@ -4491,6 +5515,13 @@ static void mp3_player_task(void *arg)
                         s_mp3.position_ms += frame_ms;
                     }
                 }
+#if CONFIG_CORE2_HW
+                else if (s_podcast.active) {
+                    /* End-of-episode is detected at the refill underrun above,
+                     * not here — just track position while frames keep coming. */
+                    s_mp3.position_ms += frame_ms;
+                }
+#endif
 
                 TickType_t now = xTaskGetTickCount();
                 if ((now - s_mp3_last_ui_tick) >= pdMS_TO_TICKS(3000)) {
@@ -4682,6 +5713,49 @@ static void mp3_render_now_playing(void)
         } else {
             strcpy(title_short, "(no title)");
         }
+#if CONFIG_CORE2_HW
+        if (s_podcast.active) {
+            char bar[21];
+            int width = 20;
+            int filled = 0;
+            if (s_mp3.duration_ms > 0) {
+                filled = (int)((((uint64_t)s_mp3.position_ms) * (uint64_t)width) / s_mp3.duration_ms);
+                if (filled < 0) filled = 0;
+                if (filled > width) filled = width;
+            }
+            for (int i = 0; i < width; i++) bar[i] = (i < filled) ? '#' : '-';
+            bar[width] = '\0';
+
+            char cur[8], total[8];
+            mp3_format_time(s_mp3.position_ms, cur, sizeof(cur));
+            if (s_mp3.duration_ms > 0) {
+                mp3_format_time(s_mp3.duration_ms, total, sizeof(total));
+            } else {
+                strncpy(total, "--:--", sizeof(total) - 1);
+                total[sizeof(total) - 1] = '\0';
+            }
+
+            snprintf(msg, sizeof(msg),
+                     "PODCAST %s\n"
+                     "Feed: %s\n"
+                     "Ep %d/%d: %s\n"
+                     "[%s]\n"
+                     "%s / %s\n"
+                     "Vol:%s\n"
+                     "\n"
+                     "[      %s      ]\n"
+                     "[ VOLUME  ^  v ]\n"
+                     "[ SKIP  <30  30> ]",
+                     s_mp3.paused ? "Paused" : "Playing",
+                     station_short,
+                     s_podcast.episode_idx + 1, s_podcast.episode_count,
+                     title_short,
+                     bar,
+                     cur, total,
+                     vol_str,
+                     s_mp3.paused ? "PLAY" : "STOP");
+        } else
+#endif
         snprintf(msg, sizeof(msg),
                  "RADIO %s\n"
                  "Station: %s\n"
@@ -5670,6 +6744,14 @@ static bool mp3_start_track(int folder_idx, int track_idx, bool keep_position)
     if (!mp3_get_nth_file(folder->folder_path, resolved_idx, file_name, sizeof(file_name), &total) || total <= 0) {
         return false;
     }
+
+#if CONFIG_CORE2_HW
+    /* Tear down an active podcast/radio stream before taking over playback
+     * with an SD-folder track; otherwise s_mp3.radio would stay true and the
+     * decode task would keep trying to read from the (now stopped) stream. */
+    if (s_podcast.active) podcast_stop(true);
+#endif
+    s_mp3.radio = false;
 
     s_mp3.active = true;
     s_mp3.paused = false;
@@ -8465,6 +9547,9 @@ static const pf_cmd_t s_pf_media_cmds[] = {
     { "btdisconnect", "btdisconnect", "false", "Disconnect the current Bluetooth audio device.", "\xF0\x9F\x94\x8C" /* 🔌 */, NULL },
     { "btforget",    "btforget",    "false", "Forget the saved Bluetooth device and stop auto-reconnect.", "\xF0\x9F\xA7\xB9" /* 🧹 */, NULL },
     { "radio",       "radio",       "true",  "Play an internet radio stream. Pass a URL to start, 'off' to stop. Example: 'http://stream.example.com:8000/radio.mp3'", "\xF0\x9F\x93\xBB" /* 📻 */, NULL },
+#if CONFIG_CORE2_HW
+    { "podcast",     "podcast",     "true",  "Play a podcast. Parameter: a feed name or number from podcasts.txt on the SD card, or a raw RSS feed URL, optionally followed by an episode number (1 = newest). No parameter lists the configured feeds. 'resume' continues the last episode from its saved position. 'off' stops playback and saves the position. Examples: 'myfeed', 'myfeed 3', 'https://feeds.example.com/show.rss', 'resume', 'off'", "\xF0\x9F\x8E\x99\xEF\xB8\x8F" /* 🎙️ */, "{{result}}" },
+#endif
 };
 #define PF_MEDIA_CMD_COUNT (sizeof(s_pf_media_cmds) / sizeof(s_pf_media_cmds[0]))
 
@@ -10027,6 +11112,12 @@ static void pf_event_handler(const char *event_name,
 
     } else if (strcmp(s_trigger, "stop") == 0) {
         s_mp3_ui_override_allowed = true;
+#if CONFIG_CORE2_HW
+        if (s_podcast.active) {
+            podcast_stop(true);
+            screen_draw_text("Podcast stopped\n(resume saved)");
+        } else
+#endif
         if (s_mp3.radio && s_mp3.active) {
             s_mp3.active = false;
             s_mp3.radio = false;
@@ -10054,18 +11145,50 @@ static void pf_event_handler(const char *event_name,
 
     } else if (strcmp(s_trigger, "next") == 0) {
         s_mp3_ui_override_allowed = true;
+#if CONFIG_CORE2_HW
+        if (s_podcast.active) {
+            int next_idx = s_podcast.episode_idx + 1; /* next = older */
+            if (next_idx >= s_podcast.episode_count) {
+                screen_draw_text("Last episode");
+            } else {
+                podcast_save_resume();
+                podcast_start_episode(next_idx, 0);
+            }
+        } else
+#endif
         (void)mp3_advance_track(1, "next command");
 
     } else if (strcmp(s_trigger, "previous") == 0) {
         s_mp3_ui_override_allowed = true;
+#if CONFIG_CORE2_HW
+        if (s_podcast.active) {
+            int prev_idx = s_podcast.episode_idx - 1; /* previous = newer */
+            if (prev_idx < 0) {
+                screen_draw_text("First episode");
+            } else {
+                podcast_save_resume();
+                podcast_start_episode(prev_idx, 0);
+            }
+        } else
+#endif
         (void)mp3_advance_track(-1, "previous command");
 
     } else if (strcmp(s_trigger, "forward") == 0) {
         s_mp3_ui_override_allowed = true;
+#if CONFIG_CORE2_HW
+        if (s_podcast.active) {
+            (void)podcast_queue_seek_relative((int32_t)PODCAST_SEEK_STEP_MS, "forward command");
+        } else
+#endif
         (void)mp3_queue_seek_relative((int32_t)MP3_SEEK_STEP_MS, "forward command");
 
     } else if (strcmp(s_trigger, "reverse") == 0) {
         s_mp3_ui_override_allowed = true;
+#if CONFIG_CORE2_HW
+        if (s_podcast.active) {
+            (void)podcast_queue_seek_relative(-(int32_t)PODCAST_SEEK_STEP_MS, "reverse command");
+        } else
+#endif
         (void)mp3_queue_seek_relative(-(int32_t)MP3_SEEK_STEP_MS, "reverse command");
 
     } else if (strcmp(s_trigger, "volumeup") == 0) {
@@ -10434,8 +11557,26 @@ static void pf_event_handler(const char *event_name,
                 ESP_LOGE(TAG, "WiFi credential save failed: %s", esp_err_to_name(err));
         }
 
+#if CONFIG_CORE2_HW
+    } else if (strcmp(s_trigger, "podcast") == 0) {
+        s_mp3_ui_override_allowed = true;
+        /* RSS fetch/parse can take several seconds — must not block this
+         * websocket callback (same reasoning as "folders"/"files" above).
+         * Deferred to the main loop; podcast_run_pending() posts the
+         * command/result and queues run/save itself. */
+        strncpy(s_pending_podcast_param, s_params, sizeof(s_pending_podcast_param) - 1);
+        s_pending_podcast_param[sizeof(s_pending_podcast_param) - 1] = '\0';
+        strncpy(s_pending_podcast_run_id, s_id, sizeof(s_pending_podcast_run_id) - 1);
+        s_pending_podcast_run_id[sizeof(s_pending_podcast_run_id) - 1] = '\0';
+        s_pending_podcast = true;
+        s_id[0] = '\0';   /* suppress the generic run/save below */
+#endif
+
     } else if (strcmp(s_trigger, "radio") == 0) {
         s_mp3_ui_override_allowed = true;
+#if CONFIG_CORE2_HW
+        if (s_podcast.active) podcast_stop(true);
+#endif
         if (s_params[0] &&
             strcasecmp(s_params, "off") != 0 &&
             strcasecmp(s_params, "stop") != 0) {
@@ -12446,6 +13587,39 @@ void picture_frame_run(void)
                  * next eligible main-loop tick will render now-playing once
                  * that screen is dismissed. */
             }
+
+#if CONFIG_CORE2_HW
+            /* Podcast resume persistence — periodic save while playing, plus
+             * handling for a natural end-of-episode flagged by the decode
+             * task. NVS writes happen here (main task) only, never from
+             * mp3_player_task, so a flash commit can't stall audio decode. */
+            if (s_podcast.active && s_mp3.active && !s_mp3.paused) {
+                TickType_t now = xTaskGetTickCount();
+                if ((int32_t)(now - s_podcast.next_save_tick) >= 0) {
+                    s_podcast.next_save_tick = now + pdMS_TO_TICKS(PODCAST_SAVE_PERIOD_MS);
+                    if (s_mp3.position_ms > s_podcast.last_saved_ms + 5000) {
+                        podcast_save_resume();
+                    }
+                }
+            }
+            if (s_podcast.ended) {
+                s_podcast.ended = false;
+                podcast_clear_resume();
+                screen_draw_text("Episode finished");
+            }
+#endif
+
+            /* Deferred podcast command — RSS fetch/parse can take several
+             * seconds, so it runs here (main task) rather than on the
+             * websocket callback. podcast_run_pending() posts command/result
+             * itself and queues run/save, so it must run before the run/save
+             * block below. */
+#if CONFIG_CORE2_HW
+            if (s_pending_podcast) {
+                s_pending_podcast = false;
+                podcast_run_pending(s_pending_podcast_param, s_pending_podcast_run_id);
+            }
+#endif
 
             /* Deferred SD directory scan for "folders"/"files" — runs on this
              * (main) task so a slow scan can't block the websocket keepalive.
