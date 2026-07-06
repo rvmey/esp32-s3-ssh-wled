@@ -255,11 +255,6 @@ static int32_t s_stream_hp_state;
 static int32_t s_stream_prev_in;
 static bool    s_stream_dsp_init;
 
-/* TEMP DIAGNOSTIC counter: log the first several reads of each stream
- * unconditionally (not just on error) so we can see the true err/got pair —
- * remove once the wake-word mic-read bug is root-caused. */
-static int s_read_frame_log_budget = 0;
-
 esp_err_t core2_mic_stream_start(void)
 {
     if (!s_rx_chan) {
@@ -267,12 +262,6 @@ esp_err_t core2_mic_stream_start(void)
         return ESP_ERR_INVALID_STATE;
     }
     esp_err_t err = i2s_channel_enable(s_rx_chan);
-    /* TEMP DIAGNOSTIC: log unconditionally — a prior silent tolerance of
-     * ESP_ERR_INVALID_STATE here may be masking a real "channel never
-     * actually started" failure (wake-word reads return 0 bytes instantly
-     * afterward instead of blocking, and stream_stop()'s disable() later
-     * reports "the channel has not been enabled yet"). */
-    ESP_LOGI(TAG, "stream_start: enable=%s", esp_err_to_name(err));
     if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
         ESP_LOGE(TAG, "stream enable: %s", esp_err_to_name(err));
         return err;
@@ -282,13 +271,9 @@ esp_err_t core2_mic_stream_start(void)
     uint8_t flush[DMA_BUF_BYTES];
     size_t  flushed = 0;
     for (int i = 0; i < 4; i++) {
-        esp_err_t ferr = i2s_channel_read(s_rx_chan, flush, DMA_BUF_BYTES, &flushed, pdMS_TO_TICKS(20));
-        ESP_LOGI(TAG, "stream_start: flush[%d] err=%s got=%u", i, esp_err_to_name(ferr), (unsigned)flushed);
+        i2s_channel_read(s_rx_chan, flush, DMA_BUF_BYTES, &flushed, pdMS_TO_TICKS(20));
     }
     s_stream_dsp_init = false;
-    s_read_frame_log_budget = 20;   /* sanity-check window; root cause was
-                                      * DMA-heap fragmentation from too-frequent
-                                      * teardown/recreate, not the reads themselves */
     return ESP_OK;
 }
 
@@ -299,10 +284,6 @@ size_t core2_mic_read_frame(int16_t *out, size_t max_samples)
     size_t want = max_samples * sizeof(int16_t);
     size_t got = 0;
     esp_err_t err = i2s_channel_read(s_rx_chan, out, want, &got, pdMS_TO_TICKS(60));
-    if (s_read_frame_log_budget > 0) {
-        s_read_frame_log_budget--;
-        ESP_LOGI(TAG, "read_frame: want=%u err=%s got=%u", (unsigned)want, esp_err_to_name(err), (unsigned)got);
-    }
     if (err != ESP_OK && err != ESP_ERR_TIMEOUT) {
         ESP_LOGW(TAG, "stream read: %s", esp_err_to_name(err));
         return 0;
@@ -332,12 +313,6 @@ size_t core2_mic_read_frame(int16_t *out, size_t max_samples)
 void core2_mic_stream_stop(void)
 {
     if (!s_rx_chan) return;
-    /* TEMP DIAGNOSTIC: check whether GPIO0's routing has silently changed
-     * away from the PDM CLK output (out_sel=28 at init time) by the time we
-     * get here — would indicate something else reclaimed the pin mid-listen
-     * rather than the I2S peripheral itself faulting. */
-    uint32_t clk_out_sig = GPIO.func_out_sel_cfg[MIC_CLK_PIN].func_sel;
-    ESP_LOGI(TAG, "stream_stop: GPIO%d out_sel=%lu (expect 28)", MIC_CLK_PIN, (unsigned long)clk_out_sig);
     esp_err_t err = i2s_channel_disable(s_rx_chan);
     if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
         ESP_LOGW(TAG, "stream disable: %s", esp_err_to_name(err));
