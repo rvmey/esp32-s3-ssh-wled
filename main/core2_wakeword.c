@@ -57,6 +57,16 @@ static volatile bool  s_enabled = true;
 static volatile bool  s_armed = false;
 static volatile bool  s_yield_req = false;
 
+/* TEMP DIAGNOSTIC, hard-capped (not per-cycle, so it can never flood the
+ * serial console no matter how long the device runs): with SIP now parked
+ * (v2.0.607) and no longer competing for internal RAM, the mic still dies
+ * every ~6s cycle exactly as before — so the stall is NOT purely a symptom
+ * of the SIP/WakeNet RAM conflict. Log internal-RAM headroom + session
+ * duration for the first 15 arm/disarm cycles only, then go silent. Remove
+ * once this is root-caused. */
+static int       s_diag_budget = 15;
+static TickType_t s_arm_tick = 0;
+
 /* Release the mic and restore the speaker DMA. Task context only. */
 static void ww_disarm(void)
 {
@@ -65,6 +75,14 @@ static void ww_disarm(void)
     core2_mic_deinit();
     core2_audio_acquire_dma();
     s_armed = false;
+    if (s_diag_budget > 0) {
+        uint32_t elapsed_ms = (uint32_t)((xTaskGetTickCount() - s_arm_tick) * portTICK_PERIOD_MS);
+        ESP_LOGW(TAG, "diag: session lasted %lu ms, internal free=%u largest=%u",
+                 (unsigned long)elapsed_ms,
+                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+                 (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
+        s_diag_budget--;
+    }
     ESP_LOGI(TAG, "disarmed (mic released, speaker restored)");
 }
 
@@ -82,6 +100,12 @@ static bool ww_arm(void)
         core2_mic_deinit();
         core2_audio_acquire_dma();
         return false;
+    }
+    s_arm_tick = xTaskGetTickCount();
+    if (s_diag_budget > 0) {
+        ESP_LOGW(TAG, "diag: armed, internal free=%u largest=%u",
+                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+                 (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
     }
     /* NOT calling s_wn->clean(s_wn_data) here: on this prebuilt wn9_hiesp
      * binary it crashes (LoadProhibited in dl_convq_queue_bzero) when called
