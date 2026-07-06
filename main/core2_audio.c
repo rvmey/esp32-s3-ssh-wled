@@ -352,17 +352,6 @@ uint32_t core2_audio_get_sample_rate(void)
     return s_sample_rate_hz;
 }
 
-bool core2_audio_is_busy(void)
-{
-    if (!s_ring_mutex || !s_ring_buf) return false;
-    bool busy = false;
-    if (xSemaphoreTake(s_ring_mutex, pdMS_TO_TICKS(20)) == pdTRUE) {
-        busy = (s_ring_used > 0);
-        xSemaphoreGive(s_ring_mutex);
-    }
-    return busy;
-}
-
 static int16_t scale_sample(int16_t s, int volume_percent)
 {
     if (volume_percent >= 100) return s;

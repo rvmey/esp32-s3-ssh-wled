@@ -31,10 +31,6 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-# esp-sr's movemodel.py prints Unicode box-drawing characters; without UTF-8
-# mode, Windows Python defaults to cp1252 and dies with UnicodeEncodeError.
-$env:PYTHONUTF8 = '1'
-
 # ---------------------------------------------------------------------------
 # Variants
 # ---------------------------------------------------------------------------
@@ -103,8 +99,6 @@ $variants = @(
         PartitionBin  = 'partition-table-esp32.bin'
         OutputBin = 'esp32_core2_picture_frame.bin'
         Target    = 'esp32'          # classic ESP32-D0WDQ6-V3, not ESP32-S3
-        # esp-sr wake-word models, flashed to the "model" partition @ 0x510000
-        SrModelsBin = 'srmodels-core2.bin'
     },
     [PSCustomObject]@{
         Name      = 'cyd'
@@ -256,17 +250,6 @@ function Copy-Artifacts([PSCustomObject]$variant) {
     $partSrc = Join-Path $buildDir 'partition_table\partition-table.bin'
     Copy-Item $partSrc (Join-Path $FirmwareDir $variant.PartitionBin) -Force
     Write-Host "  Copied $($variant.PartitionBin)" -ForegroundColor Green
-
-    # esp-sr model pack (variants with a "model" partition only)
-    if ($variant.PSObject.Properties['SrModelsBin']) {
-        $srSrc = Join-Path $buildDir 'srmodels\srmodels.bin'
-        if (Test-Path $srSrc) {
-            Copy-Item $srSrc (Join-Path $FirmwareDir $variant.SrModelsBin) -Force
-            Write-Host "  Copied $($variant.SrModelsBin)" -ForegroundColor Green
-        } else {
-            Write-Warning "srmodels.bin not found in $buildDir - model partition will be stale"
-        }
-    }
 }
 
 function Update-StableAliasPinning([PSCustomObject]$variant) {

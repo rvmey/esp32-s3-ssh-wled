@@ -45,11 +45,6 @@ elseif(CONFIG_HARDWARE_CORE2 OR CONFIG_HARDWARE_CYD)
         list(REMOVE_ITEM VARIANT_SRCS "screen_control_core2.c")
         list(APPEND VARIANT_SRCS "screen_control_cyd.c")
     endif()
-    # Wake-word detection (esp-sr WakeNet) is Core2-only: CYD has no mic and
-    # no PSRAM, and its 4 MB flash has no room for a model partition.
-    if(CONFIG_HARDWARE_CORE2)
-        list(APPEND VARIANT_SRCS "core2_wakeword.c")
-    endif()
 elseif(CONFIG_HARDWARE_ESP32S3_CAM)
     set(VARIANT_SRCS "camera_server.c")
 else()

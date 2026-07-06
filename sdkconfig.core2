@@ -38,11 +38,6 @@ CONFIG_ESPTOOLPY_FLASHSIZE="16MB"
 CONFIG_PARTITION_TABLE_CUSTOM=y
 CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions_core2.csv"
 
-# ESP-SR WakeNet: "Hi, ESP" wake word (wn9_hiesp, English). The model blob is
-# packed into srmodels.bin at build time and flashed to the "model" data
-# partition (see partitions_core2.csv); esp_srmodel_init("model") mmaps it.
-CONFIG_SR_WN_WN9_HIESP=y
-
 # Bluetooth classic stack (for headset/speaker discovery)
 CONFIG_BT_ENABLED=y
 CONFIG_BT_BLUEDROID_ENABLED=y

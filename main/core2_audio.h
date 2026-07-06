@@ -20,9 +20,6 @@ esp_err_t core2_audio_acquire_dma(void);
 void core2_audio_set_small_dma(bool small);
 void core2_audio_set_sample_rate(uint32_t sample_rate_hz);
 uint32_t core2_audio_get_sample_rate(void);
-/* True while unplayed PCM is still queued in the ring buffer. Reports queued
- * data only — the last DMA chunk may still be draining after this goes false. */
-bool core2_audio_is_busy(void);
 
 /* sample_count is the total number of samples in input buffer, not frames. */
 void core2_audio_write_pcm(const int16_t *samples,

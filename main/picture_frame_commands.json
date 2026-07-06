@@ -319,14 +319,6 @@
   "icon": "🎙️"
  },
  {
-  "trigger": "wakeword",
-  "command": "wakeword",
-  "voice": "wakeword",
-  "allowParams": "true",
-  "mcpToolDescription": "Toggle whether the user's Core2 device listens for the 'Hi, ESP' wake word to start a voice query hands-free (uses the built-in mic while idle; pauses automatically during music, TTS, and calls). Default is on. Automatically unavailable if a SIP phone account is configured on the device (the two features can't share the same limited memory). Pass 'on', 'off', or omit to toggle.",
-  "icon": "👂"
- },
- {
   "trigger": "listen",
   "command": "listen",
   "voice": "listen",
@@ -401,7 +393,7 @@
   "command": "sipenable",
   "voice": "sipenable",
   "allowParams": "true",
-  "mcpToolDescription": "Toggle whether the SIP phone client is allowed to run on the user's Core2 device, without erasing the configured account. Default is on. Turning it off frees up internal RAM (e.g. so the wake word can be used instead — the two features can't run at the same time). Pass 'on', 'off', or omit to toggle. A reboot is required for a change to take effect for wake word availability.",
+  "mcpToolDescription": "Toggle whether the SIP phone client is allowed to run on the user's Core2 device, without erasing the configured account. Default is on. Pass 'on', 'off', or omit to toggle.",
   "icon": "📵"
  }
 ]
