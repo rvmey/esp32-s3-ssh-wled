@@ -286,7 +286,7 @@ esp_err_t core2_mic_stream_start(void)
         ESP_LOGI(TAG, "stream_start: flush[%d] err=%s got=%u", i, esp_err_to_name(ferr), (unsigned)flushed);
     }
     s_stream_dsp_init = false;
-    s_read_frame_log_budget = 10;
+    s_read_frame_log_budget = 300;   /* covers the whole arm-to-stall window */
     return ESP_OK;
 }
 
@@ -330,6 +330,12 @@ size_t core2_mic_read_frame(int16_t *out, size_t max_samples)
 void core2_mic_stream_stop(void)
 {
     if (!s_rx_chan) return;
+    /* TEMP DIAGNOSTIC: check whether GPIO0's routing has silently changed
+     * away from the PDM CLK output (out_sel=28 at init time) by the time we
+     * get here — would indicate something else reclaimed the pin mid-listen
+     * rather than the I2S peripheral itself faulting. */
+    uint32_t clk_out_sig = GPIO.func_out_sel_cfg[MIC_CLK_PIN].func_sel;
+    ESP_LOGI(TAG, "stream_stop: GPIO%d out_sel=%lu (expect 28)", MIC_CLK_PIN, (unsigned long)clk_out_sig);
     esp_err_t err = i2s_channel_disable(s_rx_chan);
     if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
         ESP_LOGW(TAG, "stream disable: %s", esp_err_to_name(err));
