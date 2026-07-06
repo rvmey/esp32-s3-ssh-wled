@@ -635,6 +635,7 @@ static void draw_pair_qr_screen(const char *pair_code)
 #define NVS_KEY_AI_TTS  "ai_tts"
 #define NVS_KEY_MIC_SRC "mic_src"  /* 0 = built-in PDM (default), 1 = Grove ADC */
 #define NVS_KEY_WAKEWORD "wakeword" /* 1 = "Hi, ESP" wake word enabled (default) */
+#define NVS_KEY_SIP_ENABLED "sip_en" /* 1 = SIP client allowed to run (default); 0 = parked */
 #define NVS_KEY_CLOCK_MODE "clock_mode" /* 0=off, 1=digital, 2=analog */
 #define NVS_KEY_BOOT_SHOW  "boot_show"  /* 1=clock-digital, 2=clock-analog, 3=music, 4=jpeg, 5=text */
 #define NVS_KEY_CAMURL     "cam_url"
@@ -823,6 +824,12 @@ static volatile bool s_voice_flow_active = false;
 /* True while core2_tts_speak() runs (speaker paused for the HTTP fetch, then
  * handed to the mp3 task, which s_mp3.active covers from there on). */
 static volatile bool s_tts_active        = false;
+/* Whether the SIP client is allowed to run at all. Default on, overridden
+ * from NVS at boot, toggled by the "sipenable" command — lets a configured
+ * SIP account be administratively parked (e.g. to free the ~21KB of
+ * internal RAM wake word's WakeNet model needs, since the two can't
+ * coexist) without erasing the account credentials. */
+static bool          s_sip_enabled = true;
 #endif
 
 /* Pending AVRCP actions — set by bt_avrc_tg_cb, consumed by the main loop */
@@ -8485,6 +8492,7 @@ static const pf_cmd_t s_pf_cmds[] = {
     { "answer",    "answer",    "false", "Answer the incoming SIP call.", "\xF0\x9F\x93\x9E" /* 📞 */, NULL },
     { "hangup",    "hangup",    "false", "Hang up the current SIP call, or reject an incoming one.", "\xF0\x9F\x93\xB4" /* 📴 */, NULL },
     { "sipstatus", "sipstatus", "false", "Report SIP registration and call state.", "\xF0\x9F\x93\xB6" /* 📶 */, "{{result}}" },
+    { "sipenable", "sipenable", "true",  "Toggle whether the SIP phone client is allowed to run, without erasing the configured account. Default on. Turning it off frees up internal RAM (e.g. so the wake word can be used instead — the two can't run at the same time). Pass 'on'/'off' or omit to toggle. Requires a reboot for a change to take effect for wake word availability.", "\xF0\x9F\x93\xB5" /* 📵 */, NULL },
 #endif
 };
 #define PF_CMD_COUNT  (sizeof(s_pf_cmds) / sizeof(s_pf_cmds[0]))
@@ -9724,6 +9732,10 @@ static void pf_sip_event_cb(const sip_event_info_t *ev, void *ctx)
  * settable from the device's config web page). */
 static void pf_sip_start_from_nvs(void)
 {
+    if (!s_sip_enabled) {
+        ESP_LOGI(TAG, "SIP: parked (sipenable=off), not starting");
+        return;
+    }
     sip_config_t cfg;
     memset(&cfg, 0, sizeof(cfg));
     if (!nvs_read_str("sip_srv", cfg.server, sizeof(cfg.server))) {
@@ -10467,6 +10479,33 @@ static void pf_event_handler(const char *event_name,
                  sip_is_registered() ? "true" : "false",
                  sip_in_call() ? "true" : "false");
         s_pending_has_result = true;
+
+    } else if (strcmp(s_trigger, "sipenable") == 0) {
+        char mode[16] = {0};
+        strncpy(mode, s_params, sizeof(mode) - 1);
+        for (size_t i = 0; mode[i]; i++) mode[i] = (char)tolower((unsigned char)mode[i]);
+        bool sip_on;
+        if (strcmp(mode, "on") == 0) {
+            sip_on = true;
+        } else if (strcmp(mode, "off") == 0) {
+            sip_on = false;
+        } else {
+            sip_on = !s_sip_enabled;
+        }
+        if (!sip_on && sip_in_call()) {
+            ESP_LOGW(TAG, "sipenable: refusing to disable — call in progress");
+            screen_draw_text("Can't disable SIP\nCall in progress");
+        } else {
+            s_sip_enabled = sip_on;
+            nvs_write_u8(NVS_KEY_SIP_ENABLED, s_sip_enabled ? 1 : 0);
+            if (s_sip_enabled) {
+                pf_sip_start_from_nvs();
+            } else if (sip_is_registered()) {
+                sip_client_stop();
+            }
+            ESP_LOGI(TAG, "SIP enabled: %s (wake word needs a reboot to reflect this change)",
+                     s_sip_enabled ? "on" : "off");
+        }
 #endif
 
     } else if (strcmp(s_trigger, "wifi") == 0) {
@@ -12041,21 +12080,26 @@ void picture_frame_run(void)
         uint8_t mic_src = 0;
         nvs_read_u8(NVS_KEY_MIC_SRC, &mic_src);
         s_mic_src_grove = (mic_src != 0);
+        uint8_t sip_en = 1;   /* default enabled if the key isn't in NVS */
+        nvs_read_u8(NVS_KEY_SIP_ENABLED, &sip_en);
+        s_sip_enabled = (sip_en != 0);
         {
             /* WakeNet's create() call permanently costs ~21 KB of internal
              * RAM (confirmed on hardware) — enough to fragment/exhaust the
              * budget SIP's task creation needs later in boot. Skip wake-word
-             * entirely when a SIP account is configured (sd_apply_config_if_present(),
-             * called above, already synced any SD-sourced SIP settings into
-             * NVS, so this reflects both SD- and web-configured accounts)
-             * rather than let the two features silently fight over the same
-             * scarce resource. */
+             * entirely when a SIP account is BOTH configured AND enabled
+             * (sd_apply_config_if_present(), called above, already synced any
+             * SD-sourced SIP settings into NVS, so this reflects both SD- and
+             * web-configured accounts) rather than let the two features
+             * silently fight over the same scarce resource. Parking SIP via
+             * "sipenable off" frees the conflict without erasing the account,
+             * so wake word can be tested/used without losing SIP config. */
             char sip_srv_probe[64];   /* matches sip_config_t.server in sip_client.h —
                                        * nvs_read_str() FAILS (not truncates) if this is
                                        * too small to hold the stored value */
             bool sip_configured = nvs_read_str("sip_srv", sip_srv_probe, sizeof(sip_srv_probe));
-            if (sip_configured) {
-                ESP_LOGI(TAG, "wake word: disabled — SIP account is configured (internal RAM conflict)");
+            if (sip_configured && s_sip_enabled) {
+                ESP_LOGI(TAG, "wake word: disabled — SIP account is configured and enabled (internal RAM conflict)");
                 core2_wakeword_set_enabled(false);
             } else {
                 uint8_t wakeword = 1;   /* default enabled if the key isn't in NVS */

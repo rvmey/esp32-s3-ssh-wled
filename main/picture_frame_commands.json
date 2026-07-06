@@ -395,5 +395,13 @@
   "voiceReply": "{{result}}",
   "mcpToolDescription": "Report the SIP registration status and current call state of the user's Core2 device.",
   "icon": "📶"
+ },
+ {
+  "trigger": "sipenable",
+  "command": "sipenable",
+  "voice": "sipenable",
+  "allowParams": "true",
+  "mcpToolDescription": "Toggle whether the SIP phone client is allowed to run on the user's Core2 device, without erasing the configured account. Default is on. Turning it off frees up internal RAM (e.g. so the wake word can be used instead — the two features can't run at the same time). Pass 'on', 'off', or omit to toggle. A reboot is required for a change to take effect for wake word availability.",
+  "icon": "📵"
  }
 ]
