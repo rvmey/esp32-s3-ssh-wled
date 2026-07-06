@@ -12041,11 +12041,30 @@ void picture_frame_run(void)
         uint8_t mic_src = 0;
         nvs_read_u8(NVS_KEY_MIC_SRC, &mic_src);
         s_mic_src_grove = (mic_src != 0);
-        uint8_t wakeword = 1;   /* default enabled if the key isn't in NVS */
-        nvs_read_u8(NVS_KEY_WAKEWORD, &wakeword);
-        core2_wakeword_set_enabled(wakeword != 0);
-        if (core2_wakeword_init() != ESP_OK) {
-            ESP_LOGW(TAG, "wake word unavailable (model/task init failed)");
+        {
+            /* WakeNet's create() call permanently costs ~21 KB of internal
+             * RAM (confirmed on hardware) — enough to fragment/exhaust the
+             * budget SIP's task creation needs later in boot. Skip wake-word
+             * entirely when a SIP account is configured (sd_apply_config_if_present(),
+             * called above, already synced any SD-sourced SIP settings into
+             * NVS, so this reflects both SD- and web-configured accounts)
+             * rather than let the two features silently fight over the same
+             * scarce resource. */
+            char sip_srv_probe[64];   /* matches sip_config_t.server in sip_client.h —
+                                       * nvs_read_str() FAILS (not truncates) if this is
+                                       * too small to hold the stored value */
+            bool sip_configured = nvs_read_str("sip_srv", sip_srv_probe, sizeof(sip_srv_probe));
+            if (sip_configured) {
+                ESP_LOGI(TAG, "wake word: disabled — SIP account is configured (internal RAM conflict)");
+                core2_wakeword_set_enabled(false);
+            } else {
+                uint8_t wakeword = 1;   /* default enabled if the key isn't in NVS */
+                nvs_read_u8(NVS_KEY_WAKEWORD, &wakeword);
+                core2_wakeword_set_enabled(wakeword != 0);
+                if (core2_wakeword_init() != ESP_OK) {
+                    ESP_LOGW(TAG, "wake word unavailable (model/task init failed)");
+                }
+            }
         }
         {
             char tz[sizeof(s_timezone)] = {0};
