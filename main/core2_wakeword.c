@@ -31,15 +31,20 @@ static const char *TAG = "core2_ww";
 #define WW_TASK_PRIO           4      /* below mp3 (5) and i2s writer (6) */
 #define WW_READ_STEP           320    /* matches SIP_RTP_FRAME_SAMPLES*2 — see read loop comment */
 /* Confirmed on hardware: short runs of a few consecutive ESP_ERR_TIMEOUT
- * reads (no new DMA data within 60 ms) are NORMAL jitter during otherwise
- * healthy multi-second listening sessions, not a dead channel. The old
- * threshold of 50 was tripping on that ordinary jitter, forcing a full
- * mic-channel teardown+recreate far more often than needed — and doing that
- * repeatedly (especially during the boot-time WiFi/BT/SD contention window)
- * fragmented the scarce internal DMA-capable heap badly enough to break
- * unrelated features (observed: i2s_alloc_dma_desc failures, then SIP client
- * startup failing with ESP_ERR_NO_MEM). 300 gives a huge margin above any
- * jitter actually observed while still catching a genuinely dead channel. */
+ * reads (no new DMA data within 60 ms) are NORMAL jitter and self-recover.
+ * But the I2S RX channel also genuinely dies outright at unpredictable
+ * points (anywhere from ~100ms to several seconds into a session) — after
+ * which every read fails instantly (not a real 60ms timeout) — confirmed by
+ * measuring elapsed time from "armed" to "stalled" match count*~1ms, not
+ * count*60ms. WW_SOFT_RECOVER_LIMIT catches that quickly and tries a cheap
+ * fix (disable+enable the SAME channel — no DMA alloc, doesn't touch the
+ * speaker at all). Only if that doesn't help does WW_ZERO_READ_STALL_LIMIT
+ * escalate to the expensive full teardown+recreate (which was previously
+ * happening on every single stall, and repeatedly bouncing the speaker's
+ * channel alongside it fragmented the scarce internal DMA-capable heap
+ * badly enough to break unrelated features — observed i2s_alloc_dma_desc
+ * failures, then SIP client startup failing with ESP_ERR_NO_MEM). */
+#define WW_SOFT_RECOVER_LIMIT    50
 #define WW_ZERO_READ_STALL_LIMIT 300
 
 static const esp_wn_iface_t *s_wn = NULL;
@@ -136,8 +141,16 @@ static void ww_task(void *arg)
         size_t read_req = remaining < WW_READ_STEP ? remaining : WW_READ_STEP;
         size_t n = core2_mic_read_frame(s_buf + fill, read_req);
         if (n == 0) {
-            if (++zero_reads > WW_ZERO_READ_STALL_LIMIT) {   /* mic stream genuinely died — reset the handoff */
-                ESP_LOGW(TAG, "mic stream stalled, re-arming");
+            zero_reads++;
+            if (zero_reads == WW_SOFT_RECOVER_LIMIT) {
+                /* Cheap first attempt: reset the same channel object without
+                 * touching the speaker or doing any DMA allocation. */
+                ESP_LOGW(TAG, "mic read stalled, soft-recovering (same channel)");
+                core2_mic_stream_stop();
+                core2_mic_stream_start();
+                fill = 0;
+            } else if (zero_reads > WW_ZERO_READ_STALL_LIMIT) {
+                ESP_LOGW(TAG, "mic stream stalled, full re-arm");
                 ww_disarm();
                 gate_open_since = 0;
                 vTaskDelay(pdMS_TO_TICKS(WW_ARM_FAIL_BACKOFF_MS));
