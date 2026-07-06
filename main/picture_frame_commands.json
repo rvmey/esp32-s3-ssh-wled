@@ -323,7 +323,7 @@
   "command": "wakeword",
   "voice": "wakeword",
   "allowParams": "true",
-  "mcpToolDescription": "Toggle whether the user's Core2 device listens for the 'Hi, ESP' wake word to start a voice query hands-free (uses the built-in mic while idle; pauses automatically during music, TTS, and calls). Default is on. Pass 'on', 'off', or omit to toggle.",
+  "mcpToolDescription": "Toggle whether the user's Core2 device listens for the 'Hi, ESP' wake word to start a voice query hands-free (uses the built-in mic while idle; pauses automatically during music, TTS, and calls). Default is on. Automatically unavailable if a SIP phone account is configured on the device (the two features can't share the same limited memory). Pass 'on', 'off', or omit to toggle.",
   "icon": "👂"
  },
  {
