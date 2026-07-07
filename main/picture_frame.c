@@ -1010,11 +1010,6 @@ typedef struct {
     int      episode_idx;     /* 0 = newest */
     int      episode_count;
     char     feed_name[PODCAST_NAME_LEN];
-    char     feed_url[PODCAST_URL_LEN];
-    /* Original (pre-redirect) episode URL, stable across the stream's life —
-     * s_radio_url gets overwritten in place with the resolved redirect target,
-     * so resume-matching must compare against this instead. */
-    char     episode_url[PODCAST_URL_LEN];
     /* stream/Range state, written by the decode task */
     int64_t  content_length;         /* total bytes for this episode; -1 unknown */
     volatile int64_t  byte_pos;      /* next absolute byte to request/read */
@@ -1034,6 +1029,14 @@ static podcast_state_t s_podcast = { .seek_to_byte = -1, .content_length = -1 };
 static podcast_feed_t     *s_podcast_feeds       = NULL;  /* PSRAM, alloc on first use */
 static int                 s_podcast_feed_count  = 0;
 static podcast_episode_t  *s_podcast_eps          = NULL; /* PSRAM, PODCAST_MAX_EPISODES entries */
+/* Original (pre-redirect) episode URL, stable across the stream's life —
+ * s_radio_url gets overwritten in place with the resolved redirect target, so
+ * resume-matching must compare against this instead. PSRAM pointer (like the
+ * s_radio_* buffers) rather than a static struct field, so this ~512-byte
+ * buffer isn't permanently reserved out of scarce internal RAM at boot when
+ * podcast is never used — allocated in radio_alloc_state(), freed in
+ * radio_free_state(). */
+static char *s_podcast_episode_url = NULL;
 #define PODCAST_SAVE_PERIOD_MS  30000U
 #endif /* CONFIG_CORE2_HW */
 
@@ -3774,7 +3777,15 @@ static bool radio_alloc_state(void)
         s_radio_meta_buf = heap_caps_malloc(4096, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
         if (!s_radio_meta_buf) s_radio_meta_buf = malloc(4096);
     }
+#if CONFIG_CORE2_HW
+    if (!s_podcast_episode_url) {
+        s_podcast_episode_url = heap_caps_malloc(PODCAST_URL_LEN, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (!s_podcast_episode_url) s_podcast_episode_url = malloc(PODCAST_URL_LEN);
+    }
+    return s_radio_url && s_radio_title && s_radio_station && s_radio_meta_buf && s_podcast_episode_url;
+#else
     return s_radio_url && s_radio_title && s_radio_station && s_radio_meta_buf;
+#endif
 }
 
 static void radio_free_state(void)
@@ -3784,6 +3795,9 @@ static void radio_free_state(void)
     free(s_radio_title);    s_radio_title    = NULL;
     free(s_radio_station);  s_radio_station  = NULL;
     free(s_radio_meta_buf); s_radio_meta_buf = NULL;
+#if CONFIG_CORE2_HW
+    free(s_podcast_episode_url); s_podcast_episode_url = NULL;
+#endif
 }
 
 static bool radio_open_stream(void)
@@ -4451,7 +4465,7 @@ static bool podcast_queue_seek_relative(int32_t delta_ms, const char *reason)
 static void podcast_save_resume(void)
 {
     if (!s_podcast.active) return;
-    nvs_write_str(NVS_KEY_POD_URL, s_podcast.episode_url);
+    nvs_write_str(NVS_KEY_POD_URL, s_podcast_episode_url ? s_podcast_episode_url : "");
     char posbuf[16];
     uint32_t save_ms = (s_mp3.position_ms > 5000) ? (s_mp3.position_ms - 5000) : 0;
     snprintf(posbuf, sizeof(posbuf), "%lu", (unsigned long)save_ms);
@@ -4503,8 +4517,8 @@ static bool podcast_start_episode(int idx, uint32_t resume_ms)
     strncpy(s_radio_station, s_podcast.feed_name, 127);
     s_radio_station[127] = '\0';
 
-    strncpy(s_podcast.episode_url, ep->url, sizeof(s_podcast.episode_url) - 1);
-    s_podcast.episode_url[sizeof(s_podcast.episode_url) - 1] = '\0';
+    strncpy(s_podcast_episode_url, ep->url, PODCAST_URL_LEN - 1);
+    s_podcast_episode_url[PODCAST_URL_LEN - 1] = '\0';
 
     s_podcast.active           = true;
     s_podcast.episode_idx      = idx;
@@ -4749,8 +4763,6 @@ static void podcast_run_pending(const char *params, const char *run_id)
     }
     strncpy(s_podcast.feed_name, feed_name, sizeof(s_podcast.feed_name) - 1);
     s_podcast.feed_name[sizeof(s_podcast.feed_name) - 1] = '\0';
-    strncpy(s_podcast.feed_url, feed_url, sizeof(s_podcast.feed_url) - 1);
-    s_podcast.feed_url[sizeof(s_podcast.feed_url) - 1] = '\0';
 
     if (want_episode > count) want_episode = count;
     int idx = want_episode - 1;
