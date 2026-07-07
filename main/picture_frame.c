@@ -3823,9 +3823,10 @@ static bool radio_open_stream(void)
         }
         esp_http_client_set_header(s_radio_http, "User-Agent", "ESP32/1.0");
 
+        ESP_LOGI(TAG, "radio: connecting to %s", s_radio_url);
         esp_err_t err = esp_http_client_open(s_radio_http, 0);
         if (err != ESP_OK) {
-            ESP_LOGE(TAG, "radio: HTTP open failed: %s", esp_err_to_name(err));
+            ESP_LOGE(TAG, "radio: HTTP open failed: %s (url=%s)", esp_err_to_name(err), s_radio_url);
             radio_close_stream();
             return false;
         }
@@ -4470,6 +4471,7 @@ static bool podcast_start_episode(int idx, uint32_t resume_ms)
     if (idx < 0 || idx >= s_podcast.episode_count || !s_podcast_eps) return false;
     podcast_episode_t *ep = &s_podcast_eps[idx];
     if (!ep->url[0]) return false;
+    ESP_LOGI(TAG, "podcast: selected enclosure url: %s", ep->url);
 
     if (!radio_alloc_state()) {
         ESP_LOGE(TAG, "podcast: failed to allocate radio buffers");
