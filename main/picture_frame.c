@@ -986,6 +986,13 @@ static int  s_radio_icy_remaining = 0;
 #define PODCAST_TITLE_LEN       96
 #define PODCAST_FEED_XML_CAP    (512 * 1024)  /* PSRAM cap for RSS body */
 #define PODCAST_SEEK_STEP_MS    30000U
+/* Many podcast CDNs serve audio with chunked transfer-encoding (no
+ * Content-Length), so byte-position EOF detection isn't available and we
+ * can only give up after repeated reconnect failures. This must be high
+ * enough that a flaky-but-recovering connection doesn't get mistaken for
+ * "the episode ended" and have its resume position wiped — see
+ * [[project_core2_podcast_player]] for the incident that motivated this. */
+#define PODCAST_RECONNECT_GIVEUP 8
 
 typedef struct {
     char name[PODCAST_NAME_LEN];
@@ -1015,7 +1022,8 @@ typedef struct {
     volatile uint32_t seek_to_ms;    /* position_ms to show after the seek completes */
     uint32_t avg_bitrate;            /* EMA of MP3FrameInfo.bitrate, bits/sec */
     bool     range_supported;        /* saw HTTP 206 on the current episode */
-    volatile bool ended;             /* natural EOF reached; consumed by main loop */
+    volatile bool ended;             /* confirmed EOF (content_length reached); main loop clears resume */
+    volatile bool stalled;           /* gave up reconnecting on an unknown-length stream; main loop SAVES resume (not clear) since this isn't a confirmed end */
     int      reconnect_fails;        /* bounded retry when content_length is unknown */
     /* resume bookkeeping — read/written by the main loop only */
     uint32_t   last_saved_ms;
@@ -4499,6 +4507,7 @@ static bool podcast_start_episode(int idx, uint32_t resume_ms)
     s_podcast.seek_to_ms       = 0;
     s_podcast.range_supported  = false;
     s_podcast.ended            = false;
+    s_podcast.stalled          = false;
     s_podcast.reconnect_fails  = 0;
 
     s_podcast.byte_pos = 0;
@@ -5280,14 +5289,28 @@ static void mp3_player_task(void *arg)
                 if (s_podcast.active) {
                     bool pod_eof = s_podcast.content_length > 0 &&
                                    s_podcast.byte_pos >= s_podcast.content_length - 128; /* ID3v1 slack */
+                    bool pod_giveup = false;
                     if (!pod_eof && s_podcast.content_length <= 0 &&
-                        ++s_podcast.reconnect_fails >= 3) {
-                        pod_eof = true; /* chunked/unknown-length feed: bounded retry, not forever */
+                        ++s_podcast.reconnect_fails >= PODCAST_RECONNECT_GIVEUP) {
+                        /* Chunked/unknown-length feed: can't tell "reached the end"
+                         * from "connection keeps dropping", so this is NOT treated
+                         * as a confirmed end-of-episode — resume is preserved. */
+                        pod_giveup = true;
                     }
                     if (pod_eof) {
                         ESP_LOGI(TAG, "podcast: end of episode reached");
                         s_podcast.ended = true;
-                        if (s_mp3.duration_ms) s_mp3.position_ms = s_mp3.duration_ms;
+                        s_mp3.position_ms = s_mp3.duration_ms ? s_mp3.duration_ms : s_mp3.position_ms;
+                        s_mp3.paused = true;
+                        radio_close_stream();
+                        mp3_request_ui_refresh();
+                        vTaskDelay(pdMS_TO_TICKS(200));
+                        continue;
+                    }
+                    if (pod_giveup) {
+                        ESP_LOGW(TAG, "podcast: giving up after %d reconnect failures (resume kept)",
+                                 (int)s_podcast.reconnect_fails);
+                        s_podcast.stalled = true;
                         s_mp3.paused = true;
                         radio_close_stream();
                         mp3_request_ui_refresh();
@@ -11039,6 +11062,11 @@ static void pf_event_handler(const char *event_name,
     } else if (strcmp(s_trigger, "play") == 0) {
         s_mp3_ui_override_allowed = true;
         if (s_mp3.active) {
+#if CONFIG_CORE2_HW
+            /* Manual resume after a stalled reconnect gets a fresh retry
+             * budget rather than immediately re-tripping the give-up path. */
+            if (s_podcast.active) s_podcast.reconnect_fails = 0;
+#endif
             s_mp3.paused = false;
             s_mp3_resume_on_bt_reconnect = false;
             s_mp3.last_tick = xTaskGetTickCount();
@@ -11082,6 +11110,11 @@ static void pf_event_handler(const char *event_name,
 #endif
             mp3_request_ui_refresh();
         } else if (s_mp3.active && s_mp3.paused) {
+#if CONFIG_CORE2_HW
+            /* Manual resume after a stalled reconnect gets a fresh retry
+             * budget rather than immediately re-tripping the give-up path. */
+            if (s_podcast.active) s_podcast.reconnect_fails = 0;
+#endif
             s_mp3.paused = false;
             s_mp3_resume_on_bt_reconnect = false;
             s_mp3.last_tick = xTaskGetTickCount();
@@ -13608,6 +13641,14 @@ void picture_frame_run(void)
                 s_podcast.ended = false;
                 podcast_clear_resume();
                 screen_draw_text("Episode finished");
+            }
+            if (s_podcast.stalled) {
+                s_podcast.stalled = false;
+                /* Not a confirmed end-of-episode (content-length was unknown) —
+                 * save the position instead of clearing it, so a flaky/dropped
+                 * connection doesn't cost the listener their place. */
+                podcast_save_resume();
+                screen_draw_text("Podcast connection\nlost \xe2\x80\x94 resume saved");
             }
 #endif
 
