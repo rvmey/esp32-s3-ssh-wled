@@ -4093,7 +4093,13 @@ static char *podcast_fetch_feed(const char *url, size_t *out_len)
 
         esp_err_t ret = esp_http_client_open(client, 0);
         if (ret != ESP_OK) {
-            ESP_LOGE(TAG, "podcast: HTTP open failed: %s", esp_err_to_name(ret));
+            ESP_LOGE(TAG, "podcast: HTTP open failed: %s (url=%s) heap: internal free=%u largest=%u spiram free=%u largest=%u (LWIP_MAX_SOCKETS=%d)",
+                     esp_err_to_name(ret), effective_url,
+                     (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+                     (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
+                     (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
+                     (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM),
+                     CONFIG_LWIP_MAX_SOCKETS);
             esp_http_client_cleanup(client);
             return NULL;
         }
@@ -4708,6 +4714,17 @@ static void podcast_run_pending(const char *params, const char *run_id)
         strncpy(feed_url, s_podcast_feeds[fidx].url, sizeof(feed_url) - 1);
         strncpy(feed_name, s_podcast_feeds[fidx].name, sizeof(feed_name) - 1);
     }
+
+    /* Release the previous episode's stream (and save its resume position)
+     * before starting a new feed fetch — otherwise its buffers/HTTP state
+     * linger until the new one starts (or indefinitely, if this fetch fails). */
+    if (s_podcast.active) podcast_stop(true);
+
+    ESP_LOGI(TAG, "podcast: heap before feed fetch: internal free=%u largest=%u spiram free=%u largest=%u",
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM));
 
     screen_draw_text("Fetching feed...");
     size_t xml_len = 0;
